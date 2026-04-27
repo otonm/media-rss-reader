@@ -8,8 +8,9 @@ async def run_migrations(db: aiosqlite.Connection) -> None:
         row = await cur.fetchone()
     current_version: int = row[0]
     pending = MIGRATIONS[current_version:]
-    for sql in pending:
+    if not pending:
+        return
+    for i, sql in enumerate(pending, start=current_version + 1):
         await db.execute(sql)
-    new_version = len(MIGRATIONS)
-    await db.execute(f"PRAGMA user_version = {new_version}")
-    await db.commit()
+        await db.execute(f"PRAGMA user_version = {i}")
+        await db.commit()
