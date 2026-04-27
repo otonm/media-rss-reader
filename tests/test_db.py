@@ -3,7 +3,7 @@ import tempfile
 
 import aiosqlite
 
-from src.db.connection import open_db
+from src.db.connection import get_db, open_db
 from src.db.migrations import MIGRATIONS, run_migrations
 from src.db.schema import create_schema
 
@@ -106,3 +106,20 @@ async def test_open_db_sets_row_factory() -> None:
         await db.close()
     finally:
         os.unlink(path)
+
+
+async def test_get_db_yields_connection(tmp_path: object) -> None:
+    import pathlib
+
+    import src.db.connection as conn_mod
+
+    db_path = pathlib.Path(str(tmp_path)) / "test.db"
+    original = conn_mod.settings.db_path
+    conn_mod.settings.db_path = str(db_path)  # type: ignore[assignment]
+    try:
+        db_gen = get_db()
+        conn = await db_gen.__anext__()
+        assert isinstance(conn, aiosqlite.Connection)
+        await conn.close()
+    finally:
+        conn_mod.settings.db_path = original  # type: ignore[assignment]

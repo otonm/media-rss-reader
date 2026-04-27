@@ -1,4 +1,4 @@
-from collections.abc import AsyncGenerator
+from collections.abc import AsyncIterator
 
 import aiosqlite
 
@@ -13,7 +13,7 @@ async def open_db(path: str | None = None) -> aiosqlite.Connection:
     return db
 
 
-async def get_db() -> AsyncGenerator[aiosqlite.Connection]:
+async def get_db() -> AsyncIterator[aiosqlite.Connection]:
     db = await open_db()
     try:
         yield db
