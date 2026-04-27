@@ -41,3 +41,11 @@ async def test_schema_is_idempotent() -> None:
     await create_schema(db)
     await create_schema(db)  # must not raise
     await db.close()
+
+
+async def test_db_fixture_has_row_factory(db: aiosqlite.Connection) -> None:
+    await db.execute("INSERT INTO feeds (id, url) VALUES ('x', 'https://example.com')")
+    await db.commit()
+    async with db.execute("SELECT id FROM feeds") as cur:
+        row = await cur.fetchone()
+    assert row["id"] == "x"
