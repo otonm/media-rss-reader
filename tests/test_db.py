@@ -1,5 +1,9 @@
+import os
+import tempfile
+
 import aiosqlite
 
+from src.db.connection import open_db
 from src.db.migrations import MIGRATIONS, run_migrations
 from src.db.schema import create_schema
 
@@ -71,3 +75,34 @@ async def test_migrations_are_idempotent() -> None:
         row = await cur.fetchone()
     assert row[0] == len(MIGRATIONS)
     await db.close()
+
+
+async def test_open_db_sets_wal_and_fk() -> None:
+    with tempfile.NamedTemporaryFile(suffix=".db", delete=False) as f:
+        path = f.name
+    try:
+        db = await open_db(path)
+        async with db.execute("PRAGMA journal_mode") as cur:
+            row = await cur.fetchone()
+        assert row[0] == "wal"
+        async with db.execute("PRAGMA foreign_keys") as cur:
+            row = await cur.fetchone()
+        assert row[0] == 1
+        await db.close()
+    finally:
+        os.unlink(path)
+
+
+async def test_open_db_sets_row_factory() -> None:
+    with tempfile.NamedTemporaryFile(suffix=".db", delete=False) as f:
+        path = f.name
+    try:
+        db = await open_db(path)
+        await db.execute("CREATE TABLE t (x INTEGER)")
+        await db.execute("INSERT INTO t VALUES (42)")
+        async with db.execute("SELECT x FROM t") as cur:
+            row = await cur.fetchone()
+        assert row["x"] == 42
+        await db.close()
+    finally:
+        os.unlink(path)
