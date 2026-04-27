@@ -1,0 +1,23 @@
+# Worktrees
+.worktrees/
+
+# Added by code-review-graph
+.code-review-graph/
+.mcp.json
+
+# Claude
+.claude/
+CLAUDE.md
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+uv.lock
+venv/
+.venv/
+
+# Environment variables
+.env
+.env.local
