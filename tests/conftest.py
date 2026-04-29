@@ -2,6 +2,7 @@ from collections.abc import AsyncGenerator
 
 import aiosqlite
 import pytest
+import respx
 
 from src.db.connection import open_db
 from src.db.migrations import run_migrations
@@ -15,3 +16,9 @@ async def db() -> AsyncGenerator[aiosqlite.Connection]:
     await run_migrations(conn)
     yield conn
     await conn.close()
+
+
+@pytest.fixture
+def mock_http() -> respx.MockRouter:
+    with respx.MockRouter() as router:
+        yield router
