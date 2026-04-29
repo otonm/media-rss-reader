@@ -9,6 +9,9 @@
 .claude/
 CLAUDE.md
 
+# Coverage
+htmlcov/
+
 # Python
 __pycache__/
 *.pyc

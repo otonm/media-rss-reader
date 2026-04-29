@@ -1,0 +1,16 @@
+services:
+  media-rss:
+    build: .
+    ports:
+      - "8080:8080"
+    volumes:
+      - ./feeds.opml:/data/feeds.opml:ro
+      - reader_data:/data
+      - media_cache:/cache
+    env_file:
+      - .env
+    restart: unless-stopped
+
+volumes:
+  reader_data:
+  media_cache:
