@@ -149,3 +149,149 @@ async def test_mark_seen(client: AsyncClient, db: aiosqlite.Connection) -> None:
 async def test_mark_seen_not_found(client: AsyncClient) -> None:
     resp = await client.post("/api/items/nonexistent/seen")
     assert resp.status_code == 404
+
+
+# ---------------------------------------------------------------------------
+# GET /api/media/proxy tests
+# ---------------------------------------------------------------------------
+
+
+async def test_proxy_cache_hit(
+    client: AsyncClient, tmp_path: object, monkeypatch: object
+) -> None:
+    import hashlib
+
+    import src.media.cache as cache_mod
+
+    monkeypatch.setattr(cache_mod.settings, "cache_dir", str(tmp_path))
+    url = "http://example.com/img.jpg"
+    filename = hashlib.sha256(url.encode()).hexdigest()
+    (tmp_path / filename).write_bytes(b"cached")  # type: ignore[operator]
+
+    resp = await client.get(f"/api/media/proxy?url={url}")
+    assert resp.status_code == 200
+    assert resp.content == b"cached"
+
+
+async def test_proxy_cache_miss(
+    client: AsyncClient, tmp_path: object, monkeypatch: object
+) -> None:
+    import httpx
+    import respx
+
+    import src.media.cache as cache_mod
+
+    monkeypatch.setattr(cache_mod.settings, "cache_dir", str(tmp_path))
+    url = "http://example.com/photo.jpg"
+
+    with respx.mock:
+        respx.get(url).mock(
+            return_value=httpx.Response(
+                200, content=b"freshdata", headers={"content-type": "image/jpeg"}
+            )
+        )
+        real_client = httpx.AsyncClient()
+        monkeypatch.setattr("src.api.media.get_http_client", lambda: real_client)
+        resp = await client.get(f"/api/media/proxy?url={url}")
+        await real_client.aclose()
+
+    assert resp.status_code == 200
+    assert resp.content == b"freshdata"
+
+
+async def test_proxy_upstream_error(
+    client: AsyncClient, tmp_path: object, monkeypatch: object
+) -> None:
+    import httpx
+    import respx
+
+    import src.media.cache as cache_mod
+
+    monkeypatch.setattr(cache_mod.settings, "cache_dir", str(tmp_path))
+    url = "http://example.com/broken.jpg"
+
+    with respx.mock:
+        respx.get(url).mock(return_value=httpx.Response(404))
+        real_client = httpx.AsyncClient()
+        monkeypatch.setattr("src.api.media.get_http_client", lambda: real_client)
+        resp = await client.get(f"/api/media/proxy?url={url}")
+        await real_client.aclose()
+
+    assert resp.status_code == 502
+
+
+# ---------------------------------------------------------------------------
+# POST /api/prefetch/hint tests
+# ---------------------------------------------------------------------------
+
+
+async def test_prefetch_hint(
+    client: AsyncClient, db: aiosqlite.Connection, monkeypatch: object
+) -> None:
+    import httpx
+
+    import src.api.media as media_mod
+
+    await db.execute(
+        "INSERT INTO feeds(id, url, title) VALUES ('f1', 'http://x.com/feed', 'F')"
+    )
+    await db.execute(
+        "INSERT INTO items(id, feed_id, guid, title, media_url, media_type, pub_date) "
+        "VALUES ('i1', 'f1', 'g1', 'T', 'http://x.com/img.jpg', 'image', datetime('now'))"
+    )
+    await db.commit()
+
+    monkeypatch.setattr(media_mod, "get_http_client", lambda: httpx.AsyncClient())
+    resp = await client.post("/api/prefetch/hint", json={"item_id": "i1"})
+    assert resp.status_code == 200
+    assert resp.json() == {"status": "ok"}
+
+
+async def test_prefetch_hint_missing_item_id(client: AsyncClient) -> None:
+    resp = await client.post("/api/prefetch/hint", json={})
+    assert resp.status_code == 422
+
+
+# ---------------------------------------------------------------------------
+# GET /api/status tests
+# ---------------------------------------------------------------------------
+
+
+async def test_status(
+    client: AsyncClient, db: aiosqlite.Connection, tmp_path: object, monkeypatch: object
+) -> None:
+    import src.media.cache as cache_mod
+
+    monkeypatch.setattr(cache_mod.settings, "cache_dir", str(tmp_path))
+
+    await db.execute(
+        "INSERT INTO feeds(id, url, title) VALUES ('f1', 'http://x.com/feed', 'F')"
+    )
+    await db.execute(
+        "INSERT INTO items(id, feed_id, guid, title, media_url, media_type, pub_date) "
+        "VALUES ('i1', 'f1', 'g1', 'T', 'http://x.com/img.jpg', 'image', datetime('now'))"
+    )
+    await db.commit()
+
+    resp = await client.get("/api/status")
+    assert resp.status_code == 200
+    data = resp.json()
+    assert data["feeds"] == 1
+    assert data["items_total"] == 1
+    assert data["items_unseen"] == 1
+    assert "cache_size_mb" in data
+    assert "last_opml_sync" in data
+
+
+async def test_status_empty(client: AsyncClient, tmp_path: object, monkeypatch: object) -> None:
+    import src.media.cache as cache_mod
+
+    monkeypatch.setattr(cache_mod.settings, "cache_dir", str(tmp_path))
+
+    resp = await client.get("/api/status")
+    assert resp.status_code == 200
+    data = resp.json()
+    assert data["feeds"] == 0
+    assert data["items_total"] == 0
+    assert data["items_unseen"] == 0
+    assert data["cache_size_mb"] == 0.0
