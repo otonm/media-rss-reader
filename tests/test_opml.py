@@ -49,3 +49,10 @@ def test_parse_uses_url_as_fallback_title(tmp_path: Path) -> None:
     f.write_text(opml)
     feeds = parse_opml(str(f))
     assert feeds[0]["title"] == "https://example.com/no-title.xml"
+
+
+def test_parse_malformed_opml(tmp_path: Path) -> None:
+    f = tmp_path / "bad.opml"
+    f.write_text("<<<not valid xml>>>")
+    feeds = parse_opml(str(f))
+    assert feeds == []
