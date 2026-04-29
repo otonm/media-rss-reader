@@ -1,4 +1,4 @@
-import time
+import asyncio
 from pathlib import Path
 
 import pytest
@@ -29,7 +29,7 @@ async def test_evict_by_count(
     monkeypatch.setattr(cache_mod.settings, "cache_max_age_hours", 9999)
     for i in range(3):
         (tmp_path / f"file{i}").write_bytes(b"x")
-        time.sleep(0.01)  # noqa: ASYNC251
+        await asyncio.sleep(0.01)
     await cache_mod.evict()
     assert len(list(tmp_path.iterdir())) == 2  # noqa: ASYNC240
 
