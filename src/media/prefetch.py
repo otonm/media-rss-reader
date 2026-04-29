@@ -5,7 +5,7 @@ import aiosqlite
 import httpx
 
 from src.config import settings
-from src.media.cache import _cache_path, cache_read
+from src.media.cache import cache_read, cache_write
 
 logger = logging.getLogger(__name__)
 
@@ -15,10 +15,8 @@ async def _warm(url: str, client: httpx.AsyncClient) -> None:
         return
     try:
         response = await client.get(url, follow_redirects=True, timeout=30)
-        data = await response.aread()
-        path = _cache_path(url)
-        path.parent.mkdir(parents=True, exist_ok=True)
-        path.write_bytes(data)  # noqa: ASYNC240
+        if response.is_success:
+            await cache_write(url, await response.aread())
     except Exception as exc:  # pragma: no cover
         logger.debug("prefetch failed for %s: %s", url, exc)
 
