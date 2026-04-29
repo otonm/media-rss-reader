@@ -1,4 +1,4 @@
-from collections.abc import AsyncGenerator
+from collections.abc import AsyncGenerator, AsyncIterator
 
 import aiosqlite
 import pytest
@@ -37,7 +37,7 @@ async def client(db: aiosqlite.Connection) -> AsyncGenerator[HttpxAsyncClient]:
     test_app.include_router(items_router.router, prefix="/api")
     test_app.include_router(media_router.router, prefix="/api")
 
-    async def _override_db() -> AsyncGenerator[aiosqlite.Connection]:
+    async def _override_db() -> AsyncIterator[aiosqlite.Connection]:
         yield db
 
     test_app.dependency_overrides[get_db] = _override_db
