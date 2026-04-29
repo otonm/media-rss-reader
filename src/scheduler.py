@@ -1,3 +1,4 @@
+import datetime
 import logging
 
 import aiosqlite
@@ -11,6 +12,7 @@ logger = logging.getLogger(__name__)
 
 _scheduler: AsyncIOScheduler | None = None
 _client: httpx.AsyncClient | None = None
+_last_opml_sync: datetime.datetime | None = None
 
 
 def get_http_client() -> httpx.AsyncClient:
@@ -19,13 +21,23 @@ def get_http_client() -> httpx.AsyncClient:
     return _client
 
 
+def get_last_opml_sync() -> datetime.datetime | None:
+    return _last_opml_sync
+
+
+async def _opml_sync_job(db: aiosqlite.Connection, opml_path: str, client: httpx.AsyncClient) -> None:
+    global _last_opml_sync  # noqa: PLW0603
+    await opml_sync(db, opml_path, client)
+    _last_opml_sync = datetime.datetime.now(datetime.UTC)
+
+
 async def start_scheduler(db: aiosqlite.Connection) -> None:
     global _scheduler, _client  # noqa: PLW0603
     _client = httpx.AsyncClient()
     _scheduler = AsyncIOScheduler()
 
     _scheduler.add_job(
-        opml_sync,
+        _opml_sync_job,
         "interval",
         seconds=settings.opml_sync_interval,
         args=[db, settings.opml_path, _client],
@@ -41,6 +53,8 @@ async def start_scheduler(db: aiosqlite.Connection) -> None:
     _scheduler.start()
     try:
         await opml_sync(db, settings.opml_path, _client)
+        global _last_opml_sync  # noqa: PLW0603
+        _last_opml_sync = datetime.datetime.now(datetime.UTC)
     except Exception as exc:
         logger.warning("Initial OPML sync failed (will retry on schedule): %s", exc)
 

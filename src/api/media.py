@@ -11,7 +11,7 @@ from src.config import settings
 from src.db.connection import get_db
 from src.media.cache import cache_read, cache_write
 from src.media.prefetch import prefetch_ahead
-from src.scheduler import get_http_client
+from src.scheduler import get_http_client, get_last_opml_sync
 
 router = APIRouter()
 
@@ -69,10 +69,11 @@ async def get_status(
     if cache_dir.exists():  # noqa: ASYNC240
         cache_size_mb = sum(f.stat().st_size for f in cache_dir.iterdir() if f.is_file()) / (1024 * 1024)  # noqa: ASYNC240
 
+    last_sync = get_last_opml_sync()
     return {
         "feeds": feeds_count,
         "items_total": items_total,
         "items_unseen": items_unseen,
         "cache_size_mb": round(cache_size_mb, 2),
-        "last_opml_sync": None,
+        "last_opml_sync": last_sync.isoformat() if last_sync else None,
     }
