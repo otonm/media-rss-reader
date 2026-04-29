@@ -1,0 +1,103 @@
+/* -----------------------------------------------------------------------
+   Theming
+   ----------------------------------------------------------------------- */
+html[data-theme="dark"] {
+  --bg: #111;
+  --fg: #eee;
+  --accent: #888;
+}
+
+html[data-theme="light"] {
+  --bg: #fff;
+  --fg: #111;
+  --accent: #666;
+}
+
+/* -----------------------------------------------------------------------
+   Base
+   ----------------------------------------------------------------------- */
+body {
+  background: var(--bg);
+  color: var(--fg);
+  margin: 0;
+  font-family: sans-serif;
+}
+
+/* -----------------------------------------------------------------------
+   Scroll view
+   ----------------------------------------------------------------------- */
+#scroll-view {
+  height: 100vh;
+  overflow-y: auto;
+}
+
+.media-item {
+  max-width: 100%;
+  display: block;
+  margin: 0 auto 2rem;
+}
+
+.media-item img,
+.media-item video {
+  max-width: 100%;
+  max-height: 90vh;
+  display: block;
+  margin: 0 auto;
+  object-fit: contain;
+}
+
+/* -----------------------------------------------------------------------
+   Slideshow view
+   ----------------------------------------------------------------------- */
+#slideshow-view {
+  position: fixed;
+  inset: 0;
+  background: var(--bg);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.slide-layer {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  opacity: 0;
+  transition: opacity var(--slideshow-transition-ms, 400ms);
+}
+
+.slide-layer.active {
+  opacity: 1;
+}
+
+.slide-layer img,
+.slide-layer video {
+  max-width: 100%;
+  max-height: 100vh;
+  object-fit: contain;
+}
+
+/* -----------------------------------------------------------------------
+   Controls bar
+   ----------------------------------------------------------------------- */
+#controls {
+  position: fixed;
+  bottom: 0;
+  left: 0;
+  right: 0;
+  padding: 0.5rem 1rem;
+  background: rgba(0, 0, 0, 0.5);
+  color: #ccc;
+  font-size: 0.75rem;
+  display: flex;
+  gap: 1.5rem;
+}
+
+/* -----------------------------------------------------------------------
+   Utility
+   ----------------------------------------------------------------------- */
+.hidden {
+  display: none !important;
+}
