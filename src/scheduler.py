@@ -41,8 +41,8 @@ async def start_scheduler(db: aiosqlite.Connection) -> None:
     _scheduler.start()
     try:
         await opml_sync(db, settings.opml_path, _client)
-    except Exception:
-        logger.warning("Initial OPML sync failed (file may not exist yet)")
+    except Exception as exc:
+        logger.warning("Initial OPML sync failed (will retry on schedule): %s", exc)
 
 
 async def stop_scheduler() -> None:
