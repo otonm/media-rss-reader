@@ -1,0 +1,55 @@
+from collections.abc import AsyncGenerator
+from contextlib import asynccontextmanager
+from pathlib import Path
+
+from fastapi import FastAPI
+from fastapi.responses import HTMLResponse
+from fastapi.staticfiles import StaticFiles
+
+from src.api import feeds, items, media
+from src.config import settings
+from src.db.connection import open_db
+from src.db.migrations import run_migrations
+from src.db.schema import create_schema
+from src.scheduler import start_scheduler, stop_scheduler
+
+_static_dir = Path(__file__).parent / "static"
+_index_path = _static_dir / "index.html"
+
+
+def _injected_html() -> str:
+    if not _index_path.exists():
+        return ""
+    style = (
+        f"<style>:root{{"
+        f"--slideshow-transition-ms:{settings.slideshow_transition_ms}ms;"
+        f"--image-display-delay-ms:{settings.image_display_delay_ms}ms"
+        f"}}</style>"
+    )
+    return _index_path.read_text().replace("<!-- SLIDESHOW_TRANSITION -->", style)
+
+
+@asynccontextmanager
+async def lifespan(app: FastAPI) -> AsyncGenerator[None]:
+    db = await open_db(settings.db_path)
+    await create_schema(db)
+    await run_migrations(db)
+    app.state.db = db
+    await start_scheduler(db)
+    yield
+    await stop_scheduler()
+    await db.close()
+
+
+app = FastAPI(lifespan=lifespan)
+app.include_router(feeds.router, prefix="/api")
+app.include_router(items.router, prefix="/api")
+app.include_router(media.router, prefix="/api")
+
+if _static_dir.exists():
+    app.mount("/static", StaticFiles(directory=str(_static_dir)), name="static")
+
+
+@app.get("/", response_class=HTMLResponse)
+async def index() -> str:
+    return _injected_html()
