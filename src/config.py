@@ -3,7 +3,7 @@ from pydantic_settings import BaseSettings
 
 class Settings(BaseSettings):
     opml_path: str = "/data/feeds.opml"
-    db_path: str = "/data/reader.db"
+    db_path: str = "/data/db/reader.db"
     opml_sync_interval: int = 3600
     feed_refresh_interval: int = 900
     cache_dir: str = "/cache"

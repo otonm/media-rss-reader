@@ -5,7 +5,7 @@ services:
       - "8080:8080"
     volumes:
       - ./feeds.opml:/data/feeds.opml:ro
-      - reader_data:/data
+      - reader_data:/data/db
       - media_cache:/cache
     env_file:
       - .env
