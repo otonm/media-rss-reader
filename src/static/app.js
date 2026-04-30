@@ -11,7 +11,8 @@ let items = [];           // all loaded items
 let currentIndex = 0;     // index into items[]
 let page = 0;             // next page to fetch
 let loading = false;      // prevent concurrent fetches
-let autoScrollTimer = null;  // timeout handle
+let autoScrollRafId = null;   // requestAnimationFrame handle
+let autoScrollPaused = false; // paused waiting for video/gif
 let autoScroll = false;   // auto-scroll active?
 let slideshowMode = false; // slideshow or scroll mode
 let activeSlide = "a";    // which slide layer is currently visible
@@ -24,6 +25,7 @@ const IMAGE_DELAY_MS = parseInt(
   getComputedStyle(document.documentElement).getPropertyValue("--image-display-delay-ms").trim() || "5000",
   10,
 );
+const AUTO_SCROLL_SPEED = 1.5; // px per frame (~90px/s at 60fps)
 
 // ---------------------------------------------------------------------------
 // 4. Helper functions
@@ -45,22 +47,29 @@ function createMediaEl(item) {
     el.controls = false;
     el.muted = muted;
     el.loop = false;
+    el.autoplay = true;
     el.addEventListener("mouseenter", () => { el.controls = true; });
     el.addEventListener("mouseleave", () => { el.controls = false; });
-    el.addEventListener("ended", () => advance(1));
+    el.addEventListener("ended", () => { if (!autoScroll) advance(1); });
     el.addEventListener("loadeddata", () => wrap.classList.add("loaded"));
     el.addEventListener("error", () => wrap.classList.add("loaded"));
+    mediaObserver.observe(el);
   } else {
     el = document.createElement("img");
     el.src = `/api/media/proxy?url=${encodeURIComponent(item.media_url)}`;
     el.loading = "lazy";
+    if (item.media_type === "gif") {
+      el.dataset.type = "gif";
+      mediaObserver.observe(el);
+    }
     el.addEventListener("load", () => wrap.classList.add("loaded"));
     el.addEventListener("error", () => wrap.classList.add("loaded"));
   }
   wrap.appendChild(el);
 
-  // Register with the seen observer
+  // Register with observers
   seenObserver.observe(wrap);
+  viewObserver.observe(wrap);
 
   return wrap;
 }
@@ -102,6 +111,26 @@ function triggerPrefetch(itemId) {
   }).catch(() => {}); // fire and forget
 }
 
+async function getGifDuration(url) {
+  if (!url.startsWith("/api/media/proxy?")) return IMAGE_DELAY_MS;
+  let buf;
+  try {
+    const resp = await fetch(url);
+    if (!resp.ok) return IMAGE_DELAY_MS;
+    buf = new Uint8Array(await resp.arrayBuffer());
+  } catch {
+    return IMAGE_DELAY_MS;
+  }
+  let ms = 0;
+  for (let i = 0; i + 5 < buf.length; i++) {
+    if (buf[i] === 0x21 && buf[i + 1] === 0xF9 && buf[i + 2] === 0x04) {
+      ms += (buf[i + 4] + buf[i + 5] * 256) * 10; // 1/100s → ms
+      i += 5;
+    }
+  }
+  return ms > 0 ? Math.min(Math.max(ms, 50), 60_000) : IMAGE_DELAY_MS;
+}
+
 function maybeLoadMore() {
   if (items.length - currentIndex < 10) fetchItems();
 }
@@ -124,6 +153,76 @@ const seenObserver = new IntersectionObserver((entries) => {
 }, { threshold: 0.8 });
 
 // ---------------------------------------------------------------------------
+// 5b. Viewport observer — keeps currentIndex in sync during native scroll
+// ---------------------------------------------------------------------------
+const viewObserver = new IntersectionObserver((entries) => {
+  entries.forEach(entry => {
+    if (!entry.isIntersecting) return;
+    const idx = items.findIndex(i => i.id === entry.target.dataset.id);
+    if (idx !== -1) currentIndex = idx;
+  });
+}, { threshold: 0.5 });
+
+// ---------------------------------------------------------------------------
+// 5c. Media observer — autoplay videos; pause/resume auto-scroll for media
+// ---------------------------------------------------------------------------
+const mediaObserver = new IntersectionObserver((entries) => {
+  entries.forEach(entry => {
+    const el = entry.target;
+    const isVideo = el.tagName === "VIDEO";
+    const isGif = el.tagName === "IMG" && el.dataset.type === "gif";
+
+    if (entry.isIntersecting) {
+      // Always play videos when in view
+      if (isVideo) el.play().catch(() => {});
+
+      // Auto-scroll: pause drift for video or GIF
+      if (autoScroll && !autoScrollPaused && (isVideo || isGif)) {
+        autoScrollPaused = true;
+        stopAutoScroll();
+
+        if (isVideo) {
+          el.play().catch(() => {});
+          const onEnded = () => {
+            el.removeEventListener("ended", onEnded);
+            advance(1);
+            autoScrollPaused = false;
+            if (autoScroll) startAutoScroll();
+          };
+          el.addEventListener("ended", onEnded);
+        } else {
+          // GIF: parse duration (cached on item object) then advance
+          const item = items.find(
+            i => el.getAttribute("src") === `/api/media/proxy?url=${encodeURIComponent(i.media_url)}`
+          );
+          const resume = (duration) => {
+            setTimeout(() => {
+              advance(1);
+              autoScrollPaused = false;
+              if (autoScroll) startAutoScroll();
+            }, duration);
+          };
+          if (!item) {
+            resume(IMAGE_DELAY_MS);
+          } else if (item.gifDuration) {
+            resume(item.gifDuration);
+          } else {
+            const fetchUrl = `/api/media/proxy?url=${encodeURIComponent(item.media_url)}`;
+            getGifDuration(fetchUrl).then(duration => {
+              item.gifDuration = duration;
+              resume(duration);
+            });
+          }
+        }
+      }
+    } else {
+      // Pause videos when out of view
+      if (isVideo) el.pause();
+    }
+  });
+}, { threshold: 0.85 });
+
+// ---------------------------------------------------------------------------
 // 6. Navigation
 // ---------------------------------------------------------------------------
 
@@ -138,12 +237,6 @@ function advance(delta) {
     scrollToIndex(currentIndex);
   }
   maybeLoadMore();
-
-  // Reset auto-scroll timer on manual advance
-  if (autoScroll) {
-    clearTimeout(autoScrollTimer);
-    scheduleAutoAdvance();
-  }
 }
 
 function scrollToIndex(idx) {
@@ -152,34 +245,36 @@ function scrollToIndex(idx) {
 }
 
 // ---------------------------------------------------------------------------
-// 7. Auto-scroll
+// 7. Auto-scroll — continuous RAF drift
 // ---------------------------------------------------------------------------
 
-function scheduleAutoAdvance() {
-  if (!autoScroll) return;
-  const item = items[currentIndex];
-  if (!item) return;
+function rafAutoScroll() {
+  if (!autoScroll || autoScrollPaused) return;
+  document.getElementById("scroll-view").scrollBy(0, AUTO_SCROLL_SPEED);
+  autoScrollRafId = requestAnimationFrame(rafAutoScroll);
+}
 
-  if (item.media_type === "video") {
-    // Video advances via the "ended" event — nothing to schedule here
-    return;
+function startAutoScroll() {
+  autoScrollPaused = false;
+  autoScrollRafId = requestAnimationFrame(rafAutoScroll);
+}
+
+function stopAutoScroll() {
+  if (autoScrollRafId !== null) {
+    cancelAnimationFrame(autoScrollRafId);
+    autoScrollRafId = null;
   }
-
-  autoScrollTimer = setTimeout(() => {
-    advance(1);
-    scheduleAutoAdvance();
-  }, IMAGE_DELAY_MS);
 }
 
 function toggleAutoScroll() {
   autoScroll = !autoScroll;
   if (autoScroll) {
-    scheduleAutoAdvance();
+    startAutoScroll();
   } else {
-    clearTimeout(autoScrollTimer);
-    autoScrollTimer = null;
+    stopAutoScroll();
+    autoScrollPaused = false;
   }
-  updateFab();
+  updateControls();
 }
 
 // ---------------------------------------------------------------------------
@@ -214,7 +309,7 @@ function toggleSlideshow() {
   if (slideshowMode && items.length > 0) {
     showSlide(items[currentIndex]);
   }
-  updateFab();
+  updateControls();
 }
 
 // ---------------------------------------------------------------------------
@@ -224,7 +319,7 @@ function toggleSlideshow() {
 function toggleMute() {
   muted = !muted;
   document.querySelectorAll("video").forEach(v => { v.muted = muted; });
-  updateFab();
+  updateControls();
 }
 
 // ---------------------------------------------------------------------------
@@ -236,7 +331,7 @@ function toggleTheme() {
   const next = current === "dark" ? "light" : "dark";
   document.documentElement.setAttribute("data-theme", next);
   localStorage.setItem("theme", next);
-  updateFab();
+  updateControls();
 }
 
 // ---------------------------------------------------------------------------
@@ -274,24 +369,24 @@ document.addEventListener("keydown", e => {
 });
 
 // ---------------------------------------------------------------------------
-// 12. Mouse wheel
+// 12. Controls (FAB + desktop icon bar)
 // ---------------------------------------------------------------------------
 
-document.addEventListener("wheel", e => {
-  if (e.deltaY > 0) advance(1);
-  else if (e.deltaY < 0) advance(-1);
-}, { passive: true });
-
-// ---------------------------------------------------------------------------
-// 13. FAB
-// ---------------------------------------------------------------------------
-
-function updateFab() {
+function updateControls() {
   const theme = document.documentElement.getAttribute("data-theme") || "dark";
+  const icon = theme === "dark" ? "🌙" : "☀";
+
+  // Mobile FAB buttons
   document.getElementById("fab-autoscroll").classList.toggle("active", autoScroll);
   document.getElementById("fab-slideshow").classList.toggle("active", slideshowMode);
   document.getElementById("fab-mute").classList.toggle("active", muted);
-  document.getElementById("fab-theme").textContent = theme === "dark" ? "🌙" : "☀";
+  document.getElementById("fab-theme").textContent = icon;
+
+  // Desktop ctrl bar buttons
+  document.getElementById("ctrl-autoscroll").classList.toggle("active", autoScroll);
+  document.getElementById("ctrl-slideshow").classList.toggle("active", slideshowMode);
+  document.getElementById("ctrl-mute").classList.toggle("active", muted);
+  document.getElementById("ctrl-theme").textContent = icon;
 }
 
 function toggleFab() {
@@ -311,7 +406,7 @@ document.addEventListener("click", e => {
 });
 
 // ---------------------------------------------------------------------------
-// 14. Swipe gestures (TikTok-style)
+// 13. Swipe gestures (TikTok-style)
 // ---------------------------------------------------------------------------
 
 let _tx = 0, _ty = 0;
@@ -336,14 +431,14 @@ document.addEventListener("touchend", e => {
 }, { passive: true });
 
 // ---------------------------------------------------------------------------
-// 15. Startup sequence
+// 14. Startup sequence
 // ---------------------------------------------------------------------------
 
 // Restore view mode from localStorage (theme already applied at top of file)
 if (localStorage.getItem("mode") === "slideshow") toggleSlideshow();
 
-// Sync FAB to initial state
-updateFab();
+// Sync controls to initial state
+updateControls();
 
 // Initial item fetch
 fetchItems();
