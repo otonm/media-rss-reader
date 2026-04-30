@@ -34,19 +34,28 @@ function createMediaEl(item) {
   wrap.className = "media-item";
   wrap.dataset.id = item.id;
 
+  const spinner = document.createElement("div");
+  spinner.className = "spinner";
+  wrap.appendChild(spinner);
+
   let el;
   if (item.media_type === "video") {
     el = document.createElement("video");
     el.src = `/api/media/proxy?url=${encodeURIComponent(item.media_url)}`;
-    el.controls = true;
+    el.controls = false;
     el.muted = muted;
     el.loop = false;
+    el.addEventListener("mouseenter", () => { el.controls = true; });
+    el.addEventListener("mouseleave", () => { el.controls = false; });
     el.addEventListener("ended", () => advance(1));
+    el.addEventListener("loadeddata", () => wrap.classList.add("loaded"));
+    el.addEventListener("error", () => wrap.classList.add("loaded"));
   } else {
     el = document.createElement("img");
     el.src = `/api/media/proxy?url=${encodeURIComponent(item.media_url)}`;
     el.loading = "lazy";
-    if (item.title) el.alt = item.title;
+    el.addEventListener("load", () => wrap.classList.add("loaded"));
+    el.addEventListener("error", () => wrap.classList.add("loaded"));
   }
   wrap.appendChild(el);
 
@@ -63,7 +72,11 @@ async function fetchItems() {
     const resp = await fetch(`/api/items?unseen=false&page=${page}&size=50`);
     if (!resp.ok) return;
     const newItems = await resp.json();
-    if (!newItems.length) return;
+    if (!newItems.length) {
+      if (page === 0) document.getElementById("empty-state").classList.remove("hidden");
+      return;
+    }
+    document.getElementById("empty-state").classList.add("hidden");
 
     items = items.concat(newItems);
     page++;
@@ -166,6 +179,7 @@ function toggleAutoScroll() {
     clearTimeout(autoScrollTimer);
     autoScrollTimer = null;
   }
+  updateFab();
 }
 
 // ---------------------------------------------------------------------------
@@ -200,6 +214,7 @@ function toggleSlideshow() {
   if (slideshowMode && items.length > 0) {
     showSlide(items[currentIndex]);
   }
+  updateFab();
 }
 
 // ---------------------------------------------------------------------------
@@ -209,6 +224,7 @@ function toggleSlideshow() {
 function toggleMute() {
   muted = !muted;
   document.querySelectorAll("video").forEach(v => { v.muted = muted; });
+  updateFab();
 }
 
 // ---------------------------------------------------------------------------
@@ -220,6 +236,7 @@ function toggleTheme() {
   const next = current === "dark" ? "light" : "dark";
   document.documentElement.setAttribute("data-theme", next);
   localStorage.setItem("theme", next);
+  updateFab();
 }
 
 // ---------------------------------------------------------------------------
@@ -266,11 +283,67 @@ document.addEventListener("wheel", e => {
 }, { passive: true });
 
 // ---------------------------------------------------------------------------
-// 13. Startup sequence
+// 13. FAB
+// ---------------------------------------------------------------------------
+
+function updateFab() {
+  const theme = document.documentElement.getAttribute("data-theme") || "dark";
+  document.getElementById("fab-autoscroll").classList.toggle("active", autoScroll);
+  document.getElementById("fab-slideshow").classList.toggle("active", slideshowMode);
+  document.getElementById("fab-mute").classList.toggle("active", muted);
+  document.getElementById("fab-theme").textContent = theme === "dark" ? "🌙" : "☀";
+}
+
+function toggleFab() {
+  const menu = document.getElementById("fab-menu");
+  menu.classList.toggle("hidden");
+  document.getElementById("fab").textContent = menu.classList.contains("hidden") ? "☰" : "✕";
+}
+
+document.addEventListener("click", e => {
+  if (!e.target.closest("#fab-container")) {
+    const menu = document.getElementById("fab-menu");
+    if (!menu.classList.contains("hidden")) {
+      menu.classList.add("hidden");
+      document.getElementById("fab").textContent = "☰";
+    }
+  }
+});
+
+// ---------------------------------------------------------------------------
+// 14. Swipe gestures (TikTok-style)
+// ---------------------------------------------------------------------------
+
+let _tx = 0, _ty = 0;
+const SWIPE_MIN = 50;
+
+document.addEventListener("touchstart", e => {
+  _tx = e.touches[0].clientX;
+  _ty = e.touches[0].clientY;
+}, { passive: true });
+
+document.addEventListener("touchend", e => {
+  const dx = e.changedTouches[0].clientX - _tx;
+  const dy = e.changedTouches[0].clientY - _ty;
+  if (Math.abs(dx) < SWIPE_MIN && Math.abs(dy) < SWIPE_MIN) return;
+
+  if (slideshowMode) {
+    const forward = Math.abs(dy) >= Math.abs(dx) ? dy < 0 : dx < 0;
+    advance(forward ? 1 : -1);
+  } else {
+    if (Math.abs(dy) >= Math.abs(dx)) advance(dy < 0 ? 1 : -1);
+  }
+}, { passive: true });
+
+// ---------------------------------------------------------------------------
+// 15. Startup sequence
 // ---------------------------------------------------------------------------
 
 // Restore view mode from localStorage (theme already applied at top of file)
 if (localStorage.getItem("mode") === "slideshow") toggleSlideshow();
+
+// Sync FAB to initial state
+updateFab();
 
 // Initial item fetch
 fetchItems();
