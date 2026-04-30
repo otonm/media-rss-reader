@@ -2,7 +2,7 @@ from collections.abc import AsyncGenerator
 from contextlib import asynccontextmanager
 from pathlib import Path
 
-from fastapi import FastAPI
+from fastapi import FastAPI, Request
 from fastapi.responses import HTMLResponse
 from fastapi.staticfiles import StaticFiles
 
@@ -15,7 +15,6 @@ from src.scheduler import start_scheduler, stop_scheduler
 
 _static_dir = Path(__file__).parent / "static"
 _index_path = _static_dir / "index.html"
-_cached_html: str = ""
 
 
 def _build_html() -> str:
@@ -32,8 +31,7 @@ def _build_html() -> str:
 
 @asynccontextmanager
 async def lifespan(app: FastAPI) -> AsyncGenerator[None]:
-    global _cached_html  # noqa: PLW0603
-    _cached_html = _build_html()
+    app.state.html = _build_html()
     db = await open_db(settings.db_path)
     await create_schema(db)
     await run_migrations(db)
@@ -54,5 +52,5 @@ if _static_dir.exists():
 
 
 @app.get("/", response_class=HTMLResponse)
-async def index() -> str:
-    return _cached_html
+async def index(request: Request) -> str:
+    return request.app.state.html

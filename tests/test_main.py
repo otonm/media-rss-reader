@@ -20,8 +20,8 @@ async def test_index_html_served(tmp_path: Path) -> None:
     ):
         from src.main import app
 
-        # Force rebuild of HTML (since we patched the path)
-        main_mod._cached_html = main_mod._build_html()
+        # Force rebuild of HTML (since we patched the path) and store in app.state
+        app.state.html = main_mod._build_html()
 
         async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as c:
             resp = await c.get("/")
