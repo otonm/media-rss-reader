@@ -17,10 +17,10 @@
     <div class="slide-layer" id="slide-b"></div>
   </div>
   <div id="controls">
-    <button class="ctrl-btn" id="ctrl-autoscroll" title="Auto-scroll [a]" onclick="toggleAutoScroll()">⟳</button>
-    <button class="ctrl-btn" id="ctrl-slideshow"  title="Slideshow [s]"   onclick="toggleSlideshow()">⊞</button>
-    <button class="ctrl-btn" id="ctrl-mute"       title="Mute [m]"        onclick="toggleMute()">🔇</button>
-    <button class="ctrl-btn" id="ctrl-theme"      title="Theme [d]"       onclick="toggleTheme()">🌙</button>
+    <button class="ctrl-btn" id="ctrl-autoscroll" title="Auto-scroll [a]" onclick="toggleAutoScroll();updateControls()">⟳</button>
+    <button class="ctrl-btn" id="ctrl-slideshow"  title="Slideshow [s]"   onclick="toggleSlideshow();updateControls()">⊞</button>
+    <button class="ctrl-btn" id="ctrl-mute"       title="Mute [m]"        onclick="toggleMute();updateControls()">🔇</button>
+    <button class="ctrl-btn" id="ctrl-theme"      title="Theme [d]"       onclick="toggleTheme();updateControls()">🌙</button>
   </div>
   <div id="fab-container">
     <div id="fab-menu" class="hidden">
