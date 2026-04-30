@@ -17,18 +17,17 @@
     <div class="slide-layer" id="slide-b"></div>
   </div>
   <div id="controls">
-    <span>j/k navigate</span>
-    <span>a auto-scroll</span>
-    <span>s slideshow</span>
-    <span>m mute</span>
-    <span>d theme</span>
+    <button class="ctrl-btn" id="ctrl-autoscroll" title="Auto-scroll [a]" onclick="toggleAutoScroll()">⟳</button>
+    <button class="ctrl-btn" id="ctrl-slideshow"  title="Slideshow [s]"   onclick="toggleSlideshow()">⊞</button>
+    <button class="ctrl-btn" id="ctrl-mute"       title="Mute [m]"        onclick="toggleMute()">🔇</button>
+    <button class="ctrl-btn" id="ctrl-theme"      title="Theme [d]"       onclick="toggleTheme()">🌙</button>
   </div>
   <div id="fab-container">
     <div id="fab-menu" class="hidden">
-      <button class="fab-btn" id="fab-theme"      title="Theme"       onclick="toggleTheme();updateFab()">🌙</button>
-      <button class="fab-btn" id="fab-mute"       title="Mute"        onclick="toggleMute();updateFab()">🔇</button>
-      <button class="fab-btn" id="fab-slideshow"  title="Slideshow"   onclick="toggleSlideshow();updateFab()">⊞</button>
-      <button class="fab-btn" id="fab-autoscroll" title="Auto-scroll" onclick="toggleAutoScroll();updateFab()">⟳</button>
+      <button class="fab-btn" id="fab-theme"      title="Theme"       onclick="toggleTheme();updateControls()">🌙</button>
+      <button class="fab-btn" id="fab-mute"       title="Mute"        onclick="toggleMute();updateControls()">🔇</button>
+      <button class="fab-btn" id="fab-slideshow"  title="Slideshow"   onclick="toggleSlideshow();updateControls()">⊞</button>
+      <button class="fab-btn" id="fab-autoscroll" title="Auto-scroll" onclick="toggleAutoScroll();updateControls()">⟳</button>
     </div>
     <button id="fab" title="Menu" onclick="toggleFab()">☰</button>
   </div>
