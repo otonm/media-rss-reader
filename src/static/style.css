@@ -104,19 +104,65 @@ body {
 }
 
 /* -----------------------------------------------------------------------
-   Controls bar
+   Controls bar (desktop icon row)
    ----------------------------------------------------------------------- */
 #controls {
   position: fixed;
-  bottom: 0;
-  left: 0;
-  right: 0;
-  padding: 0.5rem 1rem;
-  background: rgba(0, 0, 0, 0.5);
-  color: #ccc;
-  font-size: 0.75rem;
+  bottom: 1.25rem;
+  left: 1rem;
+  z-index: 100;
   display: flex;
-  gap: 1.5rem;
+  gap: 0.5rem;
+  align-items: center;
+  background: rgba(20, 20, 30, 0.82);
+  backdrop-filter: blur(12px);
+  -webkit-backdrop-filter: blur(12px);
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  border-radius: 24px;
+  padding: 0.5rem 0.6rem;
+}
+
+.ctrl-btn {
+  position: relative;
+  width: 40px;
+  height: 40px;
+  border-radius: 50%;
+  border: none;
+  background: rgba(255, 255, 255, 0.08);
+  color: #ddd;
+  font-size: 1rem;
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  transition: background 0.15s;
+}
+
+.ctrl-btn.active {
+  background: rgba(108, 142, 191, 0.5);
+  color: #fff;
+}
+
+.ctrl-btn::after {
+  content: attr(title);
+  position: absolute;
+  bottom: calc(100% + 8px);
+  left: 50%;
+  transform: translateX(-50%);
+  background: rgba(20, 20, 30, 0.95);
+  color: #eee;
+  font-size: 0.7rem;
+  padding: 4px 8px;
+  border-radius: 6px;
+  border: 1px solid rgba(255, 255, 255, 0.15);
+  white-space: nowrap;
+  pointer-events: none;
+  opacity: 0;
+  transition: opacity 0.15s;
+}
+
+.ctrl-btn:hover::after {
+  opacity: 1;
 }
 
 /* -----------------------------------------------------------------------
@@ -200,6 +246,7 @@ body {
    ----------------------------------------------------------------------- */
 @media (min-width: 1024px) {
   .media-item { max-width: 900px; }
+  #fab-container { display: none; }
 }
 
 @media (max-width: 767px) {
