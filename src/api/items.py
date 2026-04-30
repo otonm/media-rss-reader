@@ -1,4 +1,4 @@
-from typing import Any
+from typing import Annotated, Any
 
 import aiosqlite
 from fastapi import APIRouter, Depends, HTTPException
@@ -7,6 +7,8 @@ from src.db.connection import get_db
 
 router = APIRouter()
 
+_DbDep = Annotated[aiosqlite.Connection, Depends(get_db)]
+
 
 @router.get("/items")
 async def list_items(
@@ -14,7 +16,7 @@ async def list_items(
     feed_id: str | None = None,
     page: int = 0,
     size: int = 50,
-    db: aiosqlite.Connection = Depends(get_db),  # noqa: B008
+    db: _DbDep = None,  # type: ignore[assignment]
 ) -> list[dict[str, Any]]:
     conditions: list[str] = []
     params: list[Any] = []
@@ -43,7 +45,7 @@ async def list_items(
 @router.post("/items/{item_id}/seen")
 async def mark_seen(
     item_id: str,
-    db: aiosqlite.Connection = Depends(get_db),  # noqa: B008
+    db: _DbDep = None,  # type: ignore[assignment]
 ) -> dict[str, str]:
     await db.execute(
         "UPDATE items SET seen_at = datetime('now') WHERE id = ?",

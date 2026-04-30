@@ -1,4 +1,4 @@
-from typing import Any
+from typing import Annotated, Any
 
 import aiosqlite
 from fastapi import APIRouter, Depends
@@ -9,7 +9,7 @@ router = APIRouter()
 
 
 @router.get("/feeds")
-async def list_feeds(db: aiosqlite.Connection = Depends(get_db)) -> list[dict[str, Any]]:  # noqa: B008
+async def list_feeds(db: Annotated[aiosqlite.Connection, Depends(get_db)]) -> list[dict[str, Any]]:
     async with db.execute(
         """SELECT f.id, f.title, f.url, f.last_fetched_at,
                   COUNT(i.id)                                  AS item_count,

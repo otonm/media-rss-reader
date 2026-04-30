@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from pathlib import Path
-from typing import Any
+from typing import Annotated, Any
 
 import aiosqlite
 from fastapi import APIRouter, Depends, HTTPException, Query
@@ -15,9 +15,11 @@ from src.scheduler import get_http_client, get_last_opml_sync
 
 router = APIRouter()
 
+_DbDep = Annotated[aiosqlite.Connection, Depends(get_db)]
+
 
 @router.get("/media/proxy", response_model=None)
-async def proxy_media(url: str = Query(...)) -> FileResponse | StreamingResponse:  # noqa: B008
+async def proxy_media(url: str = Query(...)) -> FileResponse | StreamingResponse:
     path = cache_read(url)
     if path is not None:
         return FileResponse(str(path))
@@ -43,7 +45,7 @@ async def proxy_media(url: str = Query(...)) -> FileResponse | StreamingResponse
 @router.post("/prefetch/hint")
 async def prefetch_hint(
     body: dict[str, str],
-    db: aiosqlite.Connection = Depends(get_db),  # noqa: B008
+    db: _DbDep = None,  # type: ignore[assignment]
 ) -> dict[str, str]:
     item_id = body.get("item_id", "")
     if not item_id:
@@ -55,7 +57,7 @@ async def prefetch_hint(
 
 @router.get("/status")
 async def get_status(
-    db: aiosqlite.Connection = Depends(get_db),  # noqa: B008
+    db: _DbDep = None,  # type: ignore[assignment]
 ) -> dict[str, Any]:
     async with db.execute("SELECT COUNT(*) FROM feeds") as cur:
         feeds_count: int = (await cur.fetchone())[0]
