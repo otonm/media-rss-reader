@@ -181,23 +181,29 @@ const mediaObserver = new IntersectionObserver((entries) => {
     const isGif = el.tagName === "IMG" && el.dataset.type === "gif";
 
     if (entry.isIntersecting) {
-      // Always play videos when in view
-      if (isVideo) el.play().catch(() => {});
-
-      // Auto-scroll: pause drift for video or GIF
+      // Auto-scroll: pause drift for video or GIF, then handle each type
       if (autoScroll && !autoScrollPaused && (isVideo || isGif)) {
         autoScrollPaused = true;
         stopAutoScroll();
 
         if (isVideo) {
-          el.play().catch(() => {});
-          const onEnded = () => {
-            el.removeEventListener("ended", onEnded);
-            advance(1);
-            autoScrollPaused = false;
-            if (autoScroll) startAutoScroll();
+          // Scroll video to top of viewport, then play once scroll settles
+          const wrap = el.closest(".media-item");
+          const scrollView = document.getElementById("scroll-view");
+          wrap.scrollIntoView({ behavior: "smooth", block: "start" });
+
+          let scrollFallbackTimer;
+          const onScrollEnd = () => {
+            clearTimeout(scrollFallbackTimer);
+            el.play().catch(() => {});
+            el.addEventListener("ended", () => {
+              advance(1);
+              autoScrollPaused = false;
+              if (autoScroll) startAutoScroll();
+            }, { once: true });
           };
-          el.addEventListener("ended", onEnded);
+          scrollFallbackTimer = setTimeout(onScrollEnd, 300);
+          scrollView.addEventListener("scrollend", onScrollEnd, { once: true });
         } else {
           // GIF: parse duration (cached on item object) then advance
           const item = items.find(
@@ -222,13 +228,16 @@ const mediaObserver = new IntersectionObserver((entries) => {
             });
           }
         }
+      } else if (isVideo) {
+        // Not in autoscroll mode — play normally when in view
+        el.play().catch(() => {});
       }
     } else {
       // Pause videos when out of view
       if (isVideo) el.pause();
     }
   });
-}, { threshold: 0.85 });
+}, { threshold: 0.5 });
 
 // ---------------------------------------------------------------------------
 // 6. Navigation
