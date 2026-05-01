@@ -17,6 +17,8 @@ let autoScroll = false;   // auto-scroll active?
 let slideshowMode = false; // slideshow or scroll mode
 let activeSlide = "a";    // which slide layer is currently visible
 let muted = true;         // video mute state
+let showSeen = localStorage.getItem("showSeen") === "true";
+let fetchGeneration = 0;
 
 // ---------------------------------------------------------------------------
 // 3. IMAGE_DELAY_MS — read from CSS variable injected by the backend
@@ -35,6 +37,7 @@ function createMediaEl(item) {
   const wrap = document.createElement("div");
   wrap.className = "media-item";
   wrap.dataset.id = item.id;
+  if (item.seen_at) wrap.classList.add("seen");
 
   const spinner = document.createElement("div");
   spinner.className = "spinner";
@@ -77,10 +80,12 @@ function createMediaEl(item) {
 async function fetchItems() {
   if (loading) return;
   loading = true;
+  const gen = ++fetchGeneration;
   try {
-    const resp = await fetch(`/api/items?unseen=false&page=${page}&size=50`);
+    const resp = await fetch(`/api/items?unseen=${showSeen ? "false" : "true"}&page=${page}&size=50`);
     if (!resp.ok) return;
     const newItems = await resp.json();
+    if (gen !== fetchGeneration) return;  // stale response, discard
     if (!newItems.length) {
       if (page === 0) document.getElementById("empty-state").classList.remove("hidden");
       return;
@@ -147,7 +152,10 @@ const seenObserver = new IntersectionObserver((entries) => {
     item.seen_at = "pending"; // prevent double-post
     fetch(`/api/items/${id}/seen`, { method: "POST" })
       .then(r => r.json())
-      .then(data => { item.seen_at = data.seen_at; })
+      .then(data => {
+        item.seen_at = data.seen_at;
+        entry.target.classList.add("seen");
+      })
       .catch(() => {});
   });
 }, { threshold: 0.8 });
@@ -335,6 +343,26 @@ function toggleTheme() {
 }
 
 // ---------------------------------------------------------------------------
+// 10b. Show-seen toggle
+// ---------------------------------------------------------------------------
+
+function toggleShowSeen() {
+  stopAutoScroll();
+  autoScrollPaused = false;
+  showSeen = !showSeen;
+  localStorage.setItem("showSeen", showSeen ? "true" : "false");
+  document.getElementById("feed-list").classList.toggle("feed-list--show-all", showSeen);
+  items = [];
+  currentIndex = 0;
+  page = 0;
+  ++fetchGeneration;  // invalidate any in-flight fetch
+  document.getElementById("feed-list").innerHTML = "";
+  document.getElementById("empty-state").classList.add("hidden");
+  fetchItems();
+  updateControls();
+}
+
+// ---------------------------------------------------------------------------
 // 11. Key bindings
 // ---------------------------------------------------------------------------
 
@@ -387,6 +415,8 @@ function updateControls() {
   document.getElementById("ctrl-slideshow").classList.toggle("active", slideshowMode);
   document.getElementById("ctrl-mute").classList.toggle("active", muted);
   document.getElementById("ctrl-theme").textContent = icon;
+  document.getElementById("fab-show-seen").classList.toggle("active", showSeen);
+  document.getElementById("ctrl-show-seen").classList.toggle("active", showSeen);
 }
 
 function toggleFab() {
@@ -439,6 +469,9 @@ if (localStorage.getItem("mode") === "slideshow") toggleSlideshow();
 
 // Sync controls to initial state
 updateControls();
+
+// Restore show-all badge visibility if showSeen was persisted
+if (showSeen) document.getElementById("feed-list").classList.add("feed-list--show-all");
 
 // Initial item fetch
 fetchItems();

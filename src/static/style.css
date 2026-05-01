@@ -252,3 +252,23 @@ body {
 @media (max-width: 767px) {
   #controls { display: none; }
 }
+
+/* -----------------------------------------------------------------------
+   Seen badge (visible only in show-all mode)
+   ----------------------------------------------------------------------- */
+#feed-list.feed-list--show-all .media-item.seen::after {
+  content: "✓";
+  position: absolute;
+  top: 4px;
+  right: 4px;
+  width: 18px;
+  height: 18px;
+  background: rgba(0, 0, 0, 0.6);
+  color: #fff;
+  border-radius: 50%;
+  font-size: 11px;
+  line-height: 18px;
+  text-align: center;
+  z-index: 2;
+  pointer-events: none;
+}
