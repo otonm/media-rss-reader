@@ -31,10 +31,15 @@ async def list_items(
     params.extend([size, page * size])
 
     query = f"""
+        WITH ranked AS (
+            SELECT *,
+                   ROW_NUMBER() OVER (PARTITION BY feed_id ORDER BY pub_date ASC) AS rn
+            FROM items
+            {where_clause}
+        )
         SELECT id, feed_id, title, media_url, media_type, pub_date, fetched_at, seen_at
-        FROM items
-        {where_clause}
-        ORDER BY pub_date DESC
+        FROM ranked
+        ORDER BY rn ASC, feed_id ASC
         LIMIT ? OFFSET ?
     """
     async with db.execute(query, params) as cur:

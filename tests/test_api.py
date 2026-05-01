@@ -1,4 +1,5 @@
 import aiosqlite
+import pytest
 from httpx import AsyncClient
 
 
@@ -295,3 +296,43 @@ async def test_status_empty(client: AsyncClient, tmp_path: object, monkeypatch: 
     assert data["items_total"] == 0
     assert data["items_unseen"] == 0
     assert data["cache_size_mb"] == 0.0
+
+
+@pytest.mark.asyncio
+async def test_items_interleaved_across_feeds(client: AsyncClient, db: aiosqlite.Connection) -> None:
+    """Items from multiple feeds should be interleaved round-robin, oldest first."""
+    import datetime
+    import hashlib  # noqa: F401
+
+    async def insert_feed(fid: str, url: str) -> None:
+        await db.execute("INSERT INTO feeds (id, url) VALUES (?, ?)", (fid, url))
+
+    async def insert_item(iid: str, feed_id: str, guid: str, pub_offset_days: int) -> None:
+        pub = (datetime.datetime.now(datetime.UTC) - datetime.timedelta(days=pub_offset_days)).isoformat()
+        await db.execute(
+            "INSERT INTO items (id, feed_id, guid, title, media_url, media_type, pub_date, fetched_at) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, datetime('now'))",
+            (iid, feed_id, guid, "t", "http://x.com/a.jpg", "image", pub),
+        )
+
+    fa, fb = "feedA", "feedB"
+    await insert_feed(fa, "http://a.com")
+    await insert_feed(fb, "http://b.com")
+    # Feed A: 3 items (oldest pub_date = 3 days ago)
+    await insert_item("a1", fa, "g1", pub_offset_days=3)
+    await insert_item("a2", fa, "g2", pub_offset_days=2)
+    await insert_item("a3", fa, "g3", pub_offset_days=1)
+    # Feed B: 2 items
+    await insert_item("b1", fb, "g1", pub_offset_days=4)
+    await insert_item("b2", fb, "g2", pub_offset_days=1)
+    await db.commit()
+
+    resp = await client.get("/api/items?page=0&size=10")
+    assert resp.status_code == 200
+    ids = [item["id"] for item in resp.json()]
+
+    # Round 1: rn=1 for each feed — feedA (oldest=3d) and feedB (oldest=4d)
+    # Round 2: rn=2 for each feed
+    # Round 3: only feedA remains (rn=3)
+    # Within each round, feedA < feedB alphabetically
+    assert ids == ["a1", "b1", "a2", "b2", "a3"]
