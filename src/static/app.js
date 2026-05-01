@@ -187,8 +187,9 @@ const mediaObserver = new IntersectionObserver((entries) => {
         delete el.dataset.playing;
       }
       if (isVideo || isGif) {
-        if (el.dataset.scrollPausedHere) {
-          delete el.dataset.scrollPausedHere;
+        delete el.dataset.scrollPausedHere;
+        delete el.dataset.scrollWaited;
+        if (autoScrollPaused) {
           autoScrollPaused = false;
           if (autoScroll) startAutoScroll();
         }
@@ -198,14 +199,19 @@ const mediaObserver = new IntersectionObserver((entries) => {
     }
 
     if (isVideo || isGif) {
-      // Mark entering at 50% — autoscroll keeps running
-      if (!el.dataset.playing) {
+      // Start playing once element is 50 % visible
+      if (!el.dataset.playing && ratio >= 0.5) {
         el.dataset.playing = "1";
         if (isVideo) el.play().catch(() => {});
       }
 
-      // Pause autoscroll only when fully visible (100%)
-      if (ratio >= 1.0 && autoScroll && !autoScrollPaused && !el.dataset.scrollPausedHere) {
+      // Pause autoscroll when element's top edge reaches viewport top
+      const rect  = entry.boundingClientRect;
+      const rootT = entry.rootBounds?.top ?? 0;
+      const topReached = rect.top <= rootT;
+
+      if (topReached && autoScroll && !autoScrollPaused
+          && !el.dataset.scrollPausedHere && !el.dataset.scrollWaited) {
         autoScrollPaused = true;
         el.dataset.scrollPausedHere = "1";
         stopAutoScroll();
@@ -213,19 +219,21 @@ const mediaObserver = new IntersectionObserver((entries) => {
         if (isVideo) {
           el.addEventListener("ended", () => {
             if (el.dataset.scrollPausedHere) {
+              el.dataset.scrollWaited = "1";
               delete el.dataset.scrollPausedHere;
               autoScrollPaused = false;
               if (autoScroll) startAutoScroll();
             }
           }, { once: true });
         } else {
-          // GIF: resume autoscroll after parsed duration (same logic as video ended)
+          // GIF: resume after one cycle duration
           const item = items.find(
             i => el.getAttribute("src") === `/api/media/proxy?url=${encodeURIComponent(i.media_url)}`
           );
           const resume = (duration) => {
             setTimeout(() => {
               if (el.dataset.scrollPausedHere) {
+                el.dataset.scrollWaited = "1";
                 delete el.dataset.scrollPausedHere;
                 autoScrollPaused = false;
                 if (autoScroll) startAutoScroll();
@@ -247,7 +255,7 @@ const mediaObserver = new IntersectionObserver((entries) => {
       }
     }
   });
-}, { threshold: [0.5, 1.0] });
+}, { threshold: Array.from({ length: 21 }, (_, i) => i / 20) });
 
 // ---------------------------------------------------------------------------
 // 6. Navigation
