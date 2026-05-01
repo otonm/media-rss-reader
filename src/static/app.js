@@ -172,48 +172,64 @@ const viewObserver = new IntersectionObserver((entries) => {
 }, { threshold: 0.5 });
 
 // ---------------------------------------------------------------------------
-// 5c. Media observer — autoplay videos; pause/resume auto-scroll for media
+// 5c. Media observer — autoplay videos/GIFs; pause/resume auto-scroll for media
 // ---------------------------------------------------------------------------
 const mediaObserver = new IntersectionObserver((entries) => {
   entries.forEach(entry => {
     const el = entry.target;
     const isVideo = el.tagName === "VIDEO";
     const isGif = el.tagName === "IMG" && el.dataset.type === "gif";
+    const ratio = entry.intersectionRatio;
 
-    if (entry.isIntersecting) {
-      // Auto-scroll: pause drift for video or GIF, then handle each type
-      if (autoScroll && !autoScrollPaused && (isVideo || isGif)) {
+    if (!entry.isIntersecting) {
+      if (isVideo) {
+        el.pause();
+        delete el.dataset.playing;
+      }
+      if (isVideo || isGif) {
+        if (el.dataset.scrollPausedHere) {
+          delete el.dataset.scrollPausedHere;
+          autoScrollPaused = false;
+          if (autoScroll) startAutoScroll();
+        }
+        if (isGif) delete el.dataset.playing;
+      }
+      return;
+    }
+
+    if (isVideo || isGif) {
+      // Mark entering at 50% — autoscroll keeps running
+      if (!el.dataset.playing) {
+        el.dataset.playing = "1";
+        if (isVideo) el.play().catch(() => {});
+      }
+
+      // Pause autoscroll only when fully visible (100%)
+      if (ratio >= 1.0 && autoScroll && !autoScrollPaused && !el.dataset.scrollPausedHere) {
         autoScrollPaused = true;
+        el.dataset.scrollPausedHere = "1";
         stopAutoScroll();
 
         if (isVideo) {
-          // Scroll video to top of viewport, then play once scroll settles
-          const wrap = el.closest(".media-item");
-          const scrollView = document.getElementById("scroll-view");
-          wrap.scrollIntoView({ behavior: "smooth", block: "start" });
-
-          let scrollFallbackTimer;
-          const onScrollEnd = () => {
-            clearTimeout(scrollFallbackTimer);
-            el.play().catch(() => {});
-            el.addEventListener("ended", () => {
-              advance(1);
+          el.addEventListener("ended", () => {
+            if (el.dataset.scrollPausedHere) {
+              delete el.dataset.scrollPausedHere;
               autoScrollPaused = false;
               if (autoScroll) startAutoScroll();
-            }, { once: true });
-          };
-          scrollFallbackTimer = setTimeout(onScrollEnd, 300);
-          scrollView.addEventListener("scrollend", onScrollEnd, { once: true });
+            }
+          }, { once: true });
         } else {
-          // GIF: parse duration (cached on item object) then advance
+          // GIF: resume autoscroll after parsed duration (same logic as video ended)
           const item = items.find(
             i => el.getAttribute("src") === `/api/media/proxy?url=${encodeURIComponent(i.media_url)}`
           );
           const resume = (duration) => {
             setTimeout(() => {
-              advance(1);
-              autoScrollPaused = false;
-              if (autoScroll) startAutoScroll();
+              if (el.dataset.scrollPausedHere) {
+                delete el.dataset.scrollPausedHere;
+                autoScrollPaused = false;
+                if (autoScroll) startAutoScroll();
+              }
             }, duration);
           };
           if (!item) {
@@ -228,16 +244,10 @@ const mediaObserver = new IntersectionObserver((entries) => {
             });
           }
         }
-      } else if (isVideo) {
-        // Not in autoscroll mode — play normally when in view
-        el.play().catch(() => {});
       }
-    } else {
-      // Pause videos when out of view
-      if (isVideo) el.pause();
     }
   });
-}, { threshold: 0.5 });
+}, { threshold: [0.5, 1.0] });
 
 // ---------------------------------------------------------------------------
 // 6. Navigation
