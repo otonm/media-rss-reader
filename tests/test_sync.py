@@ -111,8 +111,8 @@ async def _insert_item(
     db: aiosqlite.Connection, feed_id: str, guid: str, seen: bool = False, hours_ago: int = 0
 ) -> str:
     item_id = hashlib.sha256((feed_id + guid).encode()).hexdigest()
-    fetched = datetime.datetime.utcnow() - datetime.timedelta(hours=hours_ago)
-    seen_at = _sqlite_dt(datetime.datetime.utcnow()) if seen else None
+    fetched = datetime.datetime.now(datetime.UTC) - datetime.timedelta(hours=hours_ago)
+    seen_at = _sqlite_dt(datetime.datetime.now(datetime.UTC)) if seen else None
     await db.execute(
         "INSERT INTO items (id, feed_id, guid, title, media_url, media_type, pub_date, fetched_at, seen_at) "
         "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
