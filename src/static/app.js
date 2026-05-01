@@ -241,7 +241,7 @@ const mediaObserver = new IntersectionObserver((entries) => {
             getGifDuration(fetchUrl).then(duration => {
               item.gifDuration = duration;
               resume(duration);
-            });
+            }).catch(() => resume(IMAGE_DELAY_MS));
           }
         }
       }
