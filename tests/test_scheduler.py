@@ -1,5 +1,6 @@
+import asyncio
 from pathlib import Path
-from unittest.mock import patch
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
@@ -69,3 +70,22 @@ async def test_start_scheduler_sets_last_opml_sync(tmp_path: Path) -> None:
     assert sync_time is not None
 
     await conn.close()
+
+
+async def test_start_scheduler_passes_running_loop() -> None:
+    """AsyncIOScheduler must receive the running event loop to fire jobs in FastAPI."""
+    mock_instance = MagicMock()
+    mock_instance.start = MagicMock()
+    mock_instance.add_job = MagicMock()
+
+    with (
+        patch("src.scheduler.AsyncIOScheduler", return_value=mock_instance) as mock_cls,
+        patch("src.scheduler.httpx.AsyncClient"),
+        patch("src.scheduler.opml_sync", new=AsyncMock()),
+        patch("src.scheduler.refresh_all_feeds", new=AsyncMock()),
+    ):
+        mock_db = MagicMock()
+        await sched_mod.start_scheduler(mock_db)
+
+        loop = asyncio.get_running_loop()
+        mock_cls.assert_called_once_with(event_loop=loop)

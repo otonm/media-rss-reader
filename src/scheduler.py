@@ -1,3 +1,4 @@
+import asyncio
 import datetime
 import logging
 
@@ -34,7 +35,7 @@ async def _opml_sync_job(db: aiosqlite.Connection, opml_path: str, client: httpx
 async def start_scheduler(db: aiosqlite.Connection) -> None:
     global _scheduler, _client  # noqa: PLW0603
     _client = httpx.AsyncClient()
-    _scheduler = AsyncIOScheduler()
+    _scheduler = AsyncIOScheduler(event_loop=asyncio.get_running_loop())
 
     _scheduler.add_job(
         _opml_sync_job,
