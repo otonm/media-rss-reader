@@ -54,8 +54,8 @@ function createMediaEl(item) {
     el.addEventListener("mouseenter", () => { el.controls = true; });
     el.addEventListener("mouseleave", () => { el.controls = false; });
     el.addEventListener("ended", () => { if (!autoScroll) advance(1); });
-    el.addEventListener("loadeddata", () => wrap.classList.add("loaded"));
-    el.addEventListener("error", () => wrap.classList.add("loaded"));
+    el.addEventListener("loadeddata", () => { wrap.classList.add("loaded"); seenObserver.observe(wrap); });
+    el.addEventListener("error", () => { wrap.classList.add("loaded"); seenObserver.observe(wrap); });
     mediaObserver.observe(el);
   } else {
     el = document.createElement("img");
@@ -65,13 +65,12 @@ function createMediaEl(item) {
       el.dataset.type = "gif";
       mediaObserver.observe(el);
     }
-    el.addEventListener("load", () => wrap.classList.add("loaded"));
-    el.addEventListener("error", () => wrap.classList.add("loaded"));
+    el.addEventListener("load", () => { wrap.classList.add("loaded"); seenObserver.observe(wrap); });
+    el.addEventListener("error", () => { wrap.classList.add("loaded"); seenObserver.observe(wrap); });
   }
   wrap.appendChild(el);
 
-  // Register with observers
-  seenObserver.observe(wrap);
+  // Register with observers (seenObserver deferred to load/loadeddata to avoid zero-height false positives)
   viewObserver.observe(wrap);
 
   return wrap;
