@@ -254,7 +254,7 @@ body {
 }
 
 /* -----------------------------------------------------------------------
-   Seen badge (visible only in show-all mode)
+   Seen badge (visible whenever item is marked seen)
    ----------------------------------------------------------------------- */
 .media-item.seen::after {
   content: "✓";
