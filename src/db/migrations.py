@@ -1,6 +1,8 @@
 import aiosqlite
 
-MIGRATIONS: list[str] = []
+MIGRATIONS: list[str] = [
+    "CREATE INDEX IF NOT EXISTS idx_items_fetched_at ON items(fetched_at)",
+]
 
 
 async def run_migrations(db: aiosqlite.Connection) -> None:

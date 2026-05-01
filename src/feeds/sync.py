@@ -1,6 +1,7 @@
 import aiosqlite
 import httpx
 
+from src.config import settings
 from src.feeds.fetcher import _feed_id, fetch_feed
 from src.feeds.opml import parse_opml
 
@@ -48,6 +49,53 @@ async def _refresh_feed(
     await db.commit()
 
 
+async def prune_items(db: aiosqlite.Connection) -> None:
+    """Delete items by age first (seen only), then by count (seen first, unseen last)."""
+    # Step 1: delete seen items older than ITEMS_MAX_AGE_HOURS
+    await db.execute(
+        "DELETE FROM items WHERE seen_at IS NOT NULL "
+        "AND fetched_at < datetime('now', ? || ' hours')",
+        (f"-{settings.items_max_age_hours}",),
+    )
+
+    # Step 2: count remaining items
+    async with db.execute("SELECT COUNT(*) FROM items") as cur:
+        row = await cur.fetchone()
+    total: int = row[0]
+
+    if total <= settings.keep_items:
+        await db.commit()
+        return
+
+    excess = total - settings.keep_items
+
+    # Step 3: delete oldest seen items until under limit
+    async with db.execute("SELECT COUNT(*) FROM items WHERE seen_at IS NOT NULL") as cur:
+        row = await cur.fetchone()
+    seen_count: int = row[0]
+
+    to_delete_seen = min(excess, seen_count)
+    if to_delete_seen > 0:
+        await db.execute(
+            "DELETE FROM items WHERE id IN "
+            "(SELECT id FROM items WHERE seen_at IS NOT NULL "
+            " ORDER BY fetched_at ASC LIMIT ?)",
+            (to_delete_seen,),
+        )
+        excess -= to_delete_seen
+
+    # Step 4: if still over limit, delete oldest unseen items
+    if excess > 0:
+        await db.execute(
+            "DELETE FROM items WHERE id IN "
+            "(SELECT id FROM items WHERE seen_at IS NULL "
+            " ORDER BY fetched_at ASC LIMIT ?)",
+            (excess,),
+        )
+
+    await db.commit()
+
+
 async def refresh_all_feeds(
     db: aiosqlite.Connection, client: httpx.AsyncClient
 ) -> None:
@@ -55,3 +103,4 @@ async def refresh_all_feeds(
         feeds = await cur.fetchall()
     for feed in feeds:
         await _refresh_feed(db, feed["id"], feed["url"], client)
+    await prune_items(db)

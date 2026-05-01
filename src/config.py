@@ -12,6 +12,8 @@ class Settings(BaseSettings):
     prefetch_ahead: int = 5
     image_display_delay_ms: int = 5000
     slideshow_transition_ms: int = 400
+    keep_items: int = 1000
+    items_max_age_hours: int = 168  # 7 days
     port: int = 8080
     log_level: str = "info"
 
