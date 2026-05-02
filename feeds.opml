@@ -4,9 +4,11 @@
     <title>Media RSS Feeds</title>
   </head>
   <body>
-    <outline type="rss" text="NASA Image of the Day" title="NASA Image of the Day"
-             xmlUrl="https://www.nasa.gov/rss/dyn/lg_image_of_the_day.rss"/>
-    <outline type="rss" text="Astronomy Picture of the Day" title="Astronomy Picture of the Day"
-             xmlUrl="https://apod.nasa.gov/apod.rss"/>
+    <outline type="rss" text="gonewild" title="gonewild"
+             xmlUrl="https://reddit-feeds.pigeon-bearded.ts.net/gonewild.xml"/>
+      <outline type="rss" text="sdnsfw" title="Asdnsfw"
+              xmlUrl="https://reddit-feeds.pigeon-bearded.ts.net/sdnsfw.xml"/>
+      <outline type="rss" text="ultrahdwallpapers" title="ultrahdwallpapers"
+             xmlUrl="https://www.reddit.com/r/ultrahdwallpapers/.rss"/>
   </body>
 </opml>

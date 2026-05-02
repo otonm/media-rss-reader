@@ -1,5 +1,8 @@
+import logging
 from html.parser import HTMLParser
 from pathlib import PurePosixPath
+
+logger = logging.getLogger(__name__)
 
 _IMAGE_EXTS = {".jpg", ".jpeg", ".png", ".webp", ".avif", ".svg"}
 _GIF_EXTS = {".gif"}
@@ -39,18 +42,24 @@ def detect_media(entry: dict) -> tuple[str, str] | None:
     for enc in entry.get("enclosures", []):
         url = enc.get("url", "")
         media_type = detect_type(url)
+        logger.debug(f"Checking enclosure URL {url} with detected media type {media_type}")
+
         if url and media_type:
             return url, media_type
 
     for mc in entry.get("media_content", []):
         url = mc.get("url", "")
         media_type = detect_type(url)
+        logger.debug(f"Checking media_content URL {url} with detected media type {media_type}")
+
         if url and media_type:
             return url, media_type
 
     for mt in entry.get("media_thumbnail", []):
         url = mt.get("url", "")
         media_type = detect_type(url)
+        logger.debug(f"Checking media_thumbnail URL {url} with detected media type {media_type}")
+
         if url and media_type:
             return url, media_type
 
@@ -59,6 +68,8 @@ def detect_media(entry: dict) -> tuple[str, str] | None:
         og_url = _extract_og_image(summary)
         if og_url:
             media_type = detect_type(og_url)
+            logger.debug(f"Checking og:image URL {og_url} with detected media type {media_type}")
+
             if media_type:
                 return og_url, media_type
 

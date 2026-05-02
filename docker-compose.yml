@@ -2,13 +2,32 @@ services:
   media-rss:
     build: .
     ports:
-      - "8080:8080"
+      - "8082:8080"
     volumes:
       - ./feeds.opml:/data/feeds.opml:ro
       - reader_data:/data/db
       - media_cache:/cache
     env_file:
       - .env
+    environment:
+      - TZ=Europe/Berlin
+      # Paths (override if mounting volumes differently)
+      # - OPML_PATH=/data/feeds.opml
+      # - DB_PATH=/data/db/reader.db
+      # - CACHE_DIR=/cache
+      # Feed refresh schedule
+      # - OPML_SYNC_INTERVAL=3600
+      # - FEED_REFRESH_INTERVAL=900
+      # Media cache
+      # - CACHE_MAX_ITEMS=500
+      # - CACHE_MAX_AGE_HOURS=48
+      # UI behaviour
+      # - PREFETCH_AHEAD=5
+      # - IMAGE_DISPLAY_DELAY_MS=5000
+      # - SLIDESHOW_TRANSITION_MS=400
+      # Server
+      # - PORT=8080
+      # - LOG_LEVEL=info
     restart: unless-stopped
 
 volumes:

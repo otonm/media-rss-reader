@@ -21,6 +21,24 @@ async def _warm(url: str, client: httpx.AsyncClient) -> None:
         logger.debug("prefetch failed for %s: %s", url, exc)
 
 
+async def warm_startup_cache(db: aiosqlite.Connection, client: httpx.AsyncClient) -> None:
+    async with db.execute(
+        "SELECT media_url FROM items ORDER BY pub_date DESC LIMIT ?",
+        (settings.cache_max_items,),
+    ) as cur:
+        rows = await cur.fetchall()
+
+    sem = asyncio.Semaphore(10)
+
+    async def _bounded_warm(url: str) -> None:
+        async with sem:
+            await _warm(url, client)
+
+    for row in rows:
+        asyncio.create_task(_bounded_warm(row["media_url"]))
+        await asyncio.sleep(0.1)
+
+
 async def prefetch_ahead(
     item_id: str, db: aiosqlite.Connection, client: httpx.AsyncClient
 ) -> None:
