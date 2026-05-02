@@ -16,6 +16,19 @@ The backend continuously fetches feeds in the background (no browser session req
 - **OPML-driven** — manage your feed list with any RSS reader's export format
 - **Docker-native** — single container, volume-mounted data, no external database service
 
+## Key Bindings
+
+| Key | Action |
+|---|---|
+| `j` / `↓` | Next item |
+| `k` / `↑` | Previous item |
+| `a` | Toggle auto-scroll |
+| `s` | Toggle slideshow mode |
+| `m` | Toggle mute |
+| `d` | Toggle dark / light theme |
+
+On mobile, swipe up/down to navigate. Tap ☰ to open the control menu.
+
 ## Prerequisites
 
 - Docker ≥ 24.0
@@ -142,7 +155,7 @@ docker compose down -v        # stop AND delete all data
 
 ## Deployment: Cloudflare Tunnel + Access
 
-This setup exposes the reader securely to the internet without opening firewall ports, and locks it behind Cloudflare Access email authentication so only authorised users can reach it.
+This setup exposes the reader securely to the internet without opening firewall ports, and locks it behind Cloudflare Access email authentication so only authorised users can reach it. Everything runs inside Docker — no `cloudflared` binary needs to be installed on your machine.
 
 **What you need:**
 - A domain managed by Cloudflare (free account is sufficient)
@@ -150,68 +163,40 @@ This setup exposes the reader securely to the internet without opening firewall 
 
 ---
 
-### Step 1: Create a Cloudflare Tunnel
-
-Install `cloudflared` on your Docker host or local machine:
-
-```bash
-# Debian / Ubuntu
-curl -L https://pkg.cloudflare.com/cloudflare-main.gpg \
-  | sudo tee /usr/share/keyrings/cloudflare-main.gpg > /dev/null
-echo 'deb [signed-by=/usr/share/keyrings/cloudflare-main.gpg] \
-  https://pkg.cloudflare.com/cloudflared bookworm main' \
-  | sudo tee /etc/apt/sources.list.d/cloudflared.list
-sudo apt update && sudo apt install cloudflared
-
-# macOS
-brew install cloudflare/cloudflare/cloudflared
-```
-
-Log in and create a named tunnel:
-
-```bash
-cloudflared tunnel login              # opens browser — authorise in Cloudflare dashboard
-cloudflared tunnel create media-reader  # creates tunnel; note the Tunnel ID in the output
-```
-
----
-
-### Step 2: Get a Tunnel Token
-
-The easiest Docker deployment uses a single token rather than a credentials file:
+### Step 1: Create a Tunnel in the Cloudflare Dashboard
 
 1. Go to [one.dash.cloudflare.com](https://one.dash.cloudflare.com) → **Zero Trust** → **Networks** → **Tunnels**
-2. Click the tunnel named `media-reader`
-3. Open the **Configure** tab → select **Docker** in the connector instructions
-4. Copy the `--token` value shown
-
-Add it to your `.env` file:
+2. Click **Create a tunnel**
+3. Choose **Cloudflared** as the connector type
+4. Name the tunnel (e.g. `media-reader`) and click **Save tunnel**
+5. On the next screen, select **Docker** in the connector instructions — you will see a `docker run` command containing a `--token` value
+6. Copy that token and add it to your `.env` file:
 
 ```bash
 CLOUDFLARE_TUNNEL_TOKEN=eyJhI...   # paste the full token here
 ```
 
----
-
-### Step 3: Configure DNS
-
-Point a subdomain at the tunnel. Either use the CLI:
-
-```bash
-cloudflared tunnel route dns media-reader reader.example.com
-```
-
-Or add it manually in the Cloudflare DNS dashboard:
-
-| Type | Name | Target | Proxy |
-|------|------|--------|-------|
-| CNAME | `reader` | `<TUNNEL-ID>.cfargotunnel.com` | Proxied (orange cloud) |
-
-Replace `<TUNNEL-ID>` with the ID printed during tunnel creation and `example.com` with your domain.
+Leave the browser tab open — you will configure the public hostname in the next step.
 
 ---
 
-### Step 4: Add cloudflared as a Docker Compose Sidecar
+### Step 2: Configure DNS
+
+Still on the tunnel configuration page, open the **Public Hostname** tab:
+
+1. Click **Add a public hostname**
+2. Fill in:
+   - **Subdomain**: `reader`
+   - **Domain**: `example.com` (your domain)
+   - **Service type**: `HTTP`
+   - **URL**: `media-rss:8080` (the Docker Compose service name and port)
+3. Click **Save hostname**
+
+Cloudflare automatically creates the CNAME record in your DNS — no manual DNS editing required.
+
+---
+
+### Step 3: Add cloudflared as a Docker Compose Sidecar
 
 Use this `docker-compose.yml` (note: the `ports:` mapping on `media-rss` is removed — all traffic arrives through the tunnel):
 
@@ -250,11 +235,11 @@ docker compose up -d
 docker compose logs cloudflared   # should show "Registered tunnel connection"
 ```
 
-Visit `https://reader.example.com` — the app is accessible (unauthenticated at this point). Continue to Step 5 to add the login gate.
+Visit `https://reader.example.com` — the app is accessible (unauthenticated at this point). Continue to Step 4 to add the login gate.
 
 ---
 
-### Step 5: Enable Cloudflare Access Authentication
+### Step 4: Enable Cloudflare Access Authentication
 
 This adds a login page in front of the tunnel. Only users whose email address matches the policy can get in.
 
@@ -283,19 +268,6 @@ Add a second Include rule to the policy:
 Requests from that IP range bypass the email check entirely.
 
 ---
-
-## Key Bindings
-
-| Key | Action |
-|---|---|
-| `j` / `↓` | Next item |
-| `k` / `↑` | Previous item |
-| `a` | Toggle auto-scroll |
-| `s` | Toggle slideshow mode |
-| `m` | Toggle mute |
-| `d` | Toggle dark / light theme |
-
-On mobile, swipe up/down to navigate. Tap ☰ to open the control menu.
 
 ## Updating
 
