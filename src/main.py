@@ -1,3 +1,5 @@
+import logging
+
 from collections.abc import AsyncGenerator
 from contextlib import asynccontextmanager
 from pathlib import Path
@@ -12,6 +14,11 @@ from src.db.connection import open_db
 from src.db.migrations import run_migrations
 from src.db.schema import create_schema
 from src.scheduler import start_scheduler, stop_scheduler
+
+logging.basicConfig(level=settings.log_level.upper())
+logging.getLogger("httpcore").setLevel(logging.WARNING)
+logging.getLogger("aiosqlite").setLevel(logging.WARNING)
+logger = logging.getLogger(__name__)
 
 _static_dir = Path(__file__).parent / "static"
 _index_path = _static_dir / "index.html"
