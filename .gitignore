@@ -8,9 +8,11 @@
 # Claude
 .claude/
 CLAUDE.md
+TODO.md
 
 # Coverage
 htmlcov/
+.coverage
 
 # Python
 __pycache__/
@@ -20,8 +22,14 @@ __pycache__/
 uv.lock
 venv/
 .venv/
+uv.lock
+.pytest_cache/
+.ruff_cache/
 
 # Environment variables
 .env
 .env.local
 .superpowers/
+
+# Runtime files
+feeds.opml
