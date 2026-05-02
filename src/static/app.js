@@ -33,6 +33,18 @@ const AUTO_SCROLL_SPEED = 1.5; // px per frame (~90px/s at 60fps)
 // 4. Helper functions
 // ---------------------------------------------------------------------------
 
+function _discardFailedItem(wrap, el) {
+  mediaObserver.unobserve(el);
+  viewObserver.unobserve(wrap);
+  wrap.remove();
+  const idx = items.findIndex(i => i.id === wrap.dataset.id);
+  if (idx !== -1) {
+    items.splice(idx, 1);
+    if (currentIndex > idx) currentIndex--;
+    else if (currentIndex >= items.length) currentIndex = Math.max(0, items.length - 1);
+  }
+}
+
 function createMediaEl(item) {
   const wrap = document.createElement("div");
   wrap.className = "media-item";
@@ -55,7 +67,7 @@ function createMediaEl(item) {
     el.addEventListener("mouseleave", () => { el.controls = false; });
     el.addEventListener("ended", () => { if (!autoScroll) advance(1); });
     el.addEventListener("loadeddata", () => { wrap.classList.add("loaded"); seenObserver.observe(wrap); });
-    el.addEventListener("error", () => { wrap.classList.add("loaded"); seenObserver.observe(wrap); });
+    el.addEventListener("error", () => _discardFailedItem(wrap, el));
     mediaObserver.observe(el);
   } else {
     el = document.createElement("img");
@@ -66,7 +78,7 @@ function createMediaEl(item) {
       mediaObserver.observe(el);
     }
     el.addEventListener("load", () => { wrap.classList.add("loaded"); seenObserver.observe(wrap); });
-    el.addEventListener("error", () => { wrap.classList.add("loaded"); seenObserver.observe(wrap); });
+    el.addEventListener("error", () => _discardFailedItem(wrap, el));
   }
   wrap.appendChild(el);
 
