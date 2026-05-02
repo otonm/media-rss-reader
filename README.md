@@ -86,9 +86,6 @@ All settings are environment variables. Copy `.env.example` to `.env` and adjust
 Use this if you prefer plain `docker run` without Compose.
 
 ```bash
-# Build the image
-docker build -t media-rss-reader .
-
 # Create named volumes for data persistence
 docker volume create media-rss-data
 docker volume create media-rss-cache
@@ -103,7 +100,7 @@ docker run -d \
   -v media-rss-cache:/cache \
   --env-file .env \
   -e TZ=Europe/Berlin \         # set to your timezone, e.g. America/New_York
-  media-rss-reader
+  ghcr.io/otonm/media-rss-reader:latest
 ```
 
 - `-v ./feeds.opml:/data/feeds.opml:ro` — mounts your local OPML file read-only into the container
@@ -118,7 +115,7 @@ The included `docker-compose.yml` wires everything up:
 ```yaml
 services:
   media-rss:
-    build: .
+    image: ghcr.io/otonm/media-rss-reader:latest
     ports:
       - "8082:8080"           # host:container — change 8082 to your preferred port
     volumes:
@@ -221,7 +218,7 @@ Use this `docker-compose.yml` (note: the `ports:` mapping on `media-rss` is remo
 ```yaml
 services:
   media-rss:
-    build: .
+    image: ghcr.io/otonm/media-rss-reader:latest
     # No host port binding — cloudflared connects to the container directly
     volumes:
       - ./feeds.opml:/data/feeds.opml:ro
@@ -304,7 +301,7 @@ On mobile, swipe up/down to navigate. Tap ☰ to open the control menu.
 
 ```bash
 git pull
-docker compose build --no-cache
+docker compose pull
 docker compose up -d
 ```
 

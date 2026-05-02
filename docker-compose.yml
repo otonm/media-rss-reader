@@ -1,6 +1,6 @@
 services:
   media-rss:
-    build: .
+    image: ghcr.io/otonm/media-rss-reader:latest
     ports:
       - "8082:8080"
     volumes:
