@@ -29,7 +29,8 @@ def _build_html() -> str:
     style = (
         f"<style>:root{{"
         f"--slideshow-transition-ms:{settings.slideshow_transition_ms}ms;"
-        f"--image-display-delay-ms:{settings.image_display_delay_ms}ms"
+        f"--image-display-delay-ms:{settings.image_display_delay_ms}ms;"
+        f"--prefetch-ahead:{settings.prefetch_ahead}"
         f"}}</style>"
     )
     return _index_path.read_text().replace("<!-- SLIDESHOW_TRANSITION -->", style)

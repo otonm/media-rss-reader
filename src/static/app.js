@@ -11,6 +11,7 @@ let items = [];           // all loaded items
 let currentIndex = 0;     // index into items[]
 let page = 0;             // next page to fetch
 let loading = false;      // prevent concurrent fetches
+let hasMore = true;       // false once the API returns an empty page
 let autoScrollRafId = null;   // requestAnimationFrame handle
 let autoScrollPaused = false; // paused waiting for video/gif
 let autoScroll = false;   // auto-scroll active?
@@ -25,6 +26,10 @@ let fetchGeneration = 0;
 // ---------------------------------------------------------------------------
 const IMAGE_DELAY_MS = parseInt(
   getComputedStyle(document.documentElement).getPropertyValue("--image-display-delay-ms").trim() || "5000",
+  10,
+);
+const PREFETCH_AHEAD = parseInt(
+  getComputedStyle(document.documentElement).getPropertyValue("--prefetch-ahead").trim() || "5",
   10,
 );
 const AUTO_SCROLL_SPEED = 1.5; // px per frame (~90px/s at 60fps)
@@ -99,6 +104,7 @@ async function fetchItems() {
     if (gen !== fetchGeneration) return;  // stale response, discard
     if (!newItems.length) {
       if (page === 0) document.getElementById("empty-state").classList.remove("hidden");
+      hasMore = false;
       return;
     }
     document.getElementById("empty-state").classList.add("hidden");
@@ -148,7 +154,7 @@ async function getGifDuration(url) {
 }
 
 function maybeLoadMore() {
-  if (items.length - currentIndex < 10) fetchItems();
+  if (hasMore && items.length - currentIndex < PREFETCH_AHEAD) fetchItems();
 }
 
 // ---------------------------------------------------------------------------
@@ -179,7 +185,7 @@ const viewObserver = new IntersectionObserver((entries) => {
   entries.forEach(entry => {
     if (!entry.isIntersecting) return;
     const idx = items.findIndex(i => i.id === entry.target.dataset.id);
-    if (idx !== -1) currentIndex = idx;
+    if (idx !== -1) { currentIndex = idx; maybeLoadMore(); }
   });
 }, { threshold: 0.5 });
 
@@ -408,6 +414,7 @@ function toggleShowSeen() {
   items = [];
   currentIndex = 0;
   page = 0;
+  hasMore = true;
   ++fetchGeneration;  // invalidate any in-flight fetch
   document.getElementById("feed-list").innerHTML = "";
   document.getElementById("empty-state").classList.add("hidden");
