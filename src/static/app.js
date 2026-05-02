@@ -32,7 +32,9 @@ const PREFETCH_AHEAD = parseInt(
   getComputedStyle(document.documentElement).getPropertyValue("--prefetch-ahead").trim() || "5",
   10,
 );
-const AUTO_SCROLL_SPEED = 1.5; // px per frame (~90px/s at 60fps)
+const AUTO_SCROLL_SPEED = parseFloat(
+  getComputedStyle(document.documentElement).getPropertyValue("--auto-scroll-speed").trim() || "1.5",
+);
 
 // ---------------------------------------------------------------------------
 // 4. Helper functions
@@ -101,7 +103,10 @@ async function fetchItems() {
     const resp = await fetch(`/api/items?unseen=${showSeen ? "false" : "true"}&page=${page}&size=50`);
     if (!resp.ok) return;
     const newItems = await resp.json();
-    if (gen !== fetchGeneration) return;  // stale response, discard
+    // fetchGeneration is incremented when the view resets (e.g. showSeen toggle).
+    // If the generation changed while this fetch was in-flight, discard the result
+    // to avoid appending items from the old query into a fresh list.
+    if (gen !== fetchGeneration) return;
     if (!newItems.length) {
       if (page === 0) document.getElementById("empty-state").classList.remove("hidden");
       hasMore = false;
@@ -144,6 +149,9 @@ async function getGifDuration(url) {
     return IMAGE_DELAY_MS;
   }
   let ms = 0;
+  // Scan for GIF Graphic Control Extension blocks (0x21 0xF9 0x04).
+  // Each block stores a frame delay in 1/100 s as a little-endian uint16
+  // at bytes [i+4, i+5]. Sum all frame delays to get the total loop duration.
   for (let i = 0; i + 5 < buf.length; i++) {
     if (buf[i] === 0x21 && buf[i + 1] === 0xF9 && buf[i + 2] === 0x04) {
       ms += (buf[i + 4] + buf[i + 5] * 256) * 10; // 1/100s → ms
@@ -162,7 +170,9 @@ function maybeLoadMore() {
 // ---------------------------------------------------------------------------
 const seenObserver = new IntersectionObserver((entries) => {
   entries.forEach(entry => {
-    // Mark seen when item fully exits through the top (scrolled past)
+    // Fire only when the item has fully exited through the *top* of the viewport
+    // (i.e. the user has scrolled past it). isIntersecting covers the visible case;
+    // the boundingClientRect check filters out items that exit through the bottom.
     if (entry.isIntersecting || entry.boundingClientRect.bottom > (entry.rootBounds?.top ?? 0)) return;
     const id = entry.target.dataset.id;
     const item = items.find(i => i.id === id);
@@ -228,6 +238,10 @@ const mediaObserver = new IntersectionObserver((entries) => {
       const rootT = entry.rootBounds?.top ?? 0;
       const topReached = rect.top <= rootT;
 
+      // When the top edge of a video or GIF reaches the viewport top, pause
+      // auto-scroll so the media can play for its full duration before the
+      // feed continues scrolling. scrollPausedHere guards against re-entry;
+      // scrollWaited prevents the same element from pausing scroll a second time.
       if (topReached && autoScroll && !autoScrollPaused
           && !el.dataset.scrollPausedHere && !el.dataset.scrollWaited) {
         autoScrollPaused = true;
@@ -355,6 +369,10 @@ function showSlide(item) {
   const inEl = document.getElementById(`slide-${incoming}`);
   const outEl = document.getElementById(`slide-${activeSlide}`);
 
+  // Slideshow uses two absolutely-positioned layers (A and B). On each advance,
+  // the inactive layer is populated with the new item and given the 'active' class,
+  // which triggers the CSS opacity transition. The previously active layer loses
+  // 'active' and fades out. activeSlide tracks which layer is currently visible.
   // Clear incoming layer and populate with new media
   inEl.innerHTML = "";
   const mediaEl = createMediaEl(item).querySelector("img, video");
