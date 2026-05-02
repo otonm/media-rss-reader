@@ -35,17 +35,14 @@ async def test_start_and_stop_scheduler(tmp_path: Path) -> None:
 
 async def test_get_last_opml_sync_none_before_start() -> None:
     """get_last_opml_sync returns None when scheduler has not synced yet."""
-    # Reset state
-    sched_mod._last_opml_sync = None
+    sched_mod._state.last_opml_sync = None
     assert sched_mod.get_last_opml_sync() is None
 
 
 async def test_stop_scheduler_noop_when_not_started() -> None:
     """stop_scheduler should not raise if called when already stopped."""
-    # Ensure clean state
-    sched_mod._scheduler = None
-    sched_mod._client = None
-    # Should not raise
+    sched_mod._state.scheduler = None
+    sched_mod._state.client = None
     await sched_mod.stop_scheduler()
 
 
@@ -60,7 +57,7 @@ async def test_start_scheduler_sets_last_opml_sync(tmp_path: Path) -> None:
     await create_schema(conn)
     await run_migrations(conn)
 
-    sched_mod._last_opml_sync = None
+    sched_mod._state.last_opml_sync = None
 
     with patch.object(sched_mod.settings, "opml_path", str(opml_file)):
         await sched_mod.start_scheduler(conn)

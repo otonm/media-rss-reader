@@ -1,10 +1,12 @@
 import asyncio
 import hashlib
+import logging
 import time
 from pathlib import Path
 
 from src.config import settings
 
+logger = logging.getLogger(__name__)
 
 def _cache_path(url: str) -> Path:
     return Path(settings.cache_dir) / hashlib.sha256(url.encode()).hexdigest()
@@ -33,9 +35,11 @@ async def evict() -> None:
     surviving: list[Path] = []
     for f in files:
         if now - f.stat().st_mtime > max_age_secs:
+            logger.debug(f"Evicting cache file {f} due to age")
             f.unlink(missing_ok=True)
         else:
             surviving.append(f)
 
     while len(surviving) > settings.cache_max_items:
+        logger.debug(f"Evicting cache file {surviving[0]} due to count limit")
         surviving.pop(0).unlink(missing_ok=True)
