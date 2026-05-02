@@ -78,7 +78,7 @@ All settings are environment variables. Copy `.env.example` to `.env` and adjust
 | `IMAGE_DISPLAY_DELAY_MS` | `5000` | Dwell time per image/GIF in auto-scroll / slideshow (ms) |
 | `SLIDESHOW_TRANSITION_MS` | `400` | CSS crossfade duration between slideshow items (ms) |
 | `AUTO_SCROLL_SPEED` | `1.5` | Pixels scrolled per animation frame (~90 px/s at 60 fps) |
-| `PORT` | `8080` | Port the server listens on inside the container |
+| `PORT` | `8080` | Port the server listens on inside the container (host port is set by the `-p` flag in Docker / Compose) |
 | `LOG_LEVEL` | `info` | Uvicorn log level: `debug` \| `info` \| `warning` \| `error` |
 
 ## Deployment: Docker Only
@@ -86,6 +86,9 @@ All settings are environment variables. Copy `.env.example` to `.env` and adjust
 Use this if you prefer plain `docker run` without Compose.
 
 ```bash
+# Build the image
+docker build -t media-rss-reader .
+
 # Create named volumes for data persistence
 docker volume create media-rss-data
 docker volume create media-rss-cache
@@ -99,8 +102,8 @@ docker run -d \
   -v media-rss-data:/data/db \
   -v media-rss-cache:/cache \
   --env-file .env \
-  -e TZ=Europe/Berlin \
-  $(docker build -q .)
+  -e TZ=Europe/Berlin \         # set to your timezone, e.g. America/New_York
+  media-rss-reader
 ```
 
 - `-v ./feeds.opml:/data/feeds.opml:ro` — mounts your local OPML file read-only into the container
