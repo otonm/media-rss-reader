@@ -10,6 +10,7 @@ The lifespan context manager runs startup and shutdown logic:
 The index route serves the pre-built HTML string from app.state to avoid
 re-reading the file on every request.
 """
+
 import logging
 from collections.abc import AsyncGenerator
 from contextlib import asynccontextmanager

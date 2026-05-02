@@ -8,6 +8,7 @@ incremented after each one.
 To add a migration: append one SQL string to MIGRATIONS. Never edit or
 reorder existing entries — doing so would corrupt the version counter.
 """
+
 import aiosqlite
 
 MIGRATIONS: list[str] = [

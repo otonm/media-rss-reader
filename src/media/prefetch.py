@@ -10,6 +10,7 @@ prefetch_ahead() — called from the /api/prefetch/hint endpoint; warms the
     next PREFETCH_AHEAD items older than the given item's pub_date. Intended
     to be fired as a background task ahead of the user's scroll position.
 """
+
 import asyncio
 import logging
 
@@ -59,9 +60,7 @@ async def warm_startup_cache(db: aiosqlite.Connection, client: httpx.AsyncClient
         await asyncio.sleep(0.1)
 
 
-async def prefetch_ahead(
-    item_id: str, db: aiosqlite.Connection, client: httpx.AsyncClient
-) -> None:
+async def prefetch_ahead(item_id: str, db: aiosqlite.Connection, client: httpx.AsyncClient) -> None:
     """Fire background warm tasks for the next PREFETCH_AHEAD items after item_id.
 
     Queries items with a pub_date strictly less than the given item's pub_date

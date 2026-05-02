@@ -9,6 +9,7 @@ interval) so the reader is populated on first boot without waiting.
 Startup failures are logged as warnings — the scheduler retries on
 the next interval.
 """
+
 import asyncio
 import datetime
 import logging
@@ -26,6 +27,7 @@ logger = logging.getLogger(__name__)
 
 class _State:
     """Module-level singleton holding runtime objects that outlive a single request."""
+
     scheduler: AsyncIOScheduler | None = None
     client: httpx.AsyncClient | None = None
     last_opml_sync: datetime.datetime | None = None

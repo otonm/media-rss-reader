@@ -4,6 +4,7 @@ Reads the OPML file at the configured path and returns a flat list of
 {url, title} dicts. Only entries with a non-empty URL are included.
 The title falls back to the URL when the OPML entry has no title attribute.
 """
+
 import logging
 
 import listparser

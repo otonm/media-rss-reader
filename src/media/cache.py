@@ -7,6 +7,7 @@ evict() is called after every feed refresh cycle. It removes files that are
 too old first, then trims by count from the oldest end if the directory is
 still over the limit.
 """
+
 import asyncio
 import hashlib
 import logging

@@ -278,6 +278,7 @@ Browser
 | `PREFETCH_AHEAD` | `5` | Items to pre-fetch ahead of current position |
 | `IMAGE_DISPLAY_DELAY_MS` | `5000` | Dwell time per image in auto-scroll / slideshow |
 | `SLIDESHOW_TRANSITION_MS` | `400` | CSS crossfade duration between slideshow items |
+| `AUTO_SCROLL_SPEED` | `1.5` | Pixels scrolled per animation frame (~90px/s at 60fps) |
 | `PORT` | `8080` | Port exposed by the container |
 | `LOG_LEVEL` | `info` | Uvicorn log level |
 

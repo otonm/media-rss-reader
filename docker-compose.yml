@@ -25,6 +25,7 @@ services:
       # - PREFETCH_AHEAD=5
       # - IMAGE_DISPLAY_DELAY_MS=5000
       # - SLIDESHOW_TRANSITION_MS=400
+      # - AUTO_SCROLL_SPEED=1.5
       # Server
       # - PORT=8080
       # - LOG_LEVEL=info

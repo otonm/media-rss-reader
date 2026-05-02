@@ -1,4 +1,5 @@
 """GET /api/items and POST /api/items/{id}/seen."""
+
 from typing import Annotated, Any
 
 import aiosqlite

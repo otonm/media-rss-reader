@@ -4,6 +4,7 @@ Fetches a single feed URL over HTTP, parses it with feedparser, and
 returns a list of item dicts ready to INSERT into the database.
 Items without a detectable media URL are silently skipped.
 """
+
 import hashlib
 import logging
 
@@ -49,13 +50,15 @@ async def fetch_feed(url: str, client: httpx.AsyncClient) -> list[dict]:
 
         # Use entry.id as the canonical GUID; fall back to link, then media URL.
         guid = entry.get("id") or entry.get("link") or media_url
-        items.append({
-            "id": _item_id(feed_id, guid),
-            "feed_id": feed_id,
-            "guid": guid,
-            "title": entry.get("title"),
-            "media_url": media_url,
-            "media_type": media_type,
-            "pub_date": entry.get("published") or entry.get("updated"),
-        })
+        items.append(
+            {
+                "id": _item_id(feed_id, guid),
+                "feed_id": feed_id,
+                "guid": guid,
+                "title": entry.get("title"),
+                "media_url": media_url,
+                "media_type": media_type,
+                "pub_date": entry.get("published") or entry.get("updated"),
+            }
+        )
     return items

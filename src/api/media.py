@@ -1,4 +1,5 @@
 """Media proxy, prefetch hint, and status endpoints."""
+
 from __future__ import annotations
 
 from pathlib import Path

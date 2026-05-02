@@ -7,6 +7,7 @@ the entry HTML summary. The first match wins.
 Media type is determined by file extension only at ingest time. GIF vs image
 is distinguished by extension; the proxy can confirm via Content-Type later.
 """
+
 import logging
 from html.parser import HTMLParser
 from pathlib import PurePosixPath

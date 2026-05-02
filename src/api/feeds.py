@@ -1,4 +1,5 @@
 """GET /api/feeds — list all feeds with item counts."""
+
 from typing import Annotated, Any
 
 import aiosqlite

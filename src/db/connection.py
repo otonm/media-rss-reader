@@ -3,6 +3,7 @@
 open_db() is used by the scheduler (persistent connection held for the process lifetime).
 get_db() is a FastAPI dependency that opens and closes a connection per request.
 """
+
 from collections.abc import AsyncIterator
 from pathlib import Path
 

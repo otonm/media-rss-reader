@@ -4,6 +4,7 @@ opml_sync()         — reconcile the feeds table against the OPML file
 refresh_all_feeds() — fetch new items for every known feed, then prune
 prune_items()       — enforce KEEP_ITEMS and ITEMS_MAX_AGE_HOURS limits
 """
+
 import logging
 
 import aiosqlite
@@ -16,9 +17,7 @@ from src.feeds.opml import parse_opml
 logger = logging.getLogger(__name__)
 
 
-async def opml_sync(
-    db: aiosqlite.Connection, opml_path: str, client: httpx.AsyncClient
-) -> None:
+async def opml_sync(db: aiosqlite.Connection, opml_path: str, client: httpx.AsyncClient) -> None:
     """Reconcile the feeds table with the current OPML file.
 
     New feeds are inserted; feeds no longer in the file are deleted.
@@ -44,9 +43,7 @@ async def opml_sync(
     # Delete feeds whose IDs are not in the current OPML set.
     if feed_ids:
         placeholders = ",".join("?" * len(feed_ids))
-        await db.execute(
-            f"DELETE FROM feeds WHERE id NOT IN ({placeholders})", feed_ids
-        )
+        await db.execute(f"DELETE FROM feeds WHERE id NOT IN ({placeholders})", feed_ids)
     else:
         # OPML is empty — remove everything.
         await db.execute("DELETE FROM feeds")
@@ -94,8 +91,7 @@ async def prune_items(db: aiosqlite.Connection) -> None:
     # Phase 1: age-based eviction (seen items only)
     logger.debug(f"Pruning items older than {settings.items_max_age_hours} hours")
     await db.execute(
-        "DELETE FROM items WHERE seen_at IS NOT NULL "
-        "AND fetched_at < datetime('now', ? || ' hours')",
+        "DELETE FROM items WHERE seen_at IS NOT NULL AND fetched_at < datetime('now', ? || ' hours')",
         (f"-{settings.items_max_age_hours}",),
     )
 
@@ -141,9 +137,7 @@ async def prune_items(db: aiosqlite.Connection) -> None:
     await db.commit()
 
 
-async def refresh_all_feeds(
-    db: aiosqlite.Connection, client: httpx.AsyncClient
-) -> None:
+async def refresh_all_feeds(db: aiosqlite.Connection, client: httpx.AsyncClient) -> None:
     """Refresh every feed in the database and then prune old items."""
     logger.debug("Refreshing all feeds")
     async with db.execute("SELECT id, url FROM feeds") as cur:

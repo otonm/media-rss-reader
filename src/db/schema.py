@@ -3,6 +3,7 @@
 All statements use IF NOT EXISTS so this module is safe to call on every
 startup without checking whether the schema already exists.
 """
+
 import aiosqlite
 
 # feeds stores one row per RSS feed URL found in the OPML file.
