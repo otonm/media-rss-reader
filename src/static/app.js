@@ -144,7 +144,8 @@ function maybeLoadMore() {
 // ---------------------------------------------------------------------------
 const seenObserver = new IntersectionObserver((entries) => {
   entries.forEach(entry => {
-    if (!entry.isIntersecting) return;
+    // Mark seen when item fully exits through the top (scrolled past)
+    if (entry.isIntersecting || entry.boundingClientRect.bottom > (entry.rootBounds?.top ?? 0)) return;
     const id = entry.target.dataset.id;
     const item = items.find(i => i.id === id);
     if (!item || item.seen_at) return;
@@ -157,7 +158,7 @@ const seenObserver = new IntersectionObserver((entries) => {
       })
       .catch(() => {});
   });
-}, { threshold: 0.8 });
+}, { threshold: 0 });
 
 // ---------------------------------------------------------------------------
 // 5b. Viewport observer — keeps currentIndex in sync during native scroll
@@ -260,9 +261,23 @@ const mediaObserver = new IntersectionObserver((entries) => {
 // 6. Navigation
 // ---------------------------------------------------------------------------
 
+function markItemSeen(item) {
+  if (!item || item.seen_at) return;
+  item.seen_at = "pending";
+  const wrap = document.querySelector(`.media-item[data-id="${item.id}"]`);
+  fetch(`/api/items/${item.id}/seen`, { method: "POST" })
+    .then(r => r.json())
+    .then(data => {
+      item.seen_at = data.seen_at;
+      if (wrap) wrap.classList.add("seen");
+    })
+    .catch(() => {});
+}
+
 function advance(delta) {
   const next = currentIndex + delta;
   if (next < 0 || next >= items.length) return;
+  if (slideshowMode) markItemSeen(items[currentIndex]);
   currentIndex = next;
 
   if (slideshowMode) {
