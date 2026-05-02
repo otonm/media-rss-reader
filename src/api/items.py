@@ -1,3 +1,4 @@
+"""GET /api/items and POST /api/items/{id}/seen."""
 from typing import Annotated, Any
 
 import aiosqlite
@@ -18,6 +19,14 @@ async def list_items(
     size: int = 50,
     db: _DbDep = None,  # type: ignore[assignment]
 ) -> list[dict[str, Any]]:
+    """Return a paginated, interleaved list of media items.
+
+    The window-function query assigns a rank (rn) per feed ordered by
+    pub_date ASC, then sorts globally by rn then feed_id. This interleaves
+    feeds evenly: all feeds contribute their oldest unseen item before any
+    feed contributes its second item, preventing one prolific feed from
+    dominating the top of the page.
+    """
     conditions: list[str] = []
     params: list[Any] = []
 
@@ -52,6 +61,11 @@ async def mark_seen(
     item_id: str,
     db: _DbDep = None,  # type: ignore[assignment]
 ) -> dict[str, str]:
+    """Mark an item as seen and return the timestamp.
+
+    The browser stores the returned seen_at value on the item object to
+    prevent a second POST for the same item during the session.
+    """
     await db.execute(
         "UPDATE items SET seen_at = datetime('now') WHERE id = ?",
         (item_id,),

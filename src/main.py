@@ -1,3 +1,15 @@
+"""FastAPI application entry point.
+
+The lifespan context manager runs startup and shutdown logic:
+- Builds the HTML string with injected CSS variables (once, at startup)
+- Opens the persistent database connection used by the scheduler
+- Applies schema and pending migrations
+- Starts the background scheduler (which fires an immediate OPML sync + feed refresh)
+- On shutdown: stops the scheduler and closes the database connection
+
+The index route serves the pre-built HTML string from app.state to avoid
+re-reading the file on every request.
+"""
 import logging
 from collections.abc import AsyncGenerator
 from contextlib import asynccontextmanager
@@ -15,6 +27,7 @@ from src.db.schema import create_schema
 from src.scheduler import start_scheduler, stop_scheduler
 
 logging.basicConfig(level=settings.log_level.upper())
+# Suppress noisy third-party loggers that produce per-request output at INFO.
 logging.getLogger("httpcore").setLevel(logging.WARNING)
 logging.getLogger("aiosqlite").setLevel(logging.WARNING)
 logger = logging.getLogger(__name__)
@@ -24,13 +37,20 @@ _index_path = _static_dir / "index.html"
 
 
 def _build_html() -> str:
+    """Read index.html and inject backend config values as CSS custom properties.
+
+    The <!-- SLIDESHOW_TRANSITION --> comment is replaced with a <style> block
+    so the frontend can read these values synchronously via getComputedStyle()
+    without a separate API call. The result is cached for the process lifetime.
+    """
     if not _index_path.exists():
         return ""
     style = (
         f"<style>:root{{"
         f"--slideshow-transition-ms:{settings.slideshow_transition_ms}ms;"
         f"--image-display-delay-ms:{settings.image_display_delay_ms}ms;"
-        f"--prefetch-ahead:{settings.prefetch_ahead}"
+        f"--prefetch-ahead:{settings.prefetch_ahead};"
+        f"--auto-scroll-speed:{settings.auto_scroll_speed}"
         f"}}</style>"
     )
     return _index_path.read_text().replace("<!-- SLIDESHOW_TRANSITION -->", style)
@@ -38,6 +58,7 @@ def _build_html() -> str:
 
 @asynccontextmanager
 async def lifespan(app: FastAPI) -> AsyncGenerator[None]:
+    # Build HTML once; store on app.state for the index route to serve.
     app.state.html = _build_html()
     db = await open_db(settings.db_path)
     await create_schema(db)
@@ -60,4 +81,5 @@ if _static_dir.exists():
 
 @app.get("/", response_class=HTMLResponse)
 async def index(request: Request) -> str:
+    """Serve the pre-built single-page app shell."""
     return request.app.state.html

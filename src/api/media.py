@@ -1,3 +1,4 @@
+"""Media proxy, prefetch hint, and status endpoints."""
 from __future__ import annotations
 
 from pathlib import Path
@@ -20,6 +21,13 @@ _DbDep = Annotated[aiosqlite.Connection, Depends(get_db)]
 
 @router.get("/media/proxy", response_model=None)
 async def proxy_media(url: str = Query(...)) -> FileResponse | StreamingResponse:
+    """Cache-through proxy for media files.
+
+    On a cache hit: serve the file directly via FileResponse (zero-copy sendfile).
+    On a cache miss: fetch from upstream, write to cache, stream to the browser.
+    The full response body is read once (aread) to write to cache — it is not
+    buffered a second time for the stream.
+    """
     path = cache_read(url)
     if path is not None:
         return FileResponse(str(path))
@@ -47,6 +55,12 @@ async def prefetch_hint(
     body: dict[str, str],
     db: _DbDep = None,  # type: ignore[assignment]
 ) -> dict[str, str]:
+    """Trigger background pre-fetching of items ahead of the given item.
+
+    The browser calls this as a fire-and-forget POST whenever it loads a
+    new page of items. The hint launches asyncio background tasks; the
+    response returns immediately.
+    """
     item_id = body.get("item_id", "")
     if not item_id:
         raise HTTPException(status_code=422, detail="item_id required")
@@ -59,6 +73,7 @@ async def prefetch_hint(
 async def get_status(
     db: _DbDep = None,  # type: ignore[assignment]
 ) -> dict[str, Any]:
+    """Return a health/status snapshot: feed count, item counts, cache size, last sync."""
     async with db.execute("SELECT COUNT(*) FROM feeds") as cur:
         feeds_count: int = (await cur.fetchone())[0]
     async with db.execute("SELECT COUNT(*) FROM items") as cur:
