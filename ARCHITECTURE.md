@@ -24,7 +24,7 @@ Three planes interact at runtime:
 ┌───────────▼──────────┐  ┌──────▼──────────────────────┐
 │  SQLite (WAL mode)   │  │  /cache  (sha256-named files)│
 │  feeds · items       │  │  evict by age + count        │
-└──────────────────────┘  └─────────────────────────────-┘
+└──────────────────────┘  └─────────────────────────────┘
             ▲
 ┌───────────┴─────────────────────────────────────────────┐
 │  APScheduler  (AsyncIO, in-process)                     │
@@ -33,7 +33,7 @@ Three planes interact at runtime:
 └─────────────────────────────────────────────────────────┘
 ```
 
-The scheduler and the API share **one persistent aiosqlite connection** (`app.state.db`). API endpoints open short-lived per-request connections. SQLite WAL mode allows concurrent reads while the scheduler writes.
+The scheduler holds a **persistent aiosqlite connection** (`app.state.db`) for its process lifetime. API endpoints open a fresh connection per request via `get_db()`. SQLite WAL mode allows concurrent reads while the scheduler writes.
 
 ---
 
