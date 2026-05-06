@@ -7,10 +7,11 @@ services:
       - ./feeds.opml:/data/feeds.opml:ro
       - reader_data:/data/db
       - media_cache:/cache
-    env_file:
-      - .env
     environment:
       - TZ=Europe/Berlin
+      - LOG_LEVEL=debug
+      - IMAGE_DISPLAY_DELAY_MS=500
+      - AUTO_SCROLL_SPEED=5
       # Paths (override if mounting volumes differently)
       # - OPML_PATH=/data/feeds.opml
       # - DB_PATH=/data/db/reader.db

@@ -41,11 +41,7 @@ On mobile, swipe up/down to navigate. Tap ☰ to open the control menu.
 git clone https://github.com/yourname/media-rss-reader.git
 cd media-rss-reader
 
-# 2. Copy and edit the environment file
-cp .env.example .env
-$EDITOR .env        # defaults work for most setups
-
-# 3. Edit feeds.opml with your feed URLs, then start
+# 2. Edit feeds.opml with your feed URLs, then start
 docker compose up -d
 ```
 
@@ -74,7 +70,7 @@ The file is re-read on the interval set by `OPML_SYNC_INTERVAL`. Adding or remov
 
 ## Configuration
 
-All settings are environment variables. Copy `.env.example` to `.env` and adjust as needed. Defaults work for most setups.
+All settings are environment variables configured directly in `docker-compose.yml`.
 
 | Variable | Default | Description |
 |---|---|---|
@@ -111,15 +107,14 @@ docker run -d \
   -v ./feeds.opml:/data/feeds.opml:ro \
   -v media-rss-data:/data/db \
   -v media-rss-cache:/cache \
-  --env-file .env \
-  -e TZ=Europe/Berlin \         # set to your timezone, e.g. America/New_York
+  -e TZ=Europe/Berlin \
   ghcr.io/otonm/media-rss-reader:latest
 ```
 
 - `-v ./feeds.opml:/data/feeds.opml:ro` — mounts your local OPML file read-only into the container
 - `-v media-rss-data:/data/db` — persists the SQLite database across container restarts
 - `-v media-rss-cache:/cache` — persists the media disk cache across restarts
-- `--env-file .env` — loads all configuration from your `.env` file
+- Add `-e VAR=value` for any settings you want to override (see [Configuration](#configuration))
 
 ## Deployment: Docker Compose
 
@@ -135,10 +130,11 @@ services:
       - ./feeds.opml:/data/feeds.opml:ro   # OPML feed list (read-only)
       - reader_data:/data/db               # SQLite database
       - media_cache:/cache                 # media disk cache
-    env_file:
-      - .env                  # load all variables from .env
     environment:
-      - TZ=Europe/Berlin      # timezone
+      - TZ=Europe/Berlin
+      # - LOG_LEVEL=debug
+      # - IMAGE_DISPLAY_DELAY_MS=5000
+      # - AUTO_SCROLL_SPEED=1.5
     restart: unless-stopped
 
 volumes:
@@ -170,11 +166,7 @@ This setup exposes the reader securely to the internet without opening firewall 
 3. Choose **Cloudflared** as the connector type
 4. Name the tunnel (e.g. `media-reader`) and click **Save tunnel**
 5. On the next screen, select **Docker** in the connector instructions — you will see a `docker run` command containing a `--token` value
-6. Copy that token and add it to your `.env` file:
-
-```bash
-CLOUDFLARE_TUNNEL_TOKEN=eyJhI...   # paste the full token here
-```
+6. Copy that token — you will paste it directly into `docker-compose.yml` in Step 3.
 
 Leave the browser tab open — you will configure the public hostname in the next step.
 
@@ -209,7 +201,6 @@ services:
       - ./feeds.opml:/data/feeds.opml:ro
       - reader_data:/data/db
       - media_cache:/cache
-    env_file: .env
     environment:
       - TZ=Europe/Berlin
     restart: unless-stopped
@@ -218,7 +209,7 @@ services:
     image: cloudflare/cloudflared:latest
     command: tunnel --no-autoupdate run
     environment:
-      - TUNNEL_TOKEN=${CLOUDFLARE_TUNNEL_TOKEN}
+      - TUNNEL_TOKEN=eyJhI...   # paste your tunnel token here
     depends_on:
       - media-rss
     restart: unless-stopped
