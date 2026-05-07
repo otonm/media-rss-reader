@@ -1,7 +1,5 @@
 """Authentication tests."""
 
-import time
-
 import aiosqlite
 import pytest
 from httpx import AsyncClient as HttpxAsyncClient
@@ -177,7 +175,7 @@ async def _insert_totp_secret(db: aiosqlite.Connection, secret: str) -> None:
 
 # --- login page ---
 
-async def test_login_page_accessible(auth_client: HttpxAsyncClient) -> None:
+async def test_login_page_bypasses_auth(auth_client: HttpxAsyncClient) -> None:
     r = await auth_client.get("/login")
     assert r.status_code == 200
     assert "Sign in" in r.text
@@ -345,3 +343,32 @@ async def test_logout(authed_client: HttpxAsyncClient) -> None:
     assert r.headers["location"] == "/login"
     # Cookie is cleared (Max-Age=0 or deleted)
     assert r.cookies.get("session") in (None, "")
+
+
+# --- middleware tests ---
+
+async def test_protected_route_no_cookie(auth_client: HttpxAsyncClient) -> None:
+    # GET / without any session cookie → middleware should 302 to /login
+    response = await auth_client.get("/")
+    assert response.status_code == 302
+    assert response.headers["location"] == "/login"
+
+
+async def test_protected_route_valid_cookie(authed_client: HttpxAsyncClient) -> None:
+    # GET / with a valid session cookie → 200 OK
+    response = await authed_client.get("/")
+    assert response.status_code == 200
+
+
+async def test_protected_route_tampered_cookie(auth_client: HttpxAsyncClient) -> None:
+    # GET / with a tampered cookie → 302 to /login
+    auth_client.cookies.set(SESSION_COOKIE, "tampered.invalid.token")
+    response = await auth_client.get("/")
+    assert response.status_code == 302
+    assert response.headers["location"] == "/login"
+
+
+async def test_https_enforcement(auth_client: HttpxAsyncClient) -> None:
+    # Request without X-Forwarded-Proto: https header → 403
+    response = await auth_client.get("/login", headers={"x-forwarded-proto": "http"})
+    assert response.status_code == 403
