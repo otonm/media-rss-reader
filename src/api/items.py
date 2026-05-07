@@ -71,6 +71,12 @@ async def mark_seen(
         "UPDATE items SET seen_at = datetime('now') WHERE id = ?",
         (item_id,),
     )
+    # Write through to seen_guids so seen state survives pruning.
+    await db.execute(
+        """INSERT OR REPLACE INTO seen_guids (feed_id, guid, seen_at)
+           SELECT feed_id, guid, datetime('now') FROM items WHERE id = ?""",
+        (item_id,),
+    )
     await db.commit()
 
     async with db.execute("SELECT seen_at FROM items WHERE id = ?", (item_id,)) as cur:

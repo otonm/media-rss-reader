@@ -77,6 +77,20 @@ async def _refresh_feed(
     if items:
         logger.debug(f"Feed {url}: {inserted} new, {len(items) - inserted} already in DB")
 
+    # Restore seen_at for items that were pruned and then re-inserted from the feed.
+    await db.execute(
+        """UPDATE items
+           SET seen_at = (
+               SELECT sg.seen_at FROM seen_guids sg
+               WHERE sg.feed_id = items.feed_id AND sg.guid = items.guid
+           )
+           WHERE feed_id = ? AND seen_at IS NULL
+             AND EXISTS (
+               SELECT 1 FROM seen_guids sg
+               WHERE sg.feed_id = items.feed_id AND sg.guid = items.guid
+           )""",
+        (feed_id,),
+    )
     await db.execute(
         "UPDATE feeds SET last_fetched_at = datetime('now') WHERE id = ?",
         (feed_id,),

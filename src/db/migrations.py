@@ -14,6 +14,16 @@ import aiosqlite
 MIGRATIONS: list[str] = [
     # v1: index on fetched_at to support age-based pruning queries
     "CREATE INDEX IF NOT EXISTS idx_items_fetched_at ON items(fetched_at)",
+    # v2: seen_guids tombstone table — tracks seen state independently of pruning
+    (
+        "CREATE TABLE IF NOT EXISTS seen_guids ("
+        "feed_id TEXT NOT NULL REFERENCES feeds(id) ON DELETE CASCADE, "
+        "guid TEXT NOT NULL, "
+        "seen_at TIMESTAMP NOT NULL, "
+        "PRIMARY KEY (feed_id, guid))"
+    ),
+    # v3: backfill seen_guids from items that are already marked seen
+    "INSERT OR IGNORE INTO seen_guids (feed_id, guid, seen_at) SELECT feed_id, guid, seen_at FROM items WHERE seen_at IS NOT NULL",
 ]
 
 
