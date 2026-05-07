@@ -18,6 +18,7 @@ let autoScroll = false;   // auto-scroll active?
 let slideshowMode = false; // slideshow or scroll mode
 let activeSlide = "a";    // which slide layer is currently visible
 let muted = true;         // video mute state
+const videoRatios = new Map(); // video element → current intersectionRatio
 let showSeen = localStorage.getItem("showSeen") === "true";
 let fetchGeneration = 0;
 
@@ -43,6 +44,8 @@ const AUTO_SCROLL_SPEED = parseFloat(
 function _discardFailedItem(wrap, el) {
   mediaObserver.unobserve(el);
   viewObserver.unobserve(wrap);
+  videoRatios.delete(el);
+  updateActiveAudio();
   wrap.remove();
   const idx = items.findIndex(i => i.id === wrap.dataset.id);
   if (idx !== -1) {
@@ -72,7 +75,12 @@ function createMediaEl(item) {
     el.autoplay = true;
     el.addEventListener("mouseenter", () => { el.controls = true; });
     el.addEventListener("mouseleave", () => { el.controls = false; });
-    el.addEventListener("ended", () => { if (!autoScroll) advance(1); });
+    el.addEventListener("ended", () => {
+      if (!autoScroll) {
+        const videoIdx = items.findIndex(i => i.id === wrap.dataset.id);
+        if (videoIdx === currentIndex) advance(1);
+      }
+    });
     el.addEventListener("loadeddata", () => { wrap.classList.add("loaded"); seenObserver.observe(wrap); });
     el.addEventListener("error", () => _discardFailedItem(wrap, el));
     mediaObserver.observe(el);
@@ -165,6 +173,19 @@ function maybeLoadMore() {
   if (hasMore && items.length - currentIndex < PREFETCH_AHEAD) fetchItems();
 }
 
+function updateActiveAudio() {
+  if (muted) {
+    videoRatios.forEach((_, v) => { v.muted = true; });
+    return;
+  }
+  let bestVideo = null;
+  let bestRatio = -1;
+  videoRatios.forEach((ratio, v) => {
+    if (ratio > bestRatio) { bestRatio = ratio; bestVideo = v; }
+  });
+  videoRatios.forEach((_, v) => { v.muted = v !== bestVideo; });
+}
+
 // ---------------------------------------------------------------------------
 // 5. Seen observer
 // ---------------------------------------------------------------------------
@@ -213,6 +234,8 @@ const mediaObserver = new IntersectionObserver((entries) => {
       if (isVideo) {
         el.pause();
         delete el.dataset.playing;
+        videoRatios.delete(el);
+        updateActiveAudio();
       }
       if (isVideo || isGif) {
         delete el.dataset.scrollPausedHere;
@@ -227,6 +250,11 @@ const mediaObserver = new IntersectionObserver((entries) => {
     }
 
     if (isVideo || isGif) {
+      if (isVideo) {
+        videoRatios.set(el, ratio);
+        updateActiveAudio();
+      }
+
       // Start playing once element is 50 % visible
       if (!el.dataset.playing && ratio >= 0.5) {
         el.dataset.playing = "1";
@@ -403,7 +431,7 @@ function toggleSlideshow() {
 
 function toggleMute() {
   muted = !muted;
-  document.querySelectorAll("video").forEach(v => { v.muted = muted; });
+  updateActiveAudio();
   updateControls();
 }
 
