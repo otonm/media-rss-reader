@@ -6,7 +6,7 @@ from pathlib import Path
 from typing import Annotated
 
 import aiosqlite
-from fastapi import APIRouter, Depends, Form, Request
+from fastapi import APIRouter, Depends, Form, HTTPException, Request
 from fastapi.responses import HTMLResponse, RedirectResponse, Response
 
 from src.auth import totp as totp_module
@@ -27,6 +27,10 @@ router = APIRouter()
 
 _static = Path(__file__).parent.parent / "static"
 
+# Cache template files at module load time to avoid repeated disk reads.
+_login_html: str = (_static / "login.html").read_text()
+_setup_html: str = (_static / "setup.html").read_text()
+
 _lockout = LockoutTracker(
     max_attempts=settings.auth_lockout_attempts,
     lockout_seconds=settings.auth_lockout_minutes * 60,
@@ -36,8 +40,10 @@ _DbDep = Annotated[aiosqlite.Connection, Depends(get_db)]
 
 
 def _client_ip(request: Request) -> str:
+    # Assumes a trusted reverse proxy always sets X-Forwarded-For;
+    # do not expose this service directly to the internet.
     forwarded = request.headers.get("x-forwarded-for", "")
-    return forwarded.split(",")[0].strip() or "unknown"
+    return forwarded.split(",")[0].strip() or (request.client.host if request.client else "unknown")
 
 
 def _set_session_cookie(response: Response) -> None:
@@ -72,7 +78,7 @@ async def _load_totp_secret(db: aiosqlite.Connection) -> str | None:
 
 @router.get("/login", response_class=HTMLResponse)
 async def get_login() -> str:
-    return (_static / "login.html").read_text()
+    return _login_html
 
 
 @router.post("/login")
@@ -125,10 +131,9 @@ async def get_setup(request: Request, db: _DbDep = None) -> Response:  # type: i
 
     uri = totp_module.build_uri(secret, settings.auth_username)
     html = (
-        (_static / "setup.html")
-        .read_text()
+        _setup_html
         .replace("{{TOTP_URI}}", _html.escape(uri))
-        .replace("{{TOTP_SECRET}}", secret)
+        .replace("{{TOTP_SECRET}}", _html.escape(secret))
         .replace("{{ERROR}}", "")
     )
     return HTMLResponse(html)
@@ -140,6 +145,10 @@ async def post_setup(
     totp_code: str = Form(...),
     db: _DbDep = None,  # type: ignore[assignment]
 ) -> Response:
+    ip = _client_ip(request)
+    if _lockout.is_locked(ip):
+        raise HTTPException(status_code=429, detail="Too many attempts. Try again later.")
+
     if await _load_totp_secret(db) is not None:
         return RedirectResponse("/login", status_code=302)
 
@@ -149,18 +158,19 @@ async def post_setup(
         return Response("Setup session expired. Please log in again.", status_code=403)
 
     if not totp_module.verify_code(secret, totp_code):
+        _lockout.record_failure(ip)
         uri = totp_module.build_uri(secret, settings.auth_username)
         html = (
-            (_static / "setup.html")
-            .read_text()
+            _setup_html
             .replace("{{TOTP_URI}}", _html.escape(uri))
-            .replace("{{TOTP_SECRET}}", secret)
+            .replace("{{TOTP_SECRET}}", _html.escape(secret))
             .replace("{{ERROR}}", "Invalid code. Try again.")
         )
         resp = HTMLResponse(html)
         _set_setup_cookie(resp, secret)
         return resp
 
+    _lockout.reset(ip)
     await db.execute(
         "INSERT OR REPLACE INTO auth_config (key, value) VALUES ('totp_secret', ?)", (secret,)
     )

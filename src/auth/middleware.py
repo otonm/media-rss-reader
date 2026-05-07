@@ -19,6 +19,8 @@ def _is_auth_free(path: str) -> bool:
 
 class AuthMiddleware(BaseHTTPMiddleware):
     async def dispatch(self, request: Request, call_next: RequestResponseEndpoint) -> Response:
+        # Assumes a trusted reverse proxy always sets X-Forwarded-Proto;
+        # do not expose this service directly to the internet.
         if request.headers.get("x-forwarded-proto") != "https":
             return Response("HTTPS required.", status_code=403)
 

@@ -1,9 +1,12 @@
 """Authentication tests."""
 
 import aiosqlite
+import pyotp
 import pytest
 from httpx import AsyncClient as HttpxAsyncClient
 
+from src.auth import totp as totp_module
+from src.auth.lockout import LockoutTracker
 from src.auth.session import (
     SESSION_COOKIE,
     SESSION_MAX_AGE,
@@ -15,7 +18,6 @@ from src.auth.session import (
     verify_setup_cookie,
 )
 from src.config import settings
-
 
 # ---------------------------------------------------------------------------
 # session.py tests
@@ -66,8 +68,6 @@ def test_verify_setup_cookie_tampered() -> None:
 # lockout.py tests
 # ---------------------------------------------------------------------------
 
-from src.auth.lockout import LockoutTracker
-
 
 def test_lockout_not_locked_initially() -> None:
     tracker = LockoutTracker(max_attempts=3, lockout_seconds=60)
@@ -117,10 +117,6 @@ def test_lockout_expires(monkeypatch: pytest.MonkeyPatch) -> None:
 # totp.py tests
 # ---------------------------------------------------------------------------
 
-import pyotp
-
-from src.auth import totp as totp_module
-
 
 def test_generate_secret_is_valid_base32() -> None:
     secret = totp_module.generate_secret()
@@ -162,9 +158,6 @@ def test_verify_code_rejects_empty_string() -> None:
 # ---------------------------------------------------------------------------
 # Route integration tests (require auth_client / authed_client fixtures)
 # ---------------------------------------------------------------------------
-
-import pyotp  # noqa: E402 (already imported above, but re-stating for clarity)
-
 
 async def _insert_totp_secret(db: aiosqlite.Connection, secret: str) -> None:
     await db.execute(
