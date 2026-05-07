@@ -2,7 +2,7 @@
 
 A self-hosted media viewer that turns RSS feeds containing images, GIFs, or videos into a smooth, fullscreen browsing experience — like a private feed you control.
 
-The backend continuously fetches feeds in the background (no browser session required), stores media items in SQLite, and serves a lightweight browser UI over HTTP. All configuration is done through environment variables; no accounts, no external services, no build step.
+The backend continuously fetches feeds in the background (no browser session required), stores media items in SQLite, and serves a lightweight browser UI over HTTP. All configuration is done through environment variables; no external services, no build step.
 
 ## Features
 
@@ -14,6 +14,7 @@ The backend continuously fetches feeds in the background (no browser session req
 - **Pre-fetch cache** — upcoming media is downloaded before you reach it, eliminating load stalls
 - **Persistent storage** — feed items survive restarts; seen state tracked per item
 - **OPML-driven** — manage your feed list with any RSS reader's export format
+- **Authentication** — username/password + TOTP (set up on first login), signed 7-day session cookies, IP-based brute-force lockout
 - **Docker-native** — single container, volume-mounted data, no external database service
 
 ## Key Bindings
@@ -41,11 +42,16 @@ On mobile, swipe up/down to navigate. Tap ☰ to open the control menu.
 git clone https://github.com/yourname/media-rss-reader.git
 cd media-rss-reader
 
-# 2. Edit feeds.opml with your feed URLs, then start
+# 2. Set required auth credentials in docker-compose.yml:
+#    AUTH_USERNAME, AUTH_PASSWORD, AUTH_SECRET_KEY
+
+# 3. Edit feeds.opml with your feed URLs, then start
 docker compose up -d
 ```
 
-Open http://localhost:8082 in your browser. The first fetch runs immediately on startup; media appears within a few seconds.
+Open http://localhost:8082 in your browser. You will be redirected to `/login`. On first login (before TOTP is configured), entering your username and password redirects to `/setup` where you scan the QR code or copy the secret into an authenticator app. Subsequent logins require all three fields: username, password, and TOTP code.
+
+The first feed fetch runs immediately on startup; media appears within a few seconds after logging in.
 
 ## OPML Feed List
 
@@ -72,8 +78,22 @@ The file is re-read on the interval set by `OPML_SYNC_INTERVAL`. Adding or remov
 
 All settings are environment variables configured directly in `docker-compose.yml`.
 
+### Required
+
+| Variable | Description |
+|---|---|
+| `AUTH_USERNAME` | Login username |
+| `AUTH_PASSWORD` | Login password |
+| `AUTH_SECRET_KEY` | Signs session cookies — rotate to invalidate all active sessions instantly |
+
+Generate a suitable secret key with `openssl rand -hex 32`.
+
+### Optional
+
 | Variable | Default | Description |
 |---|---|---|
+| `AUTH_LOCKOUT_ATTEMPTS` | `5` | Failed login attempts before IP lockout |
+| `AUTH_LOCKOUT_MINUTES` | `15` | Lockout duration in minutes |
 | `OPML_PATH` | `/data/feeds.opml` | Path to the OPML file inside the container |
 | `DB_PATH` | `/data/db/reader.db` | SQLite database path inside the container |
 | `CACHE_DIR` | `/cache` | Directory for cached media files |
@@ -108,6 +128,9 @@ docker run -d \
   -v media-rss-data:/data/db \
   -v media-rss-cache:/cache \
   -e TZ=Europe/Berlin \
+  -e AUTH_USERNAME=admin \
+  -e AUTH_PASSWORD=yourpassword \
+  -e AUTH_SECRET_KEY=$(openssl rand -hex 32) \
   ghcr.io/otonm/media-rss-reader:latest
 ```
 
@@ -132,6 +155,9 @@ services:
       - media_cache:/cache                 # media disk cache
     environment:
       - TZ=Europe/Berlin
+      - AUTH_USERNAME=admin
+      - AUTH_PASSWORD=changeme
+      - AUTH_SECRET_KEY=replace-with-a-random-32-char-secret
       # - LOG_LEVEL=debug
       # - IMAGE_DISPLAY_DELAY_MS=5000
       # - AUTO_SCROLL_SPEED=1.5
@@ -149,9 +175,13 @@ docker compose down           # stop (volumes are preserved)
 docker compose down -v        # stop AND delete all data
 ```
 
-## Deployment: Cloudflare Tunnel + Access
+## Deployment: Cloudflare Tunnel
 
-This setup exposes the reader securely to the internet without opening firewall ports, and locks it behind Cloudflare Access email authentication so only authorised users can reach it. Everything runs inside Docker — no `cloudflared` binary needs to be installed on your machine.
+This setup exposes the reader to the internet without opening firewall ports. The app's built-in authentication (username + password + TOTP) handles access control; Cloudflare acts purely as a TLS-terminating reverse proxy that sets the `X-Forwarded-Proto: https` header the app requires.
+
+You can additionally enable Cloudflare Access as a second authentication layer (see Step 4), but it is optional.
+
+Everything runs inside Docker — no `cloudflared` binary needs to be installed on your machine.
 
 **What you need:**
 - A domain managed by Cloudflare (free account is sufficient)
@@ -203,6 +233,9 @@ services:
       - media_cache:/cache
     environment:
       - TZ=Europe/Berlin
+      - AUTH_USERNAME=admin
+      - AUTH_PASSWORD=changeme
+      - AUTH_SECRET_KEY=replace-with-a-random-32-char-secret
     restart: unless-stopped
 
   cloudflared:
@@ -226,13 +259,13 @@ docker compose up -d
 docker compose logs cloudflared   # should show "Registered tunnel connection"
 ```
 
-Visit `https://reader.example.com` — the app is accessible (unauthenticated at this point). Continue to Step 4 to add the login gate.
+Visit `https://reader.example.com` — the app's built-in login page is displayed. The Cloudflare tunnel terminates TLS and sets `X-Forwarded-Proto: https`, which the app requires. Continue to Step 4 to optionally add Cloudflare Access as an additional authentication layer.
 
 ---
 
-### Step 4: Enable Cloudflare Access Authentication
+### Step 4: (Optional) Enable Cloudflare Access as a Second Factor
 
-This adds a login page in front of the tunnel. Only users whose email address matches the policy can get in.
+This adds a Cloudflare-managed login page in front of the tunnel as an additional authentication layer. The app's own username/password/TOTP login still applies after passing this gate.
 
 1. Go to **Zero Trust** → **Access** → **Applications** → **Add an application**
 2. Choose **Self-hosted**

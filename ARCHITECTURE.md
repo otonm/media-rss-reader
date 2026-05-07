@@ -14,9 +14,16 @@ Three planes interact at runtime:
 │  Scroll view / Slideshow view                           │
 │  IntersectionObserver × 3  ·  RAF auto-scroll loop     │
 └───────────────┬─────────────────────────────────────────┘
-                │  HTTP  (fetch / POST)
+                │  HTTPS  (X-Forwarded-Proto from proxy)
+┌───────────────▼─────────────────────────────────────────┐
+│  AuthMiddleware                                         │
+│  HTTPS enforcement  ·  session cookie validation        │
+│  pass-through: /login  /setup  /static/*               │
+└───────────────┬─────────────────────────────────────────┘
+                │
 ┌───────────────▼─────────────────────────────────────────┐
 │  FastAPI  (Uvicorn, async)                              │
+│  /login  /setup  /logout                               │
 │  /api/feeds  /api/items  /api/media/proxy               │
 │  /api/prefetch/hint  /api/status                        │
 └───────────┬─────────────────────┬───────────────────────┘
@@ -45,6 +52,13 @@ src/
 ├── config.py        Pydantic Settings — all config from env vars
 ├── scheduler.py     APScheduler setup; HTTP client singleton; startup tasks
 │
+├── auth/
+│   ├── middleware.py  HTTPS enforcement + session cookie validation
+│   ├── routes.py      GET/POST /login, GET/POST /setup, POST /logout
+│   ├── session.py     Sign/verify session and setup cookies (itsdangerous)
+│   ├── totp.py        Generate secrets, build otpauth:// URIs, verify codes
+│   └── lockout.py     In-process IP lockout tracker
+│
 ├── db/
 │   ├── connection.py   open_db() + get_db() FastAPI dependency
 │   ├── schema.py       CREATE TABLE / INDEX statements (idempotent)
@@ -66,9 +80,12 @@ src/
 │   └── media.py     GET /api/media/proxy, POST /api/prefetch/hint, GET /api/status
 │
 └── static/
-    ├── index.html   App shell; <!-- SLIDESHOW_TRANSITION --> injection point
-    ├── app.js       All UI logic (~540 lines, 14 sections)
-    └── style.css    Layout + theming via CSS custom properties
+    ├── index.html      App shell; <!-- SLIDESHOW_TRANSITION --> injection point
+    ├── login.html      Standalone login form (no SPA dependency)
+    ├── setup.html      First-time TOTP setup with client-side QR rendering
+    ├── qrcode.min.js   Bundled node-qrcode browser build (no CDN)
+    ├── app.js          All UI logic (~540 lines, 14 sections)
+    └── style.css       Layout + theming via CSS custom properties
 ```
 
 ---
@@ -152,9 +169,10 @@ This makes IDs stable and collision-resistant without a sequence counter, and de
 ### Schema
 
 ```sql
-feeds  (id PK, url UNIQUE, title, last_fetched_at, created_at)
-items  (id PK, feed_id FK→feeds CASCADE, guid, title,
-        media_url, media_type, pub_date, fetched_at, seen_at)
+feeds       (id PK, url UNIQUE, title, last_fetched_at, created_at)
+items       (id PK, feed_id FK→feeds CASCADE, guid, title,
+             media_url, media_type, pub_date, fetched_at, seen_at)
+auth_config (key PK, value)   -- stores TOTP secret as ('totp_secret', '<base32>')
 ```
 
 Indexes on `items`: `feed_id`, `pub_date DESC`, `seen_at`, `fetched_at`.
@@ -305,15 +323,81 @@ Frontend-visible values (`image_display_delay_ms`, `slideshow_transition_ms`, `p
 
 ---
 
+## Authentication
+
+Authentication is handled by the `src/auth/` module. It is isolated from all other application logic.
+
+### Middleware (`auth/middleware.py`)
+
+`AuthMiddleware` is a Starlette `BaseHTTPMiddleware` registered on the FastAPI app before all routers. Every inbound request passes through it:
+
+1. **HTTPS check** — rejects requests where `X-Forwarded-Proto != https` with `403`. The app assumes it is always behind a trusted TLS-terminating reverse proxy. Do not expose it directly to the internet.
+2. **Auth-free paths** — `/login`, `/setup`, and all `/static/*` paths are passed through without a session check.
+3. **Session validation** — all other paths require a valid signed session cookie. Invalid or missing → `302` redirect to `/login`.
+
+### Session Cookies (`auth/session.py`)
+
+Sessions are stateless signed tokens using `itsdangerous.URLSafeTimedSerializer`. The signing key is `AUTH_SECRET_KEY`. Cookies are `HttpOnly`, `Secure`, `SameSite=Lax`, `Max-Age=604800` (7 days). Rotating `AUTH_SECRET_KEY` immediately invalidates all active sessions.
+
+A separate short-lived setup cookie (10-minute TTL) carries the TOTP secret during the first-login flow.
+
+### Login Flow (`auth/routes.py`)
+
+**Normal login** (TOTP already configured):
+```
+POST /login → IP lockout check (429 if locked)
+           → secrets.compare_digest(password) — timing-safe, 401 on fail
+           → pyotp TOTP verify (valid_window=1, ±30 s clock tolerance), 401 on fail
+           → reset lockout counter
+           → set 7-day session cookie → 303 redirect to /
+```
+
+**First login** (no TOTP secret in DB):
+```
+POST /login → check password → detect missing TOTP
+           → generate base32 secret
+           → set 10-min setup cookie → 303 redirect to /setup
+
+GET  /setup → verify setup cookie (403 if missing/expired)
+           → serve setup.html with otpauth:// URI (client-side QR) + copyable base32 secret
+
+POST /setup → verify setup cookie
+           → pyotp verify against temporary secret
+           → persist secret to auth_config table
+           → clear setup cookie, set 7-day session cookie → 303 redirect to /
+```
+
+### TOTP (`auth/totp.py`)
+
+`pyotp.random_base32()` generates the secret. The `otpauth://` URI is embedded in `setup.html`; `qrcode.min.js` (bundled node-qrcode browser build, no CDN) renders it into a `<canvas>` QR code on the client. The base32 secret is also shown as copyable text for manual entry.
+
+### IP Lockout (`auth/lockout.py`)
+
+An in-process `LockoutTracker` dict keyed by `X-Forwarded-For` first value. After `AUTH_LOCKOUT_ATTEMPTS` failures the IP is locked for `AUTH_LOCKOUT_MINUTES` minutes. The lockout applies to both `POST /login` and `POST /setup`. The counter resets on successful login.
+
+### Database (`auth_config` table)
+
+Migration v4 adds:
+```sql
+CREATE TABLE IF NOT EXISTS auth_config (key TEXT PRIMARY KEY, value TEXT NOT NULL)
+```
+
+A single row `('totp_secret', '<base32>')` is written on first successful TOTP setup.
+
+---
+
 ## Testing
 
-Tests live in `tests/`. The `conftest.py` provides three fixtures:
+Tests live in `tests/`. The `conftest.py` provides fixtures:
 
 | Fixture | What it is |
 |---------|-----------|
 | `db` | In-memory aiosqlite connection with schema applied |
 | `client` | `httpx.AsyncClient` wrapping the FastAPI app with `get_db` overridden to use the in-memory DB |
 | `mock_http` | `respx.MockRouter` for intercepting external HTTP requests |
+| `auth_settings` | Monkeypatches `settings` with test credentials and a fixed secret key |
+| `auth_client` | Test app with auth routes + `AuthMiddleware`; resets the lockout tracker between tests; sends `X-Forwarded-Proto: https` by default |
+| `authed_client` | `auth_client` pre-loaded with a valid signed session cookie |
 
 Coverage target: **90 %** (enforced by `--cov-fail-under=90`).
 
