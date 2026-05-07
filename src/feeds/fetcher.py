@@ -5,6 +5,7 @@ returns a list of item dicts ready to INSERT into the database.
 Items without a detectable media URL are silently skipped.
 """
 
+import asyncio
 import hashlib
 import logging
 
@@ -35,7 +36,7 @@ async def fetch_feed(url: str, client: httpx.AsyncClient) -> list[dict]:
     response = await client.get(url, follow_redirects=True, timeout=30)
     logger.debug(f"Fetched feed {url} with status code {response.status_code}")
 
-    feed = feedparser.parse(response.text)
+    feed = await asyncio.to_thread(feedparser.parse, response.text)
     feed_id = _feed_id(url)
 
     items = []

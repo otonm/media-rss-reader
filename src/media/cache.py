@@ -42,21 +42,10 @@ def cache_read(url: str) -> Path | None:
     return path if path.exists() else None
 
 
-async def evict() -> None:
-    """Evict stale or excess cache entries.
-
-    Step 1: delete files older than CACHE_MAX_AGE_HOURS.
-    Step 2: if the surviving count still exceeds CACHE_MAX_ITEMS,
-            delete the oldest files (by mtime) until under the limit.
-    """
-    cache_dir = Path(settings.cache_dir)
-    if not cache_dir.exists():  # noqa: ASYNC240
-        return
+def _evict_sync(cache_dir: Path, max_age_secs: float, max_items: int) -> None:
+    """Blocking eviction logic — run via asyncio.to_thread to keep the event loop free."""
     now = time.time()
-    max_age_secs = settings.cache_max_age_hours * 3600
-
-    # Sort by mtime ascending so the oldest files are at index 0.
-    files = sorted(cache_dir.iterdir(), key=lambda p: p.stat().st_mtime)  # noqa: ASYNC240
+    files = sorted(cache_dir.iterdir(), key=lambda p: p.stat().st_mtime)
     surviving: list[Path] = []
     for f in files:
         if now - f.stat().st_mtime > max_age_secs:
@@ -64,8 +53,24 @@ async def evict() -> None:
             f.unlink(missing_ok=True)
         else:
             surviving.append(f)
-
-    # Pop from the front (oldest) until under the count limit.
-    while len(surviving) > settings.cache_max_items:
+    while len(surviving) > max_items:
         logger.debug(f"Evicting cache file {surviving[0]} due to count limit")
         surviving.pop(0).unlink(missing_ok=True)
+
+
+async def evict() -> None:
+    """Evict stale or excess cache entries without blocking the event loop.
+
+    Step 1: delete files older than CACHE_MAX_AGE_HOURS.
+    Step 2: if the surviving count still exceeds CACHE_MAX_ITEMS,
+            delete the oldest files (by mtime) until under the limit.
+    """
+    cache_dir = Path(settings.cache_dir)
+    if not cache_dir.exists():
+        return
+    await asyncio.to_thread(
+        _evict_sync,
+        cache_dir,
+        settings.cache_max_age_hours * 3600,
+        settings.cache_max_items,
+    )
