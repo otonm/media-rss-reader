@@ -7,11 +7,11 @@ from typing import Annotated, Any
 
 import aiosqlite
 from fastapi import APIRouter, Depends, HTTPException, Query
-from fastapi.responses import FileResponse, StreamingResponse
+from fastapi.responses import FileResponse
 
 from src.config import settings
 from src.db.connection import get_db
-from src.media.cache import cache_read, cache_write
+from src.media.cache import cache_read, cache_stream_write
 from src.media.prefetch import prefetch_ahead
 from src.scheduler import get_http_client, get_last_opml_sync
 
@@ -21,13 +21,13 @@ _DbDep = Annotated[aiosqlite.Connection, Depends(get_db)]
 
 
 @router.get("/media/proxy", response_model=None)
-async def proxy_media(url: str = Query(...)) -> FileResponse | StreamingResponse:
+async def proxy_media(url: str = Query(...)) -> FileResponse:
     """Cache-through proxy for media files.
 
     On a cache hit: serve the file directly via FileResponse (zero-copy sendfile).
-    On a cache miss: fetch from upstream, write to cache, stream to the browser.
-    The full response body is read once (aread) to write to cache — it is not
-    buffered a second time for the stream.
+    On a cache miss: stream from upstream to the cache file (no in-memory buffer),
+    then serve the cached file. This keeps memory usage O(chunk_size) regardless
+    of the media file size.
     """
     path = cache_read(url)
     if path is not None:
@@ -35,20 +35,17 @@ async def proxy_media(url: str = Query(...)) -> FileResponse | StreamingResponse
 
     client = get_http_client()
     try:
-        response = await client.get(url, follow_redirects=True, timeout=30)
+        async with client.stream("GET", url, follow_redirects=True, timeout=30) as response:
+            if not response.is_success:
+                raise HTTPException(status_code=502, detail="upstream error")
+            content_type = response.headers.get("content-type", "application/octet-stream")
+            path = await cache_stream_write(url, response.aiter_bytes(65536))
+    except HTTPException:
+        raise
     except Exception as exc:
         raise HTTPException(status_code=502, detail="upstream fetch failed") from exc
-    if not response.is_success:
-        raise HTTPException(status_code=502, detail="upstream error")
 
-    data = await response.aread()
-    await cache_write(url, data)
-    content_type = response.headers.get("content-type", "application/octet-stream")
-
-    async def _stream() -> bytes:
-        yield data
-
-    return StreamingResponse(_stream(), media_type=content_type)
+    return FileResponse(str(path), media_type=content_type)
 
 
 @router.post("/prefetch/hint")

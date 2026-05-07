@@ -64,15 +64,18 @@ async def _refresh_feed(
     already in the database, so this function is safe to call repeatedly.
     """
     items = await fetch_feed(url, client)
+    inserted = 0
     for item in items:
         logger.debug(f"Storing item {item['title']} with media URL {item['media_url']} and ID {item['id']}")
-
-        await db.execute(
+        cursor = await db.execute(
             """INSERT OR IGNORE INTO items
                (id, feed_id, guid, title, media_url, media_type, pub_date)
                VALUES (:id, :feed_id, :guid, :title, :media_url, :media_type, :pub_date)""",
             item,
         )
+        inserted += cursor.rowcount
+    if items:
+        logger.debug(f"Feed {url}: {inserted} new, {len(items) - inserted} already in DB")
 
     await db.execute(
         "UPDATE feeds SET last_fetched_at = datetime('now') WHERE id = ?",
@@ -143,6 +146,9 @@ async def prune_items(db: aiosqlite.Connection) -> None:
         )
 
     await db.commit()
+    async with db.execute("SELECT COUNT(*) FROM items") as cur:
+        row = await cur.fetchone()
+    logger.debug(f"Items remaining after pruning: {row[0]}")
 
 
 async def refresh_all_feeds(db: aiosqlite.Connection, client: httpx.AsyncClient) -> None:

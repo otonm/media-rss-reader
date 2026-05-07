@@ -12,6 +12,7 @@ import asyncio
 import hashlib
 import logging
 import time
+from collections.abc import AsyncIterable
 from pathlib import Path
 
 from src.config import settings
@@ -25,14 +26,30 @@ def _cache_path(url: str) -> Path:
 
 
 async def cache_write(url: str, data: bytes) -> Path:
-    """Write media bytes to the cache and return the path.
-
-    The write is performed off the event loop via asyncio.to_thread to
-    avoid blocking the async executor on large file writes.
-    """
+    """Write media bytes to the cache and return the path."""
     path = _cache_path(url)
     path.parent.mkdir(parents=True, exist_ok=True)
     await asyncio.to_thread(path.write_bytes, data)
+    return path
+
+
+async def cache_stream_write(url: str, chunks: AsyncIterable[bytes]) -> Path:
+    """Stream an async byte iterator to the cache file without buffering in memory.
+
+    Writes to a .tmp sibling first, then renames atomically so a partial
+    download never leaves a corrupt cache entry.
+    """
+    path = _cache_path(url)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    tmp = path.with_suffix(".tmp")
+    try:
+        with tmp.open("wb") as fh:
+            async for chunk in chunks:
+                fh.write(chunk)
+        await asyncio.to_thread(tmp.rename, path)
+    except Exception:
+        tmp.unlink(missing_ok=True)
+        raise
     return path
 
 
