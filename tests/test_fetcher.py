@@ -28,9 +28,7 @@ _RSS = """\
 
 
 async def test_fetch_feed_returns_only_media_items(mock_http: respx.MockRouter) -> None:
-    mock_http.get("https://example.com/feed.xml").mock(
-        return_value=httpx.Response(200, text=_RSS)
-    )
+    mock_http.get("https://example.com/feed.xml").mock(return_value=httpx.Response(200, text=_RSS))
     async with httpx.AsyncClient() as client:
         items = await fetch_feed("https://example.com/feed.xml", client)
     assert len(items) == 2
@@ -40,9 +38,7 @@ async def test_fetch_feed_returns_only_media_items(mock_http: respx.MockRouter) 
 
 
 async def test_fetch_feed_item_has_correct_fields(mock_http: respx.MockRouter) -> None:
-    mock_http.get("https://example.com/feed.xml").mock(
-        return_value=httpx.Response(200, text=_RSS)
-    )
+    mock_http.get("https://example.com/feed.xml").mock(return_value=httpx.Response(200, text=_RSS))
     async with httpx.AsyncClient() as client:
         items = await fetch_feed("https://example.com/feed.xml", client)
     img = next(i for i in items if i["media_type"] == "image")
@@ -53,14 +49,10 @@ async def test_fetch_feed_item_has_correct_fields(mock_http: respx.MockRouter) -
 
 
 async def test_fetch_feed_same_guid_produces_same_id(mock_http: respx.MockRouter) -> None:
-    mock_http.get("https://example.com/feed.xml").mock(
-        return_value=httpx.Response(200, text=_RSS)
-    )
+    mock_http.get("https://example.com/feed.xml").mock(return_value=httpx.Response(200, text=_RSS))
     async with httpx.AsyncClient() as client:
         items1 = await fetch_feed("https://example.com/feed.xml", client)
-    mock_http.get("https://example.com/feed.xml").mock(
-        return_value=httpx.Response(200, text=_RSS)
-    )
+    mock_http.get("https://example.com/feed.xml").mock(return_value=httpx.Response(200, text=_RSS))
     async with httpx.AsyncClient() as client:
         items2 = await fetch_feed("https://example.com/feed.xml", client)
     assert items1[0]["id"] == items2[0]["id"]

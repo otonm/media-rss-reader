@@ -49,9 +49,7 @@ async def client(db: aiosqlite.Connection) -> AsyncGenerator[HttpxAsyncClient]:
 
     test_app.dependency_overrides[get_db] = _override_db
 
-    async with HttpxAsyncClient(
-        transport=ASGITransport(app=test_app), base_url="http://test"
-    ) as c:
+    async with HttpxAsyncClient(transport=ASGITransport(app=test_app), base_url="http://test") as c:
         yield c
 
 
@@ -65,6 +63,7 @@ from src.config import settings  # noqa: E402
 def auth_settings(monkeypatch: pytest.MonkeyPatch) -> None:
     """Override settings attributes for auth tests. Resets after each test."""
     from pydantic import SecretStr
+
     monkeypatch.setattr(settings, "auth_username", "admin")
     monkeypatch.setattr(settings, "auth_password", SecretStr("hunter2"))
     monkeypatch.setattr(settings, "auth_secret_key", SecretStr("test-secret-key-minimum-32-chars!!"))

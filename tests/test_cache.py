@@ -14,16 +14,12 @@ async def test_write_and_read(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -
     assert path.read_bytes() == b"bytes"
 
 
-async def test_read_miss_returns_none(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
+async def test_read_miss_returns_none(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(cache_mod.settings, "cache_dir", str(tmp_path))
     assert cache_mod.cache_read("https://example.com/missing.jpg") is None
 
 
-async def test_evict_by_count(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
+async def test_evict_by_count(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(cache_mod.settings, "cache_dir", str(tmp_path))
     monkeypatch.setattr(cache_mod.settings, "cache_max_items", 2)
     monkeypatch.setattr(cache_mod.settings, "cache_max_age_hours", 9999)
@@ -34,9 +30,7 @@ async def test_evict_by_count(
     assert len(list(tmp_path.iterdir())) == 2  # noqa: ASYNC240
 
 
-async def test_evict_by_age(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
+async def test_evict_by_age(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(cache_mod.settings, "cache_dir", str(tmp_path))
     monkeypatch.setattr(cache_mod.settings, "cache_max_items", 9999)
     monkeypatch.setattr(cache_mod.settings, "cache_max_age_hours", 0)

@@ -32,9 +32,7 @@ def test_parse_missing_file() -> None:
 
 def test_parse_empty_opml(tmp_path: Path) -> None:
     f = tmp_path / "feeds.opml"
-    f.write_text(
-        '<?xml version="1.0"?><opml version="2.0"><head/><body/></opml>'
-    )
+    f.write_text('<?xml version="1.0"?><opml version="2.0"><head/><body/></opml>')
     feeds = parse_opml(str(f))
     assert feeds == []
 

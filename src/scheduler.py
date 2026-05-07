@@ -104,9 +104,9 @@ async def start_scheduler(db: aiosqlite.Connection) -> None:
     # Initial sync runs in the background — server is ready before it completes.
     task = asyncio.create_task(_startup_sync(db))
     task.add_done_callback(
-        lambda t: logger.error("startup sync crashed: %s", t.exception())
-        if not t.cancelled() and t.exception()
-        else None
+        lambda t: (
+            logger.error("startup sync crashed: %s", t.exception()) if not t.cancelled() and t.exception() else None
+        )
     )
 
 

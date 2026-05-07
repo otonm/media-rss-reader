@@ -79,9 +79,7 @@ async def test_prefetch_ahead_fires_tasks(tmp_path: Path, monkeypatch: pytest.Mo
     await conn.commit()
 
     with respx.mock:
-        respx.get("http://example.com/img.jpg").mock(
-            return_value=httpx.Response(200, content=b"data")
-        )
+        respx.get("http://example.com/img.jpg").mock(return_value=httpx.Response(200, content=b"data"))
         async with httpx.AsyncClient() as client:
             await prefetch_ahead("item0", conn, client)
             # Allow tasks to run

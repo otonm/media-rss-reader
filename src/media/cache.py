@@ -75,6 +75,13 @@ def _evict_sync(cache_dir: Path, max_age_secs: float, max_items: int) -> None:
         surviving.pop(0).unlink(missing_ok=True)
 
 
+def _evict_if_exists(cache_dir: Path, max_age_secs: float, max_items: int) -> None:
+    """Check existence and evict — runs in a thread to keep the event loop free."""
+    if not cache_dir.exists():
+        return
+    _evict_sync(cache_dir, max_age_secs, max_items)
+
+
 async def evict() -> None:
     """Evict stale or excess cache entries without blocking the event loop.
 
@@ -83,10 +90,8 @@ async def evict() -> None:
             delete the oldest files (by mtime) until under the limit.
     """
     cache_dir = Path(settings.cache_dir)
-    if not cache_dir.exists():
-        return
     await asyncio.to_thread(
-        _evict_sync,
+        _evict_if_exists,
         cache_dir,
         settings.cache_max_age_hours * 3600,
         settings.cache_max_items,

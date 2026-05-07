@@ -8,9 +8,7 @@ async def test_index_html_served(tmp_path: Path) -> None:
     """Test that GET / serves the HTML with CSS vars injected."""
     static_dir = tmp_path / "static"
     static_dir.mkdir()
-    (static_dir / "index.html").write_text(
-        "<html><!-- SLIDESHOW_TRANSITION --></html>"
-    )
+    (static_dir / "index.html").write_text("<html><!-- SLIDESHOW_TRANSITION --></html>")
 
     import src.main as main_mod
     from src.auth.session import SESSION_COOKIE, sign_session

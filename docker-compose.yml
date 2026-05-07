@@ -10,6 +10,9 @@ services:
     environment:
       - TZ=Europe/Berlin
       - LOG_LEVEL=debug
+      - AUTH_USERNAME=admin
+      - AUTH_PASSWORD=changeme
+      - AUTH_SECRET_KEY=replace-with-a-random-32-char-secret
       - IMAGE_DISPLAY_DELAY_MS=500
       - AUTO_SCROLL_SPEED=5
       # Paths (override if mounting volumes differently)

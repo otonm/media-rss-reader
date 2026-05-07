@@ -13,9 +13,7 @@ from src.db.schema import create_schema
 async def test_start_and_stop_scheduler(tmp_path: Path) -> None:
     """Test that the scheduler starts and stops cleanly."""
     opml_file = tmp_path / "feeds.opml"
-    opml_file.write_text(
-        '<?xml version="1.0"?><opml version="2.0"><head/><body/></opml>'
-    )
+    opml_file.write_text('<?xml version="1.0"?><opml version="2.0"><head/><body/></opml>')
 
     conn = await open_db(":memory:")
     await create_schema(conn)
@@ -49,9 +47,7 @@ async def test_stop_scheduler_noop_when_not_started() -> None:
 async def test_start_scheduler_sets_last_opml_sync(tmp_path: Path) -> None:
     """After start_scheduler, _last_opml_sync is set when OPML sync succeeds."""
     opml_file = tmp_path / "feeds.opml"
-    opml_file.write_text(
-        '<?xml version="1.0"?><opml version="2.0"><head/><body/></opml>'
-    )
+    opml_file.write_text('<?xml version="1.0"?><opml version="2.0"><head/><body/></opml>')
 
     conn = await open_db(":memory:")
     await create_schema(conn)

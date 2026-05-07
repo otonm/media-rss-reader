@@ -9,12 +9,8 @@ async def test_feeds_empty(client: AsyncClient) -> None:
     assert resp.json() == []
 
 
-async def test_feeds_returns_feed_with_counts(
-    client: AsyncClient, db: aiosqlite.Connection
-) -> None:
-    await db.execute(
-        "INSERT INTO feeds (id, url, title) VALUES ('f1', 'http://x.com', 'X')"
-    )
+async def test_feeds_returns_feed_with_counts(client: AsyncClient, db: aiosqlite.Connection) -> None:
+    await db.execute("INSERT INTO feeds (id, url, title) VALUES ('f1', 'http://x.com', 'X')")
     await db.execute(
         "INSERT INTO items (id, feed_id, guid, media_url, media_type)"
         " VALUES ('i1', 'f1', 'g1', 'http://img.jpg', 'image')"
@@ -157,9 +153,7 @@ async def test_mark_seen_not_found(client: AsyncClient) -> None:
 # ---------------------------------------------------------------------------
 
 
-async def test_proxy_cache_hit(
-    client: AsyncClient, tmp_path: object, monkeypatch: object
-) -> None:
+async def test_proxy_cache_hit(client: AsyncClient, tmp_path: object, monkeypatch: object) -> None:
     import hashlib
 
     import src.media.cache as cache_mod
@@ -174,9 +168,7 @@ async def test_proxy_cache_hit(
     assert resp.content == b"cached"
 
 
-async def test_proxy_cache_miss(
-    client: AsyncClient, tmp_path: object, monkeypatch: object
-) -> None:
+async def test_proxy_cache_miss(client: AsyncClient, tmp_path: object, monkeypatch: object) -> None:
     import httpx
     import respx
 
@@ -187,9 +179,7 @@ async def test_proxy_cache_miss(
 
     with respx.mock:
         respx.get(url).mock(
-            return_value=httpx.Response(
-                200, content=b"freshdata", headers={"content-type": "image/jpeg"}
-            )
+            return_value=httpx.Response(200, content=b"freshdata", headers={"content-type": "image/jpeg"})
         )
         real_client = httpx.AsyncClient()
         monkeypatch.setattr("src.api.media.get_http_client", lambda: real_client)
@@ -200,9 +190,7 @@ async def test_proxy_cache_miss(
     assert resp.content == b"freshdata"
 
 
-async def test_proxy_upstream_error(
-    client: AsyncClient, tmp_path: object, monkeypatch: object
-) -> None:
+async def test_proxy_upstream_error(client: AsyncClient, tmp_path: object, monkeypatch: object) -> None:
     import httpx
     import respx
 
@@ -226,16 +214,12 @@ async def test_proxy_upstream_error(
 # ---------------------------------------------------------------------------
 
 
-async def test_prefetch_hint(
-    client: AsyncClient, db: aiosqlite.Connection, monkeypatch: object
-) -> None:
+async def test_prefetch_hint(client: AsyncClient, db: aiosqlite.Connection, monkeypatch: object) -> None:
     import httpx
 
     import src.api.media as media_mod
 
-    await db.execute(
-        "INSERT INTO feeds(id, url, title) VALUES ('f1', 'http://x.com/feed', 'F')"
-    )
+    await db.execute("INSERT INTO feeds(id, url, title) VALUES ('f1', 'http://x.com/feed', 'F')")
     await db.execute(
         "INSERT INTO items(id, feed_id, guid, title, media_url, media_type, pub_date) "
         "VALUES ('i1', 'f1', 'g1', 'T', 'http://x.com/img.jpg', 'image', datetime('now'))"
@@ -258,16 +242,12 @@ async def test_prefetch_hint_missing_item_id(client: AsyncClient) -> None:
 # ---------------------------------------------------------------------------
 
 
-async def test_status(
-    client: AsyncClient, db: aiosqlite.Connection, tmp_path: object, monkeypatch: object
-) -> None:
+async def test_status(client: AsyncClient, db: aiosqlite.Connection, tmp_path: object, monkeypatch: object) -> None:
     import src.media.cache as cache_mod
 
     monkeypatch.setattr(cache_mod.settings, "cache_dir", str(tmp_path))
 
-    await db.execute(
-        "INSERT INTO feeds(id, url, title) VALUES ('f1', 'http://x.com/feed', 'F')"
-    )
+    await db.execute("INSERT INTO feeds(id, url, title) VALUES ('f1', 'http://x.com/feed', 'F')")
     await db.execute(
         "INSERT INTO items(id, feed_id, guid, title, media_url, media_type, pub_date) "
         "VALUES ('i1', 'f1', 'g1', 'T', 'http://x.com/img.jpg', 'image', datetime('now'))"

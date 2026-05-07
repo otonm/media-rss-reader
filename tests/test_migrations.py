@@ -47,9 +47,7 @@ async def test_multiple_migrations_apply_in_order() -> None:
         assert row[0] == base_version + 2
 
         for table in ("_mig_a", "_mig_b"):
-            async with conn.execute(
-                f"SELECT name FROM sqlite_master WHERE type='table' AND name='{table}'"
-            ) as cur:
+            async with conn.execute(f"SELECT name FROM sqlite_master WHERE type='table' AND name='{table}'") as cur:
                 assert await cur.fetchone() is not None
     finally:
         mig_mod.MIGRATIONS[:] = original

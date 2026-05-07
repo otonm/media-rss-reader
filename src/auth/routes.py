@@ -131,8 +131,7 @@ async def get_setup(request: Request, db: _DbDep = None) -> Response:  # type: i
 
     uri = totp_module.build_uri(secret, settings.auth_username)
     html = (
-        _setup_html
-        .replace("{{TOTP_URI}}", _html.escape(uri))
+        _setup_html.replace("{{TOTP_URI}}", _html.escape(uri))
         .replace("{{TOTP_SECRET}}", _html.escape(secret))
         .replace("{{ERROR}}", "")
     )
@@ -161,8 +160,7 @@ async def post_setup(
         _lockout.record_failure(ip)
         uri = totp_module.build_uri(secret, settings.auth_username)
         html = (
-            _setup_html
-            .replace("{{TOTP_URI}}", _html.escape(uri))
+            _setup_html.replace("{{TOTP_URI}}", _html.escape(uri))
             .replace("{{TOTP_SECRET}}", _html.escape(secret))
             .replace("{{ERROR}}", "Invalid code. Try again.")
         )
@@ -171,9 +169,7 @@ async def post_setup(
         return resp
 
     _lockout.reset(ip)
-    await db.execute(
-        "INSERT OR REPLACE INTO auth_config (key, value) VALUES ('totp_secret', ?)", (secret,)
-    )
+    await db.execute("INSERT OR REPLACE INTO auth_config (key, value) VALUES ('totp_secret', ?)", (secret,))
     await db.commit()
 
     response = RedirectResponse("/", status_code=303)
