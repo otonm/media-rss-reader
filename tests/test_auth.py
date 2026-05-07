@@ -110,3 +110,49 @@ def test_lockout_expires(monkeypatch: pytest.MonkeyPatch) -> None:
     real_now = time_module.monotonic()
     monkeypatch.setattr(time_module, "monotonic", lambda: real_now + 10)
     assert tracker.is_locked("1.2.3.4") is False
+
+
+# ---------------------------------------------------------------------------
+# totp.py tests
+# ---------------------------------------------------------------------------
+
+import pyotp
+
+from src.auth import totp as totp_module
+
+
+def test_generate_secret_is_valid_base32() -> None:
+    secret = totp_module.generate_secret()
+    assert isinstance(secret, str)
+    assert len(secret) >= 16
+    # Valid base32 — pyotp accepts it without raising
+    pyotp.TOTP(secret).now()
+
+
+def test_generate_secret_is_unique() -> None:
+    assert totp_module.generate_secret() != totp_module.generate_secret()
+
+
+def test_build_uri_contains_secret_and_issuer() -> None:
+    secret = "JBSWY3DPEHPK3PXP"
+    uri = totp_module.build_uri(secret, "admin")
+    assert "otpauth://totp/" in uri
+    assert secret in uri
+    assert "MediaRSSReader" in uri
+    assert "admin" in uri
+
+
+def test_verify_code_accepts_current_code() -> None:
+    secret = totp_module.generate_secret()
+    code = pyotp.TOTP(secret).now()
+    assert totp_module.verify_code(secret, code) is True
+
+
+def test_verify_code_rejects_wrong_code() -> None:
+    secret = totp_module.generate_secret()
+    assert totp_module.verify_code(secret, "000000") is False
+
+
+def test_verify_code_rejects_empty_string() -> None:
+    secret = totp_module.generate_secret()
+    assert totp_module.verify_code(secret, "") is False
