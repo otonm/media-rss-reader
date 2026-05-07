@@ -1,3 +1,10 @@
+import os
+
+# Auth env vars must be set before src.config is imported (it instantiates Settings() at module level).
+os.environ.setdefault("AUTH_USERNAME", "testuser")
+os.environ.setdefault("AUTH_PASSWORD", "testpassword")
+os.environ.setdefault("AUTH_SECRET_KEY", "test-secret-key-minimum-32-chars!!")
+
 from collections.abc import AsyncGenerator, AsyncIterator
 
 import aiosqlite

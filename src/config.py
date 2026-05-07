@@ -9,6 +9,7 @@ values at call time. Frontend-visible values are injected into the HTML
 as CSS custom properties by main._build_html().
 """
 
+from pydantic import SecretStr
 from pydantic_settings import BaseSettings
 
 
@@ -39,6 +40,13 @@ class Settings(BaseSettings):
     # --- Server ---
     port: int = 8080
     log_level: str = "info"  # uvicorn log level
+
+    # --- Authentication ---
+    auth_username: str
+    auth_password: SecretStr
+    auth_secret_key: SecretStr
+    auth_lockout_attempts: int = 5
+    auth_lockout_minutes: int = 15
 
 
 settings = Settings()
