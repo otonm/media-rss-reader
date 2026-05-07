@@ -11,6 +11,8 @@ dependencies = [
     "apscheduler",
     "aiosqlite",
     "pydantic-settings",
+    "itsdangerous",
+    "pyotp",
 ]
 
 [project.optional-dependencies]

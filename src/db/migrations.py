@@ -24,6 +24,8 @@ MIGRATIONS: list[str] = [
     ),
     # v3: backfill seen_guids from items that are already marked seen
     "INSERT OR IGNORE INTO seen_guids (feed_id, guid, seen_at) SELECT feed_id, guid, seen_at FROM items WHERE seen_at IS NOT NULL",
+    # v4: auth_config table for storing TOTP secret
+    "CREATE TABLE IF NOT EXISTS auth_config (key TEXT PRIMARY KEY, value TEXT NOT NULL)",
 ]
 
 
