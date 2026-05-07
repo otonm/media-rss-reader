@@ -54,11 +54,31 @@ async def _opml_sync_job(db: aiosqlite.Connection, opml_path: str, client: httpx
     _state.last_opml_sync = datetime.datetime.now(datetime.UTC)
 
 
-async def start_scheduler(db: aiosqlite.Connection) -> None:
-    """Create the HTTP client, register scheduler jobs, and fire an initial sync.
+async def _startup_sync(db: aiosqlite.Connection) -> None:
+    """Run the initial OPML sync, feed refresh, and cache warmup as a background task.
 
-    Job registration uses string IDs so APScheduler can de-duplicate if
-    start_scheduler is somehow called twice in a test environment.
+    Runs after start_scheduler() returns so the server is already accepting
+    requests before any network I/O happens. Failures are logged; the scheduler
+    will retry on the next interval regardless.
+    """
+    try:
+        await opml_sync(db, settings.opml_path, _state.client)
+        _state.last_opml_sync = datetime.datetime.now(datetime.UTC)
+    except Exception as exc:
+        logger.warning("Initial OPML sync failed (will retry on schedule): %s", exc)
+    try:
+        await refresh_all_feeds(db, _state.client)
+    except Exception as exc:
+        logger.warning("Initial feed refresh failed (will retry on schedule): %s", exc)
+    asyncio.create_task(warm_startup_cache(db, _state.client))
+
+
+async def start_scheduler(db: aiosqlite.Connection) -> None:
+    """Create the HTTP client, register scheduler jobs, and start background sync.
+
+    Returns immediately so FastAPI can start serving requests from the existing
+    database contents while the initial sync runs in the background.
+    Job IDs allow APScheduler to de-duplicate if called twice in tests.
     """
     _state.client = httpx.AsyncClient()
     _state.scheduler = AsyncIOScheduler(event_loop=asyncio.get_running_loop())
@@ -81,21 +101,8 @@ async def start_scheduler(db: aiosqlite.Connection) -> None:
     )
     _state.scheduler.start()
 
-    # Eager startup: run both jobs immediately so the reader is populated
-    # on first boot without waiting for the first scheduled interval.
-    try:
-        await opml_sync(db, settings.opml_path, _state.client)
-        _state.last_opml_sync = datetime.datetime.now(datetime.UTC)
-    except Exception as exc:
-        logger.warning("Initial OPML sync failed (will retry on schedule): %s", exc)
-    try:
-        await refresh_all_feeds(db, _state.client)
-    except Exception as exc:
-        logger.warning("Initial feed refresh failed (will retry on schedule): %s", exc)
-
-    # Startup cache warmup runs as a background task — does not block the server
-    # from accepting requests while it downloads media files.
-    asyncio.create_task(warm_startup_cache(db, _state.client))
+    # Initial sync runs in the background — server is ready before it completes.
+    asyncio.create_task(_startup_sync(db))
 
 
 async def stop_scheduler() -> None:

@@ -61,6 +61,9 @@ async def test_start_scheduler_sets_last_opml_sync(tmp_path: Path) -> None:
 
     with patch.object(sched_mod.settings, "opml_path", str(opml_file)):
         await sched_mod.start_scheduler(conn)
+        # start_scheduler now returns immediately; yield to the event loop so the
+        # background _startup_sync task can run and set last_opml_sync.
+        await asyncio.sleep(0.1)
         sync_time = sched_mod.get_last_opml_sync()
         await sched_mod.stop_scheduler()
 
