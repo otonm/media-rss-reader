@@ -13,6 +13,7 @@ import httpx
 from src.config import settings
 from src.feeds.fetcher import _feed_id, fetch_feed
 from src.feeds.opml import parse_opml
+from src.media.cache import evict
 
 logger = logging.getLogger(__name__)
 
@@ -138,12 +139,16 @@ async def prune_items(db: aiosqlite.Connection) -> None:
 
 
 async def refresh_all_feeds(db: aiosqlite.Connection, client: httpx.AsyncClient) -> None:
-    """Refresh every feed in the database and then prune old items."""
+    """Refresh every feed in the database, prune old items, and evict stale cache."""
     logger.debug("Refreshing all feeds")
     async with db.execute("SELECT id, url FROM feeds") as cur:
         feeds = await cur.fetchall()
     for feed in feeds:
-        await _refresh_feed(db, feed["id"], feed["url"], client)
-    # Prune after all feeds are refreshed so the count limit accounts for the
-    # full batch of new items rather than enforcing it feed-by-feed.
+        try:
+            await _refresh_feed(db, feed["id"], feed["url"], client)
+        except Exception as exc:
+            logger.warning("Feed refresh failed for %s: %s", feed["url"], exc)
+    # Prune and evict always run regardless of individual feed failures so
+    # keep_items and cache size limits are reliably enforced.
     await prune_items(db)
+    await evict()
