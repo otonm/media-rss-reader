@@ -13,6 +13,8 @@ async def test_index_html_served(tmp_path: Path) -> None:
     )
 
     import src.main as main_mod
+    from src.auth.session import SESSION_COOKIE, sign_session
+    from src.config import settings
 
     with (
         patch.object(main_mod, "_static_dir", static_dir),
@@ -23,7 +25,13 @@ async def test_index_html_served(tmp_path: Path) -> None:
         # Force rebuild of HTML (since we patched the path) and store in app.state
         app.state.html = main_mod._build_html()
 
-        async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as c:
+        token = sign_session(settings.auth_secret_key.get_secret_value())
+        async with AsyncClient(
+            transport=ASGITransport(app=app),
+            base_url="https://test",
+            headers={"x-forwarded-proto": "https"},
+            cookies={SESSION_COOKIE: token},
+        ) as c:
             resp = await c.get("/")
 
     assert resp.status_code == 200
