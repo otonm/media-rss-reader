@@ -13,6 +13,7 @@ dependencies = [
     "pydantic-settings",
     "itsdangerous",
     "pyotp",
+    "python-multipart>=0.0.27",
 ]
 
 [project.optional-dependencies]
@@ -53,4 +54,9 @@ exclude_lines = [
     "pragma: no cover",
     "if TYPE_CHECKING:",
     "raise NotImplementedError",
+]
+
+[dependency-groups]
+dev = [
+    "python-multipart>=0.0.27",
 ]

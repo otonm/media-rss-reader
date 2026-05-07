@@ -2,7 +2,9 @@
 
 import time
 
+import aiosqlite
 import pytest
+from httpx import AsyncClient as HttpxAsyncClient
 
 from src.auth.session import (
     SESSION_COOKIE,
@@ -14,6 +16,7 @@ from src.auth.session import (
     verify_session,
     verify_setup_cookie,
 )
+from src.config import settings
 
 
 # ---------------------------------------------------------------------------
@@ -156,3 +159,189 @@ def test_verify_code_rejects_wrong_code() -> None:
 def test_verify_code_rejects_empty_string() -> None:
     secret = totp_module.generate_secret()
     assert totp_module.verify_code(secret, "") is False
+
+
+# ---------------------------------------------------------------------------
+# Route integration tests (require auth_client / authed_client fixtures)
+# ---------------------------------------------------------------------------
+
+import pyotp  # noqa: E402 (already imported above, but re-stating for clarity)
+
+
+async def _insert_totp_secret(db: aiosqlite.Connection, secret: str) -> None:
+    await db.execute(
+        "INSERT OR REPLACE INTO auth_config (key, value) VALUES ('totp_secret', ?)", (secret,)
+    )
+    await db.commit()
+
+
+# --- login page ---
+
+async def test_login_page_accessible(auth_client: HttpxAsyncClient) -> None:
+    r = await auth_client.get("/login")
+    assert r.status_code == 200
+    assert "Sign in" in r.text
+
+
+# --- POST /login normal flow ---
+
+async def test_login_success(
+    auth_client: HttpxAsyncClient,
+    db: aiosqlite.Connection,
+) -> None:
+    secret = pyotp.random_base32()
+    await _insert_totp_secret(db, secret)
+    code = pyotp.TOTP(secret).now()
+    r = await auth_client.post(
+        "/login", data={"username": "admin", "password": "hunter2", "totp_code": code}
+    )
+    assert r.status_code == 303
+    assert r.headers["location"] == "/"
+    assert "session" in r.cookies
+
+
+async def test_login_wrong_password(
+    auth_client: HttpxAsyncClient,
+    db: aiosqlite.Connection,
+) -> None:
+    secret = pyotp.random_base32()
+    await _insert_totp_secret(db, secret)
+    r = await auth_client.post(
+        "/login", data={"username": "admin", "password": "wrong", "totp_code": "000000"}
+    )
+    assert r.status_code == 401
+    assert "session" not in r.cookies
+
+
+async def test_login_wrong_totp(
+    auth_client: HttpxAsyncClient,
+    db: aiosqlite.Connection,
+) -> None:
+    secret = pyotp.random_base32()
+    await _insert_totp_secret(db, secret)
+    r = await auth_client.post(
+        "/login", data={"username": "admin", "password": "hunter2", "totp_code": "000000"}
+    )
+    assert r.status_code == 401
+    assert "session" not in r.cookies
+
+
+async def test_login_lockout(
+    auth_client: HttpxAsyncClient,
+    db: aiosqlite.Connection,
+) -> None:
+    secret = pyotp.random_base32()
+    await _insert_totp_secret(db, secret)
+    for _ in range(5):
+        await auth_client.post(
+            "/login", data={"username": "admin", "password": "wrong", "totp_code": "000000"}
+        )
+    code = pyotp.TOTP(secret).now()
+    r = await auth_client.post(
+        "/login", data={"username": "admin", "password": "hunter2", "totp_code": code}
+    )
+    assert r.status_code == 429
+
+
+async def test_lockout_resets_on_success(
+    auth_client: HttpxAsyncClient,
+    db: aiosqlite.Connection,
+) -> None:
+    secret = pyotp.random_base32()
+    await _insert_totp_secret(db, secret)
+    # 4 failures (one below lockout threshold)
+    for _ in range(4):
+        await auth_client.post(
+            "/login", data={"username": "admin", "password": "wrong", "totp_code": "000000"}
+        )
+    # Successful login resets counter
+    code = pyotp.TOTP(secret).now()
+    r = await auth_client.post(
+        "/login", data={"username": "admin", "password": "hunter2", "totp_code": code}
+    )
+    assert r.status_code == 303
+    # Another failure should not immediately lock (counter was reset)
+    r2 = await auth_client.post(
+        "/login", data={"username": "admin", "password": "wrong", "totp_code": "000000"}
+    )
+    assert r2.status_code == 401  # not 429
+
+
+# --- first-login / setup flow ---
+
+async def test_setup_flow_first_login(auth_client: HttpxAsyncClient) -> None:
+    """No TOTP in DB → POST /login redirects to /setup with a setup cookie."""
+    r = await auth_client.post(
+        "/login", data={"username": "admin", "password": "hunter2", "totp_code": ""}
+    )
+    assert r.status_code == 303
+    assert r.headers["location"] == "/setup"
+    assert SETUP_COOKIE in r.cookies
+
+
+async def test_setup_page_shows_secret(
+    auth_client: HttpxAsyncClient,
+) -> None:
+    secret = pyotp.random_base32()
+    setup_token = sign_setup_cookie(secret, settings.auth_secret_key.get_secret_value())
+    auth_client.cookies.set(SETUP_COOKIE, setup_token)
+    r = await auth_client.get("/setup")
+    assert r.status_code == 200
+    assert secret in r.text
+    assert "otpauth://" in r.text
+
+
+async def test_setup_confirms_totp(
+    auth_client: HttpxAsyncClient,
+    db: aiosqlite.Connection,
+) -> None:
+    secret = pyotp.random_base32()
+    setup_token = sign_setup_cookie(secret, settings.auth_secret_key.get_secret_value())
+    auth_client.cookies.set(SETUP_COOKIE, setup_token)
+    code = pyotp.TOTP(secret).now()
+    r = await auth_client.post("/setup", data={"totp_code": code})
+    assert r.status_code == 303
+    assert r.headers["location"] == "/"
+    assert "session" in r.cookies
+    # Secret is persisted in DB
+    async with db.execute("SELECT value FROM auth_config WHERE key = 'totp_secret'") as cur:
+        row = await cur.fetchone()
+    assert row is not None
+    assert row[0] == secret
+
+
+async def test_setup_wrong_totp_does_not_persist(
+    auth_client: HttpxAsyncClient,
+    db: aiosqlite.Connection,
+) -> None:
+    secret = pyotp.random_base32()
+    setup_token = sign_setup_cookie(secret, settings.auth_secret_key.get_secret_value())
+    auth_client.cookies.set(SETUP_COOKIE, setup_token)
+    r = await auth_client.post("/setup", data={"totp_code": "000000"})
+    assert r.status_code == 200
+    assert "Invalid" in r.text
+    # Secret NOT persisted
+    async with db.execute("SELECT value FROM auth_config WHERE key = 'totp_secret'") as cur:
+        row = await cur.fetchone()
+    assert row is None
+
+
+async def test_setup_redirects_if_already_configured(
+    auth_client: HttpxAsyncClient,
+    db: aiosqlite.Connection,
+) -> None:
+    secret = pyotp.random_base32()
+    await _insert_totp_secret(db, secret)
+    r = await auth_client.get("/setup")
+    assert r.status_code == 302
+    assert r.headers["location"] == "/login"
+
+
+# --- logout ---
+
+async def test_logout(authed_client: HttpxAsyncClient) -> None:
+    r = await authed_client.post("/logout")
+    assert r.status_code == 302
+    assert r.headers["location"] == "/login"
+    # Cookie is cleared (Max-Age=0 or deleted)
+    assert r.cookies.get("session") in (None, "")

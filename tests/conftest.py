@@ -53,3 +53,64 @@ async def client(db: aiosqlite.Connection) -> AsyncGenerator[HttpxAsyncClient]:
         transport=ASGITransport(app=test_app), base_url="http://test"
     ) as c:
         yield c
+
+
+import src.auth.routes as _auth_routes  # noqa: E402
+from src.auth.middleware import AuthMiddleware  # noqa: E402
+from src.auth.session import SESSION_COOKIE, sign_session  # noqa: E402
+from src.config import settings  # noqa: E402
+
+
+@pytest.fixture
+def auth_settings(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Override settings attributes for auth tests. Resets after each test."""
+    from pydantic import SecretStr
+    monkeypatch.setattr(settings, "auth_username", "admin")
+    monkeypatch.setattr(settings, "auth_password", SecretStr("hunter2"))
+    monkeypatch.setattr(settings, "auth_secret_key", SecretStr("test-secret-key-minimum-32-chars!!"))
+    monkeypatch.setattr(settings, "auth_lockout_attempts", 5)
+    monkeypatch.setattr(settings, "auth_lockout_minutes", 15)
+
+
+@pytest.fixture
+async def auth_client(
+    db: aiosqlite.Connection,
+    auth_settings: None,
+) -> AsyncGenerator[HttpxAsyncClient]:
+    """Test client with auth routes + middleware. Resets lockout state each test."""
+    from src.auth.lockout import LockoutTracker
+
+    # Re-create module-level lockout so failures from one test don't bleed into the next.
+    _auth_routes._lockout = LockoutTracker(
+        max_attempts=settings.auth_lockout_attempts,
+        lockout_seconds=settings.auth_lockout_minutes * 60,
+    )
+
+    test_app = FastAPI()
+    test_app.add_middleware(AuthMiddleware)
+    test_app.include_router(_auth_routes.router)
+
+    @test_app.get("/")
+    async def _root() -> dict[str, str]:
+        return {"status": "ok"}
+
+    async def _override_db() -> AsyncIterator[aiosqlite.Connection]:
+        yield db
+
+    test_app.dependency_overrides[get_db] = _override_db
+
+    async with HttpxAsyncClient(
+        transport=ASGITransport(app=test_app),
+        base_url="http://test",
+        headers={"x-forwarded-proto": "https"},
+        follow_redirects=False,
+    ) as c:
+        yield c
+
+
+@pytest.fixture
+async def authed_client(auth_client: HttpxAsyncClient) -> HttpxAsyncClient:
+    """auth_client pre-loaded with a valid session cookie."""
+    token = sign_session(settings.auth_secret_key.get_secret_value())
+    auth_client.cookies.set(SESSION_COOKIE, token)
+    return auth_client
