@@ -85,15 +85,22 @@ async def prune_items(db: aiosqlite.Connection) -> None:
     """Enforce item retention limits.
 
     Two-phase strategy:
-    1. Delete seen items older than ITEMS_MAX_AGE_HOURS (unseen items are never aged out).
-    2. If the total count still exceeds KEEP_ITEMS, delete oldest seen items first,
+    1. Age-based: delete seen items older than ITEMS_MAX_AGE_HOURS; delete unseen items
+       older than 4× ITEMS_MAX_AGE_HOURS (by pub_date).
+    2. Count-based: if still over KEEP_ITEMS, delete oldest seen items first (by pub_date),
        then oldest unseen as a last resort.
     """
-    # Phase 1: age-based eviction (seen items only)
+    # Phase 1: age-based eviction — seen items by fetched_at, unseen items by pub_date.
+    # Unseen items are kept 4× longer since the user hasn't had a chance to see them yet.
     logger.debug(f"Pruning items older than {settings.items_max_age_hours} hours")
     await db.execute(
         "DELETE FROM items WHERE seen_at IS NOT NULL AND fetched_at < datetime('now', ? || ' hours')",
         (f"-{settings.items_max_age_hours}",),
+    )
+    unseen_max_age = settings.items_max_age_hours * 4
+    await db.execute(
+        "DELETE FROM items WHERE seen_at IS NULL AND pub_date < datetime('now', ? || ' hours')",
+        (f"-{unseen_max_age}",),
     )
 
     # Phase 2: count-based eviction
@@ -120,7 +127,7 @@ async def prune_items(db: aiosqlite.Connection) -> None:
         await db.execute(
             "DELETE FROM items WHERE id IN "
             "(SELECT id FROM items WHERE seen_at IS NOT NULL "
-            " ORDER BY fetched_at ASC LIMIT ?)",
+            " ORDER BY pub_date ASC NULLS LAST LIMIT ?)",
             (to_delete_seen,),
         )
         excess -= to_delete_seen
@@ -131,7 +138,7 @@ async def prune_items(db: aiosqlite.Connection) -> None:
         await db.execute(
             "DELETE FROM items WHERE id IN "
             "(SELECT id FROM items WHERE seen_at IS NULL "
-            " ORDER BY fetched_at ASC LIMIT ?)",
+            " ORDER BY pub_date ASC NULLS LAST LIMIT ?)",
             (excess,),
         )
 

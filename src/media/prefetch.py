@@ -42,11 +42,15 @@ async def warm_startup_cache(db: aiosqlite.Connection, client: httpx.AsyncClient
     A semaphore of 10 and a 100 ms stagger between task creation prevents a
     thundering-herd of concurrent HTTP requests at container start.
     """
-    async with db.execute(
-        "SELECT media_url FROM items ORDER BY pub_date DESC LIMIT ?",
-        (settings.cache_max_items,),
-    ) as cur:
-        rows = await cur.fetchall()
+    try:
+        async with db.execute(
+            "SELECT media_url FROM items ORDER BY pub_date DESC LIMIT ?",
+            (settings.cache_max_items,),
+        ) as cur:
+            rows = await cur.fetchall()
+    except Exception as exc:
+        logger.warning("warm_startup_cache: DB query failed, skipping cache warm: %s", exc)
+        return
 
     sem = asyncio.Semaphore(10)
 
