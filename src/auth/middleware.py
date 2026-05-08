@@ -7,6 +7,7 @@ from starlette.responses import RedirectResponse, Response
 from src.auth.session import SESSION_COOKIE, verify_session
 from src.config import settings
 
+_HEALTH_PATH = "/health"
 _AUTH_FREE_PREFIXES = ("/static/",)
 _AUTH_FREE_EXACT = {"/login", "/setup"}
 
@@ -19,6 +20,10 @@ def _is_auth_free(path: str) -> bool:
 
 class AuthMiddleware(BaseHTTPMiddleware):
     async def dispatch(self, request: Request, call_next: RequestResponseEndpoint) -> Response:
+        # Health endpoint bypasses all checks — internal liveness probe only.
+        if request.url.path == _HEALTH_PATH:
+            return await call_next(request)
+
         # Assumes a trusted reverse proxy always sets X-Forwarded-Proto;
         # do not expose this service directly to the internet.
         if request.headers.get("x-forwarded-proto") != "https":
