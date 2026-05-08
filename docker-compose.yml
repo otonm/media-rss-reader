@@ -9,12 +9,9 @@ services:
       - media_cache:/cache
     environment:
       - TZ=Europe/Berlin
-      - LOG_LEVEL=debug
       - AUTH_USERNAME=admin
       - AUTH_PASSWORD=changeme
       - AUTH_SECRET_KEY=replace-with-a-random-32-char-secret
-      - IMAGE_DISPLAY_DELAY_MS=500
-      - AUTO_SCROLL_SPEED=5
       # Paths (override if mounting volumes differently)
       # - OPML_PATH=/data/feeds.opml
       # - DB_PATH=/data/db/reader.db
@@ -34,6 +31,12 @@ services:
       # - PORT=8080
       # - LOG_LEVEL=info
     restart: unless-stopped
+    healthcheck:
+      test: ["CMD-SHELL", "wget -q --spider http://127.0.0.1:8080/health || exit 1"]
+      interval: 30s
+      timeout: 5s
+      start_period: 60s
+      retries: 3
 
 volumes:
   reader_data:

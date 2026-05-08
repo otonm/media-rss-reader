@@ -12,26 +12,26 @@ Three planes interact at runtime:
 ┌─────────────────────────────────────────────────────────┐
 │  Browser (Vanilla JS)                                   │
 │  Scroll view / Slideshow view                           │
-│  IntersectionObserver × 3  ·  RAF auto-scroll loop     │
+│  IntersectionObserver × 3  ·  RAF auto-scroll loop      │
 └───────────────┬─────────────────────────────────────────┘
                 │  HTTPS  (X-Forwarded-Proto from proxy)
 ┌───────────────▼─────────────────────────────────────────┐
 │  AuthMiddleware                                         │
 │  HTTPS enforcement  ·  session cookie validation        │
-│  pass-through: /health  /login  /setup  /static/*      │
+│  pass-through: /health  /login  /setup  /static/*       │
 └───────────────┬─────────────────────────────────────────┘
                 │
 ┌───────────────▼─────────────────────────────────────────┐
 │  FastAPI  (Uvicorn, async)                              │
-│  /health  /login  /setup  /logout                      │
+│  /health  /login  /setup  /logout                       │
 │  /api/feeds  /api/items  /api/media/proxy               │
 │  /api/prefetch/hint  /api/status                        │
 └───────────┬─────────────────────┬───────────────────────┘
             │  aiosqlite          │  filesystem
-┌───────────▼──────────┐  ┌──────▼──────────────────────┐
+┌───────────▼──────────┐  ┌───────▼──────────────────────┐
 │  SQLite (WAL mode)   │  │  /cache  (sha256-named files)│
 │  feeds · items       │  │  evict by age + count        │
-└──────────────────────┘  └─────────────────────────────┘
+└──────────────────────┘  └──────────────────────────────┘
             ▲
 ┌───────────┴─────────────────────────────────────────────┐
 │  APScheduler  (AsyncIO, in-process)                     │
