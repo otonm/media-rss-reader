@@ -162,6 +162,12 @@ services:
       # - IMAGE_DISPLAY_DELAY_MS=5000
       # - AUTO_SCROLL_SPEED=1.5
     restart: unless-stopped
+    healthcheck:
+      test: ["CMD-SHELL", "wget -q --spider http://127.0.0.1:8080/health || exit 1"]
+      interval: 30s
+      timeout: 5s
+      start_period: 60s
+      retries: 3
 
 volumes:
   reader_data:   # survives docker compose down
@@ -237,6 +243,12 @@ services:
       - AUTH_PASSWORD=changeme
       - AUTH_SECRET_KEY=replace-with-a-random-32-char-secret
     restart: unless-stopped
+    healthcheck:
+      test: ["CMD-SHELL", "wget -q --spider http://127.0.0.1:8080/health || exit 1"]
+      interval: 30s
+      timeout: 5s
+      start_period: 60s
+      retries: 3
 
   cloudflared:
     image: cloudflare/cloudflared:latest

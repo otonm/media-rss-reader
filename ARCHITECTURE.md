@@ -18,12 +18,12 @@ Three planes interact at runtime:
 ┌───────────────▼─────────────────────────────────────────┐
 │  AuthMiddleware                                         │
 │  HTTPS enforcement  ·  session cookie validation        │
-│  pass-through: /login  /setup  /static/*               │
+│  pass-through: /health  /login  /setup  /static/*      │
 └───────────────┬─────────────────────────────────────────┘
                 │
 ┌───────────────▼─────────────────────────────────────────┐
 │  FastAPI  (Uvicorn, async)                              │
-│  /login  /setup  /logout                               │
+│  /health  /login  /setup  /logout                      │
 │  /api/feeds  /api/items  /api/media/proxy               │
 │  /api/prefetch/hint  /api/status                        │
 └───────────┬─────────────────────┬───────────────────────┘
@@ -331,9 +331,10 @@ Authentication is handled by the `src/auth/` module. It is isolated from all oth
 
 `AuthMiddleware` is a Starlette `BaseHTTPMiddleware` registered on the FastAPI app before all routers. Every inbound request passes through it:
 
-1. **HTTPS check** — rejects requests where `X-Forwarded-Proto != https` with `403`. The app assumes it is always behind a trusted TLS-terminating reverse proxy. Do not expose it directly to the internet.
-2. **Auth-free paths** — `/login`, `/setup`, and all `/static/*` paths are passed through without a session check.
-3. **Session validation** — all other paths require a valid signed session cookie. Invalid or missing → `302` redirect to `/login`.
+1. **Health bypass** — `/health` is passed through unconditionally (no HTTPS header required). This allows Docker / container orchestrators to run liveness probes from inside the container without needing proxy headers.
+2. **HTTPS check** — rejects requests where `X-Forwarded-Proto != https` with `403`. The app assumes it is always behind a trusted TLS-terminating reverse proxy. Do not expose it directly to the internet.
+3. **Auth-free paths** — `/login`, `/setup`, and all `/static/*` paths are passed through without a session check.
+4. **Session validation** — all other paths require a valid signed session cookie. Invalid or missing → `302` redirect to `/login`.
 
 ### Session Cookies (`auth/session.py`)
 
