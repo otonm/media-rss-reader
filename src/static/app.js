@@ -69,12 +69,12 @@ function createMediaEl(item) {
   if (item.media_type === "video") {
     el = document.createElement("video");
     el.src = `/api/media/proxy?url=${encodeURIComponent(item.media_url)}`;
+    el.setAttribute("playsinline", "");
+    el.setAttribute("webkit-playsinline", "");
     el.controls = false;
     el.muted = muted;
     el.loop = false;
     el.autoplay = true;
-    el.addEventListener("mouseenter", () => { el.controls = true; });
-    el.addEventListener("mouseleave", () => { el.controls = false; });
     el.addEventListener("ended", () => {
       if (!autoScroll) {
         const videoIdx = items.findIndex(i => i.id === wrap.dataset.id);
@@ -255,8 +255,16 @@ const mediaObserver = new IntersectionObserver((entries) => {
         updateActiveAudio();
       }
 
-      // Start playing once element is 50 % visible
+      // Start playing only the current item's video, once 50% visible.
+      // Other videos that intersect the viewport are paused by the not-intersecting
+      // branch and the currentIndex check below, preventing a play-cascade feedback
+      // loop where each .play() can cause the browser to scroll the page.
       if (!el.dataset.playing && ratio >= 0.5) {
+        if (isVideo) {
+          const wrap = el.closest(".media-item");
+          const idx = wrap ? items.findIndex(i => i.id === wrap.dataset.id) : -1;
+          if (idx !== currentIndex) return;  // wait for this video to become current
+        }
         el.dataset.playing = "1";
         if (isVideo) el.play().catch(() => {});
       }
@@ -350,7 +358,7 @@ function advance(delta) {
 
 function scrollToIndex(idx) {
   const els = document.querySelectorAll(".media-item");
-  if (els[idx]) els[idx].scrollIntoView({ behavior: "smooth", block: "center" });
+  if (els[idx]) els[idx].scrollIntoView({ block: "center" });
 }
 
 // ---------------------------------------------------------------------------
@@ -554,16 +562,12 @@ document.addEventListener("touchstart", e => {
 }, { passive: true });
 
 document.addEventListener("touchend", e => {
+  if (!slideshowMode) return;  // native scroll handles motion in scroll mode
   const dx = e.changedTouches[0].clientX - _tx;
   const dy = e.changedTouches[0].clientY - _ty;
   if (Math.abs(dx) < SWIPE_MIN && Math.abs(dy) < SWIPE_MIN) return;
-
-  if (slideshowMode) {
-    const forward = Math.abs(dy) >= Math.abs(dx) ? dy < 0 : dx < 0;
-    advance(forward ? 1 : -1);
-  } else {
-    if (Math.abs(dy) >= Math.abs(dx)) advance(dy < 0 ? 1 : -1);
-  }
+  const forward = Math.abs(dy) >= Math.abs(dx) ? dy < 0 : dx < 0;
+  advance(forward ? 1 : -1);
 }, { passive: true });
 
 // ---------------------------------------------------------------------------
