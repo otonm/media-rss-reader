@@ -42,10 +42,17 @@ const AUTO_SCROLL_SPEED = parseFloat(
 // ---------------------------------------------------------------------------
 
 function _discardFailedItem(wrap, el) {
-  mediaObserver.unobserve(el);
+  if (el) mediaObserver.unobserve(el);
+  // viewObserver.unobserve is a no-op for unobserved elements per the
+  // IntersectionObserver spec, so it's safe to call on both placeholders
+  // and media items.
   viewObserver.unobserve(wrap);
-  videoRatios.delete(el);
+  if (el) videoRatios.delete(el);
   updateActiveAudio();
+  _removeItem(wrap);
+}
+
+function _removeItem(wrap) {
   wrap.remove();
   const idx = items.findIndex(i => i.id === wrap.dataset.id);
   if (idx !== -1) {
@@ -55,15 +62,21 @@ function _discardFailedItem(wrap, el) {
   }
 }
 
-function createMediaEl(item) {
+function createPlaceholder(item) {
+  const wrap = document.createElement("div");
+  wrap.className = "placeholder";
+  wrap.dataset.id = item.id;
+  const spinner = document.createElement("div");
+  spinner.className = "spinner";
+  wrap.appendChild(spinner);
+  return wrap;
+}
+
+function createMediaItem(item) {
   const wrap = document.createElement("div");
   wrap.className = "media-item";
   wrap.dataset.id = item.id;
   if (item.seen_at) wrap.classList.add("seen");
-
-  const spinner = document.createElement("div");
-  spinner.className = "spinner";
-  wrap.appendChild(spinner);
 
   let el;
   if (item.media_type === "video") {
@@ -73,15 +86,14 @@ function createMediaEl(item) {
     el.setAttribute("webkit-playsinline", "");
     el.controls = false;
     el.muted = muted;
-    el.loop = false;
+    el.loop = !autoScroll;
     el.autoplay = true;
     el.addEventListener("ended", () => {
-      if (!autoScroll) {
+      if (autoScroll) {
         const videoIdx = items.findIndex(i => i.id === wrap.dataset.id);
         if (videoIdx === currentIndex) advance(1);
       }
     });
-    el.addEventListener("loadeddata", () => { wrap.classList.add("loaded"); seenObserver.observe(wrap); });
     el.addEventListener("error", () => _discardFailedItem(wrap, el));
     mediaObserver.observe(el);
   } else {
@@ -92,15 +104,57 @@ function createMediaEl(item) {
       el.dataset.type = "gif";
       mediaObserver.observe(el);
     }
-    el.addEventListener("load", () => { wrap.classList.add("loaded"); seenObserver.observe(wrap); });
     el.addEventListener("error", () => _discardFailedItem(wrap, el));
   }
   wrap.appendChild(el);
 
-  // Register with observers (seenObserver deferred to load/loadeddata to avoid zero-height false positives)
+  // Register with observers (seenObserver is registered up-front here because,
+  // unlike the placeholder, the media item has a real element with measurable
+  // height from the moment it's in the DOM).
   viewObserver.observe(wrap);
-
+  seenObserver.observe(wrap);
   return wrap;
+}
+
+function createMediaEl(item) {
+  // Returns a placeholder. Preloads the media off-DOM (loadeddata fires on the
+  // first frame, not a full download — same as the prior in-DOM behavior).
+  // On load: placeholder is replaced by a media item. On error: placeholder is
+  // removed. Listeners are attached to the preloader BEFORE src is set to avoid
+  // a race where a cached media loads synchronously before the listener exists.
+  const placeholder = createPlaceholder(item);
+  viewObserver.observe(placeholder);
+
+  const preloader = item.media_type === "video"
+    ? document.createElement("video")
+    : new Image();
+
+  const upgrade = () => {
+    if (!placeholder.isConnected) return;
+    viewObserver.unobserve(placeholder);
+    const mediaItem = createMediaItem(item);
+    placeholder.replaceWith(mediaItem);
+  };
+
+  const fail = () => {
+    if (placeholder.isConnected) _removeItem(placeholder);
+  };
+
+  if (item.media_type === "video") {
+    preloader.setAttribute("playsinline", "");
+    preloader.setAttribute("webkit-playsinline", "");
+    preloader.muted = true;
+    preloader.preload = "auto";
+  }
+
+  preloader.addEventListener(
+    item.media_type === "video" ? "loadeddata" : "load",
+    upgrade, { once: true }
+  );
+  preloader.addEventListener("error", fail, { once: true });
+  preloader.src = `/api/media/proxy?url=${encodeURIComponent(item.media_url)}`;
+
+  return placeholder;
 }
 
 async function fetchItems() {
@@ -357,7 +411,9 @@ function advance(delta) {
 }
 
 function scrollToIndex(idx) {
-  const els = document.querySelectorAll(".media-item");
+  // Query both placeholders and media items so j/k keys can target items that
+  // are still loading (still a placeholder) as well as already-loaded items.
+  const els = document.querySelectorAll(".placeholder, .media-item");
   if (els[idx]) els[idx].scrollIntoView({ block: "center" });
 }
 
@@ -391,6 +447,8 @@ function toggleAutoScroll() {
     stopAutoScroll();
     autoScrollPaused = false;
   }
+  // Keep every existing video's loop in sync with the new autoScroll state.
+  document.querySelectorAll(".media-item video").forEach(v => { v.loop = !autoScroll; });
   updateControls();
 }
 
@@ -409,9 +467,11 @@ function showSlide(item) {
   // the inactive layer is populated with the new item and given the 'active' class,
   // which triggers the CSS opacity transition. The previously active layer loses
   // 'active' and fades out. activeSlide tracks which layer is currently visible.
-  // Clear incoming layer and populate with new media
+  // Clear incoming layer and populate with new media. Use createMediaItem
+  // (not createMediaEl) because the slideshow needs the media element
+  // immediately, not a placeholder.
   inEl.innerHTML = "";
-  const mediaEl = createMediaEl(item).querySelector("img, video");
+  const mediaEl = createMediaItem(item).querySelector("img, video");
   if (mediaEl) inEl.appendChild(mediaEl);
 
   // Crossfade
