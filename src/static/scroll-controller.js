@@ -8,6 +8,9 @@
 //
 // Also owns the 'seen' observer: when an item scrolls fully past the top of
 // the viewport, POST /api/items/{id}/seen so the scheduler can prune it.
+// On a successful POST we also call itemStore.markSeen + feedView.markSeen
+// so the in-memory item and the live DOM wrap are updated to show the
+// checkmark.
 // ---------------------------------------------------------------------------
 (function () {
   "use strict";
@@ -50,7 +53,16 @@
       if (entry.isIntersecting) return;
       if (entry.boundingClientRect.bottom > 0) return;
       const id = entry.target.dataset.id;
-      fetch(`/api/items/${id}/seen`, { method: "POST" }).catch(() => {});
+      // Fire-and-forget POST; on success, update the local state and the
+      // live DOM so the seen checkmark appears without a refetch.
+      fetch(`/api/items/${id}/seen`, { method: "POST" })
+        .then((r) => (r.ok ? r.json() : null))
+        .then((data) => {
+          if (!data) return;
+          MRR.itemStore.markSeen(id, data.seen_at);
+          MRR.feedView.markSeen(id);
+        })
+        .catch(() => {});
     });
   }
 

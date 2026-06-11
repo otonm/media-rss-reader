@@ -157,3 +157,147 @@ test("onItemLoaded for a lookahead item does NOT remove the currently-playing vi
     "id0's `ended` listener must survive a lookahead load",
   );
 });
+
+// ---------------------------------------------------------------------------
+// Seen-badge tests: createMediaWrap tags wraps with `seen` class + .seen-badge
+// when item.seen_at is non-null; markSeen(id) does the same live.
+// ---------------------------------------------------------------------------
+
+test("onItemLoaded for an item with seen_at set tags the wrap with the seen class and badge", () => {
+  const { ctx, feed, items } = setupHarness();
+  // Make id0 a seen item (e.g. the user had previously scrolled past it
+  // and the DB still has the row).
+  items[0].seen_at = "2026-06-10T09:00:00";
+  const video0 = ctx.document.createElement("video");
+  ctx.window.MRR.feedView.onItemLoaded("id0", video0);
+  const wrap = feed.children.find((c) => c.dataset.id === "id0");
+  assert.ok(wrap.className.includes("seen"), `wrap should have 'seen' class, got: ${wrap.className}`);
+  const badge = wrap.querySelector(".seen-badge");
+  assert.ok(badge, "wrap should contain a .seen-badge child");
+});
+
+test("onItemLoaded for an unseen item does NOT add the seen class or badge", () => {
+  const { ctx, feed, items } = setupHarness();
+  items[0].seen_at = null;
+  const video0 = ctx.document.createElement("video");
+  ctx.window.MRR.feedView.onItemLoaded("id0", video0);
+  const wrap = feed.children.find((c) => c.dataset.id === "id0");
+  assert.ok(!wrap.className.includes("seen"), `wrap should NOT have 'seen' class, got: ${wrap.className}`);
+  assert.equal(wrap.querySelector(".seen-badge"), null, "wrap should NOT contain a .seen-badge child");
+});
+
+test("markSeen(id) tags the wrap live, idempotently", () => {
+  const { ctx, feed, items } = setupHarness();
+  items[0].seen_at = null;
+  const video0 = ctx.document.createElement("video");
+  ctx.window.MRR.feedView.onItemLoaded("id0", video0);
+  const wrap = feed.children.find((c) => c.dataset.id === "id0");
+  assert.ok(!wrap.className.includes("seen"));
+
+  // User scrolls past id0; the scroll-controller will call markSeen.
+  ctx.window.MRR.feedView.markSeen("id0");
+  assert.ok(wrap.className.includes("seen"), "wrap should have 'seen' class after markSeen");
+  assert.ok(wrap.querySelector(".seen-badge"), "wrap should have a .seen-badge after markSeen");
+
+  // Idempotent: calling again doesn't add a second badge.
+  const badgesBefore = wrap.children.filter((c) => c.className === "seen-badge").length;
+  ctx.window.MRR.feedView.markSeen("id0");
+  const badgesAfter = wrap.children.filter((c) => c.className === "seen-badge").length;
+  assert.equal(badgesAfter, badgesBefore, "markSeen must be idempotent");
+});
+
+test("markSeen(id) is a no-op for an id not in the DOM", () => {
+  const { ctx } = setupHarness();
+  // No throw, no error.
+  ctx.window.MRR.feedView.markSeen("does-not-exist");
+});
+
+// ---------------------------------------------------------------------------
+// Video controls + userInteracted tests.
+// ---------------------------------------------------------------------------
+
+test("video wraps have the `controls` attribute set", () => {
+  const { ctx, feed, items } = setupHarness();
+  const video = ctx.document.createElement("video");
+  ctx.window.MRR.feedView.onItemLoaded("id0", video);
+  const wrap = feed.children.find((c) => c.dataset.id === "id0");
+  const v = wrap.querySelector("video");
+  assert.equal(v.getAttribute("controls"), "", "video must have the `controls` attribute set");
+});
+
+test("image wraps do NOT have any video-specific attributes leak onto the <img>", () => {
+  const { ctx, feed } = setupHarness();
+  const img = ctx.document.createElement("img");
+  ctx.window.MRR.feedView.onItemLoaded("id1", img);
+  const wrap = feed.children.find((c) => c.dataset.id === "id1");
+  // Make sure no stray video controls attr ends up on a non-video wrap.
+  assert.equal(wrap.querySelector("video"), null, "image wrap should not contain a <video>");
+});
+
+test("a `seeking` event on a video marks it as userInteracted", () => {
+  const { ctx, feed, items } = setupHarness();
+  const video = ctx.document.createElement("video");
+  ctx.window.MRR.feedView.onItemLoaded("id0", video);
+  const wrap = feed.children.find((c) => c.dataset.id === "id0");
+  const v = wrap.querySelector("video");
+  assert.equal(v.userInteracted, undefined, "freshly mounted video should not be userInteracted");
+  v.dispatchEvent({ type: "seeking" });
+  assert.equal(v.userInteracted, true, "seeking should set userInteracted = true");
+});
+
+test("a `volumechange` event on a video marks it as userInteracted", () => {
+  const { ctx, feed } = setupHarness();
+  const video = ctx.document.createElement("video");
+  ctx.window.MRR.feedView.onItemLoaded("id0", video);
+  const wrap = feed.children.find((c) => c.dataset.id === "id0");
+  const v = wrap.querySelector("video");
+  v.dispatchEvent({ type: "volumechange" });
+  assert.equal(v.userInteracted, true);
+});
+
+test("a `pause` event WITHOUT a preceding JS pause marks the video as userInteracted", () => {
+  const { ctx, feed } = setupHarness();
+  const video = ctx.document.createElement("video");
+  ctx.window.MRR.feedView.onItemLoaded("id0", video);
+  const wrap = feed.children.find((c) => c.dataset.id === "id0");
+  const v = wrap.querySelector("video");
+  // Simulate the user clicking the browser's pause button: a `pause` event
+  // is dispatched without the JS having set _pausedByJs first.
+  v.pause();
+  v.dispatchEvent({ type: "pause" });
+  assert.equal(v.userInteracted, true, "user pause should set userInteracted = true");
+});
+
+test("a `pause` event from a JS-initiated pause does NOT mark the video as userInteracted", () => {
+  const { ctx, feed } = setupHarness();
+  const video = ctx.document.createElement("video");
+  ctx.window.MRR.feedView.onItemLoaded("id0", video);
+  const wrap = feed.children.find((c) => c.dataset.id === "id0");
+  const v = wrap.querySelector("video");
+  // Simulate what setCurrentMedia does: set the flag, then pause, then the
+  // browser fires the event.
+  v._pausedByJs = true;
+  v.pause();
+  v.dispatchEvent({ type: "pause" });
+  assert.notEqual(v.userInteracted, true, "JS pause must not set userInteracted");
+  assert.equal(v._pausedByJs, false, "_pausedByJs flag must be cleared by the pause handler");
+});
+
+test("setCurrentMedia does not auto-play a video the user has interacted with", async () => {
+  const { ctx, feed, items } = setupHarness();
+  const video = ctx.document.createElement("video");
+  // Pre-mark the video as user-interacted (e.g. user seeked earlier).
+  video.userInteracted = true;
+  // Spy on play() to detect whether setCurrentMedia triggered it.
+  let playCalls = 0;
+  video.play = () => { playCalls += 1; return Promise.resolve(); };
+  ctx.window.MRR.feedView.onItemLoaded("id0", video);
+  const wrap = feed.children.find((c) => c.dataset.id === "id0");
+  const v = wrap.querySelector("video");
+  v.userInteracted = true;
+  // setCurrentMedia is the visible-media switch.
+  ctx.window.MRR.feedView.setCurrentMedia(v);
+  // Give the setInterval a chance to fire.
+  await new Promise((r) => setTimeout(r, 250));
+  assert.equal(playCalls, 0, "userInteracted video must not be auto-played");
+});

@@ -19,19 +19,41 @@ import vm from "node:vm";
 import { readFileSync } from "node:fs";
 
 export function createDomContext() {
+  // The default setInterval is replaced with a no-op + tracker so test
+  // code can either drain or disable the recurring buffer-threshold
+  // evaluations that production's playWhenBufferedAndVisible sets up.
+  // Tests that DO want the real interval should call
+  // `setRealTimers(ctx)` after loading the module.
+  const intervals = new Set();
+  let nextId = 1;
   const ctx = {
     // Browser global. `MRR` is the namespace all modules attach to.
     window: { MRR: {} },
     document: makeDocument(),
     setTimeout,
     clearTimeout,
-    setInterval,
-    clearInterval,
+    setInterval: (...args) => {
+      const id = nextId++;
+      intervals.add(id);
+      return id;
+    },
+    clearInterval: (id) => {
+      intervals.delete(id);
+    },
+    _intervals: intervals,
     fetch: () => Promise.resolve({ ok: false }),
     console,
   };
   vm.createContext(ctx);
   return ctx;
+}
+
+// Replace the mock setInterval/clearInterval with the real ones. Use this
+// in tests that actually need the buffer-threshold loop to fire.
+export function setRealTimers(ctx) {
+  ctx.setInterval = setInterval;
+  ctx.clearInterval = clearInterval;
+  delete ctx._intervals;
 }
 
 export function installGlobals(ctx) {

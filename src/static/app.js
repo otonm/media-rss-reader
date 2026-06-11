@@ -4,6 +4,10 @@
 // Reads config from CSS custom properties injected by the backend in
 // src/main.py:_build_html. Initializes all modules in dependency order
 // and kicks off the initial feed load.
+//
+// Public API (exposed on MRR.app):
+//   reloadFeed()              — refetch with the current showSeen setting
+//   setShowSeen(on)           — toggle the seen-filter and refetch
 // ---------------------------------------------------------------------------
 (function () {
   "use strict";
@@ -27,29 +31,75 @@
     };
   }
 
-  function init() {
-    readConfig();
-    MRR.scrollController.init();
-    MRR.controls.init();
-    MRR.cacheQueue.on("item-loaded", (id, el) => MRR.feedView.onItemLoaded(id, el));
-    MRR.cacheQueue.on("item-failed", (id) => MRR.feedView.onItemFailed(id));
+  function readShowSeenPref() {
+    try {
+      return localStorage.getItem("showSeen") === "1";
+    } catch (e) {
+      return false;
+    }
+  }
+  function writeShowSeenPref(on) {
+    try {
+      localStorage.setItem("showSeen", on ? "1" : "0");
+    } catch (e) {
+      // localStorage may be unavailable (private mode etc.) — silently ignore.
+    }
+  }
 
-    // Initial load: fetch total + first page, then render + start the queue.
+  function clearFeed() {
+    const feed = document.getElementById("feed");
+    while (feed.firstChild) feed.removeChild(feed.firstChild);
+    // Drop the IntersectionObserver registrations for the old wraps.
+    // scrollController doesn't expose unObserve; re-creating the
+    // observers on init() will leave stale references but the feed is
+    // empty, so it doesn't matter for correctness.
+  }
+
+  function resetItemStore() {
+    // Reset the in-memory state of the store so the next fetchPage starts
+    // from page 0. The store exposes resetForReload() for exactly this.
+    MRR.itemStore.resetForReload();
+  }
+
+  // Refetch with the current showSeen filter, replacing the rendered
+  // feed. Called once on startup and again whenever the user toggles
+  // the show-seen preference.
+  function reloadFeed() {
+    clearFeed();
+    resetItemStore();
     Promise.resolve()
       .then(() => MRR.itemStore.fetchCount())
       .then(() => MRR.itemStore.fetchPage())
       .then(() => {
         const items = MRR.itemStore.getItems();
-        if (items.length === 0) {
-          document.getElementById("counter").textContent = "0 / 0";
-          return;
-        }
+        if (items.length === 0) return;
         MRR.feedView.renderInitial(items);
+        MRR.cacheQueue.reset();
         MRR.cacheQueue.rebuild(0, MRR.config.feedInitialCount, items);
-        MRR.cacheQueue.start();
-        MRR.controls.updateCounter();
+        // Reset scroll to the top of the feed.
+        document.getElementById("feed").scrollTop = 0;
       })
-      .catch((err) => console.error("startup failed", err));
+      .catch((err) => console.error("feed load failed", err));
+  }
+
+  function setShowSeen(on) {
+    const next = !!on;
+    writeShowSeenPref(next);
+    MRR.itemStore.setShowSeen(next);
+    reloadFeed();
+  }
+
+  function init() {
+    readConfig();
+    // Apply the show-seen preference from localStorage BEFORE the first
+    // fetch so itemStore routes to the right ?unseen= flag.
+    MRR.itemStore.setShowSeen(readShowSeenPref());
+    MRR.scrollController.init();
+    MRR.controls.init();
+    MRR.cacheQueue.on("item-loaded", (id, el) => MRR.feedView.onItemLoaded(id, el));
+    MRR.cacheQueue.on("item-failed", (id) => MRR.feedView.onItemFailed(id));
+    MRR.cacheQueue.start();
+    reloadFeed();
 
     // Observe placeholders so the very first currentIndex fires once they're mounted.
     const mo = new MutationObserver(() => {
@@ -82,6 +132,10 @@
           e.preventDefault();
           document.getElementById("btn-mute").click();
           break;
+        case "s":
+          e.preventDefault();
+          document.getElementById("btn-show-seen").click();
+          break;
       }
     });
 
@@ -106,6 +160,8 @@
       }
     }, 2000);
   }
+
+  MRR.app = { reloadFeed, setShowSeen };
 
   if (document.readyState === "loading") {
     document.addEventListener("DOMContentLoaded", init);

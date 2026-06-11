@@ -23,6 +23,7 @@
     page: 0,
     hasMore: true,
     fetching: false,
+    showSeen: false,
   };
 
   const listeners = { "items-appended": [], "currentindex-changed": [] };
@@ -35,12 +36,19 @@
     listeners[event].forEach((cb) => cb(...args));
   }
 
+  // When showSeen is true we ask the API for ALL items (unseen=false),
+  // so seen items appear in the feed with their checkmark. Otherwise the
+  // default is unseen-only.
+  function unseenParam() {
+    return state.showSeen ? "false" : "true";
+  }
+
   async function fetchPage() {
     if (state.fetching || !state.hasMore) return;
     state.fetching = true;
     try {
       const cfg = MRR.config;
-      const url = `/api/items?unseen=true&page=${state.page}&size=${cfg.feedInitialCount}`;
+      const url = `/api/items?unseen=${unseenParam()}&page=${state.page}&size=${cfg.feedInitialCount}`;
       const resp = await fetch(url);
       if (!resp.ok) return;
       const newItems = await resp.json();
@@ -57,7 +65,7 @@
   }
 
   async function fetchCount() {
-    const resp = await fetch("/api/items/count?unseen=true");
+    const resp = await fetch(`/api/items/count?unseen=${unseenParam()}`);
     if (!resp.ok) return 0;
     const data = await resp.json();
     state.total = data.count;
@@ -78,6 +86,31 @@
     emit("currentindex-changed", idx);
   }
 
+  function setShowSeen(on) {
+    state.showSeen = !!on;
+  }
+
+  // Called by scroll-controller after a successful POST /api/items/{id}/seen.
+  // Updates the in-memory item so the next render (or live markSeen) reflects
+  // the new state. No-op if the item isn't loaded.
+  function markSeen(id, seenAt) {
+    const it = state.items.find((i) => i.id === id);
+    if (it) it.seen_at = seenAt;
+  }
+
+  // Called by app.reloadFeed() when the show-seen toggle is flipped or
+  // any other reason to refetch from page 0. Clears the in-memory list
+  // and resets the page counter; the next fetchPage will start from
+  // page 0 with the current showSeen setting.
+  function resetForReload() {
+    state.items = [];
+    state.currentIndex = 0;
+    state.total = 0;
+    state.page = 0;
+    state.hasMore = true;
+    state.fetching = false;
+  }
+
   MRR.itemStore = {
     on,
     getItems,
@@ -87,6 +120,9 @@
     getItemAt,
     findIndexById,
     setCurrentIndex,
+    setShowSeen,
+    markSeen,
+    resetForReload,
     fetchPage,
     fetchCount,
   };

@@ -96,19 +96,32 @@ html, body {
 .media-item video[src=""] { display: none; }
 
 /* -----------------------------------------------------------------------
-   Counter (N / total)
+   Seen badge — a small ✓ in the top-right corner of media-items the
+   user has already viewed. Rendered by feedView when an item's
+   seen_at is set or the scroll-controller reports it as seen.
    ----------------------------------------------------------------------- */
-#counter {
-  position: fixed;
-  left: 1rem;
-  bottom: 1rem;
-  z-index: 50;
-  color: var(--fg-dim);
-  font-size: var(--counter-size);
-  font-variant-numeric: tabular-nums;
+.seen-badge {
+  position: absolute;
+  top: 0.75rem;
+  right: 0.75rem;
+  z-index: 10;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 28px;
+  height: 28px;
+  border-radius: 50%;
+  background: var(--accent);
+  color: var(--control-active-icon);
+  font-size: 0.85rem;
+  font-weight: 600;
+  line-height: 1;
   user-select: none;
   pointer-events: none;
+  opacity: 0.85;
 }
+
+.media-item:not(.seen) .seen-badge { display: none; }
 
 /* -----------------------------------------------------------------------
    Controls

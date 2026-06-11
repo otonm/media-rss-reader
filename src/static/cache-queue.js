@@ -90,6 +90,15 @@
   function stop() {
     state.running = false;
   }
+  // Clear the queue and the cached-id set so a future rebuild() starts
+  // fresh. Does not stop the running worker — call stop() first if you
+  // need that. Used by the app when the user toggles the seen-filter
+  // and the feed is refetched.
+  function reset() {
+    state.queue = [];
+    state.loadingId = null;
+    state.cached = new Set();
+  }
   function rebuild(currentIndex, lookaheadN, items) {
     priorityRebuild(currentIndex, lookaheadN, items);
     if (state.running && state.loadingId === null) processNext();
@@ -107,5 +116,5 @@
   }
   function isCached(id) { return state.cached.has(id); }
 
-  MRR.cacheQueue = { on, start, stop, rebuild, isCached };
+  MRR.cacheQueue = { on, start, stop, reset, rebuild, isCached };
 })();

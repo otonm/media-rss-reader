@@ -110,8 +110,23 @@
     if (item.media_type === "video") {
       el.setAttribute("playsinline", "");
       el.setAttribute("webkit-playsinline", "");
+      el.setAttribute("controls", "");
       el.muted = MRR.config.mutedDefault;
       el.loop = !MRR.config.autoscroll;
+      // Track user interaction with the video's browser controls so that
+      // setCurrentMedia can stop auto-playing a video the user has
+      // personally paused/seeked/volume-adjusted. The `pause` event
+      // handler ignores the event when it follows a JS-initiated pause
+      // (set via _pausedByJs in setCurrentMedia).
+      el.addEventListener("seeking", () => { el.userInteracted = true; });
+      el.addEventListener("volumechange", () => { el.userInteracted = true; });
+      el.addEventListener("pause", () => {
+        if (el._pausedByJs) {
+          el._pausedByJs = false;
+        } else {
+          el.userInteracted = true;
+        }
+      });
       // NOTE: do NOT set el.autoplay here. The visible-media rule drives
       // playback: setCurrentMedia calls playWhenBufferedAndVisible when
       // this video becomes the current visible one. Setting autoplay
@@ -121,7 +136,20 @@
       el.addEventListener("error", () => onItemFailed(item.id));
     }
     wrap.appendChild(el);
+    if (item.seen_at) tagAsSeen(wrap);
     return wrap;
+  }
+
+  // Add the `.seen` class and a small corner badge to a wrap. Idempotent:
+  // calling it twice does not stack badges.
+  function tagAsSeen(wrap) {
+    if (wrap.className.includes("seen")) return;
+    wrap.className = (wrap.className + " seen").trim();
+    const badge = document.createElement("span");
+    badge.className = "seen-badge";
+    badge.setAttribute("aria-label", "seen");
+    badge.textContent = "✓";
+    wrap.appendChild(badge);
   }
 
   function renderInitial(items) {
@@ -156,6 +184,14 @@
     if (idx !== -1) MRR.itemStore.getItems().splice(idx, 1);
   }
 
+  // Live checkmark: called by the scroll-controller after a successful
+  // POST /api/items/{id}/seen. Idempotent.
+  function markSeen(id) {
+    const wrap = state.feed?.querySelector(`.media-item[data-id="${id}"]`);
+    if (!wrap) return;
+    tagAsSeen(wrap);
+  }
+
   function snapToIndex(idx) {
     const items = state.feed.querySelectorAll(".placeholder, .media-item");
     if (items[idx]) items[idx].scrollIntoView({ block: "start" });
@@ -170,13 +206,23 @@
   function setCurrentMedia(el) {
     if (state.currentVisibleEl === el) return;
     if (state.currentVisibleEl && state.currentVisibleEl !== el) {
+      // Mark the old video's pause as JS-initiated so the `pause` event
+      // handler does not interpret it as a user interaction.
+      if (state.currentVisibleEl.tagName === "VIDEO") {
+        state.currentVisibleEl._pausedByJs = true;
+      }
       state.currentVisibleEl.pause();
       state.currentVisibleEl.muted = true;
     }
     state.currentVisibleEl = el;
     if (el && el.tagName === "VIDEO") {
       el.muted = MRR.config.mutedDefault;
-      playWhenBufferedAndVisible(el);
+      // Skip auto-play for videos the user has personally interacted with
+      // (paused, seeked, adjusted volume). The browser's own controls
+      // remain available for the user to start playback themselves.
+      if (!el.userInteracted) {
+        playWhenBufferedAndVisible(el);
+      }
     }
   }
 
@@ -186,6 +232,7 @@
     renderInitial,
     onItemLoaded,
     onItemFailed,
+    markSeen,
     snapToIndex,
     snapToNext,
     snapToPrev,
