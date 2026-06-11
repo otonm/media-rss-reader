@@ -151,5 +151,5 @@
       .catch(() => MRR.config.imageAutoscrollDelayMs);
   }
 
-  MRR.autoscrollController = { setAutoscroll, bindIfVisible, reset };
+  MRR.autoscrollController = { setAutoscroll, bindIfVisible, reset, getGifDuration };
 })();
