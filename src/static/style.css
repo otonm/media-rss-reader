@@ -172,7 +172,7 @@ html, body {
 }
 
 /* -----------------------------------------------------------------------
-   Mobile — controls collapse into a top-left FAB
+   Mobile — controls collapse to a circle FAB, options slide out to the right
    ----------------------------------------------------------------------- */
 @media (max-width: 768px) {
   #controls {
@@ -180,24 +180,40 @@ html, body {
     left: calc(1rem + env(safe-area-inset-left, 0px));
     right: auto;
     bottom: auto;
+    padding: 0;
+    width: var(--control-btn-size);
+    height: var(--control-btn-size);
+    border-radius: 50%;
     background: rgba(20, 20, 28, 0.4);
     border: 1px solid rgba(255, 255, 255, 0.08);
+    display: flex;
+    align-items: center;
+    justify-content: center;
   }
 
   #controls .fab-only {
     display: flex;
+    position: relative;
+    z-index: 1;
   }
 
   #controls .option {
+    position: absolute;
+    left: calc(100% + 0.5rem);
+    top: 50%;
+    transform: translateY(-50%) scale(0.8);
     opacity: 0;
     pointer-events: none;
-    transform: scale(0.8);
     transition: opacity 0.15s, transform 0.15s;
   }
+
+  #controls .option:nth-of-type(2) { left: calc(100% + 0.5rem); }
+  #controls .option:nth-of-type(3) { left: calc(100% + 0.5rem + var(--control-btn-size) + 0.5rem); }
+  #controls .option:nth-of-type(4) { left: calc(100% + 0.5rem + 2 * (var(--control-btn-size) + 0.5rem)); }
 
   #controls.expanded .option {
     opacity: 1;
     pointer-events: auto;
-    transform: scale(1);
+    transform: translateY(-50%) scale(1);
   }
 }

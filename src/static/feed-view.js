@@ -47,28 +47,13 @@
     return wrap;
   }
 
-  function playWhenReady(video) {
-    if (video.userInteracted) return;
-    function tryPlay() {
-      if (state.currentVisibleEl !== video) return;
-      video.play().catch(() => {});
-      video.removeEventListener("canplay", tryPlay);
-      video._canPlayHandler = null;
-    }
-    if (video.readyState >= 3) {
-      tryPlay();
-    } else {
-      video._canPlayHandler = tryPlay;
-      video.addEventListener("canplay", tryPlay);
-    }
-  }
-
   function createMediaWrap(item, el) {
     const wrap = document.createElement("div");
     wrap.className = "media-item";
     wrap.dataset.id = item.id;
     wrap.dataset.mediaType = item.media_type;
     if (item.media_type === "video") {
+      el.autoplay = true;
       el.setAttribute("playsinline", "");
       el.setAttribute("webkit-playsinline", "");
       el.setAttribute("controls", "");
@@ -88,10 +73,6 @@
           el.userInteracted = true;
         }
       });
-      // NOTE: do NOT set el.autoplay here. The visible-media rule drives
-      // playback: setCurrentMedia calls playWhenBufferedAndVisible when
-      // this video becomes the current visible one. Setting autoplay
-      // would bypass that gate.
       el.addEventListener("error", () => onItemFailed(item.id));
     } else {
       el.addEventListener("error", () => onItemFailed(item.id));
@@ -178,12 +159,6 @@
     state.currentVisibleEl = el;
     if (el && el.tagName === "VIDEO") {
       el.muted = MRR.config.mutedDefault;
-      // Skip auto-play for videos the user has personally interacted with
-      // (paused, seeked, adjusted volume). The browser's own controls
-      // remain available for the user to start playback themselves.
-      if (!el.userInteracted) {
-        playWhenReady(el);
-      }
     }
   }
 
