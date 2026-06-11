@@ -53,7 +53,6 @@
     wrap.dataset.id = item.id;
     wrap.dataset.mediaType = item.media_type;
     if (item.media_type === "video") {
-      el.autoplay = true;
       el.setAttribute("playsinline", "");
       el.setAttribute("webkit-playsinline", "");
       el.setAttribute("controls", "");
@@ -61,18 +60,12 @@
       el.loop = !MRR.config.autoscroll;
       // Track user interaction with the video's browser controls so that
       // setCurrentMedia can stop auto-playing a video the user has
-      // personally paused/seeked/volume-adjusted. The `pause` event
-      // handler ignores the event when it follows a JS-initiated pause
-      // (set via _pausedByJs in setCurrentMedia).
+      // personally seeked or volume-adjusted. The `pause` event is NOT
+      // tracked here because the browser fires `pause` for its own reasons
+      // (e.g. autoplay policy, visibility change) which would incorrectly
+      // suppress autoplay on the next visible transition.
       el.addEventListener("seeking", () => { el.userInteracted = true; });
       el.addEventListener("volumechange", () => { el.userInteracted = true; });
-      el.addEventListener("pause", () => {
-        if (el._pausedByJs) {
-          el._pausedByJs = false;
-        } else {
-          el.userInteracted = true;
-        }
-      });
       el.addEventListener("error", () => onItemFailed(item.id));
     } else {
       el.addEventListener("error", () => onItemFailed(item.id));
@@ -159,6 +152,9 @@
     state.currentVisibleEl = el;
     if (el && el.tagName === "VIDEO") {
       el.muted = MRR.config.mutedDefault;
+      if (!el.userInteracted) {
+        el.play().catch(() => {});
+      }
     }
   }
 

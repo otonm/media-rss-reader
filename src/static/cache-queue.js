@@ -71,6 +71,7 @@
     return new Promise((resolve, reject) => {
       const el = item.media_type === "video" ? document.createElement("video") : new Image();
       if (item.media_type === "video") {
+        el.autoplay = true;
         el.setAttribute("playsinline", "");
         el.setAttribute("webkit-playsinline", "");
         el.muted = true;
