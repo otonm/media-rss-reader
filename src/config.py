@@ -28,14 +28,15 @@ class Settings(BaseSettings):
     cache_max_age_hours: int = 48  # evict files older than this
 
     # --- Item retention ---
-    prefetch_ahead: int = 5  # items to pre-warm ahead of scroll
     keep_items: int = 1000  # max rows in the items table
     items_max_age_hours: int = 168  # delete seen items older than 7 days
+    prefetch_ahead: int = 5  # items to pre-warm ahead of scroll (used by /api/prefetch/hint)
 
-    # --- Frontend behaviour (injected as CSS variables at startup) ---
-    image_display_delay_ms: int = 5000  # dwell time per image/GIF in auto-scroll (ms)
-    slideshow_transition_ms: int = 400  # CSS crossfade duration (ms)
-    auto_scroll_speed: float = 1.5  # px per animation frame (~90px/s at 60fps)
+    # --- WebUI behaviour (injected as CSS variables at startup) ---
+    feed_initial_count: int = 10  # initial placeholders + lookahead window
+    video_buffer_threshold_pct: int = 10  # % of video buffered before playback starts
+    video_buffer_threshold_min_s: int = 2  # minimum seconds buffered (overrides pct if larger)
+    image_autoscroll_delay_s: int = 2  # image dwell time in autoscroll mode
 
     # --- Server ---
     port: int = 8080

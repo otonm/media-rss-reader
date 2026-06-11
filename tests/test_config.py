@@ -7,7 +7,7 @@ def test_settings_defaults() -> None:
     s = Settings()
     assert s.port == 8080
     assert s.log_level == "info"
-    assert s.prefetch_ahead == 5
+    assert s.feed_initial_count == 10
     assert s.cache_max_items == 500
     assert s.opml_sync_interval == 3600
 

@@ -8,7 +8,7 @@ async def test_index_html_served(tmp_path: Path) -> None:
     """Test that GET / serves the HTML with CSS vars injected."""
     static_dir = tmp_path / "static"
     static_dir.mkdir()
-    (static_dir / "index.html").write_text("<html><!-- SLIDESHOW_TRANSITION --></html>")
+    (static_dir / "index.html").write_text("<html><!-- CONFIG_VARS --></html>")
 
     import src.main as main_mod
     from src.auth.session import SESSION_COOKIE, sign_session
@@ -34,7 +34,7 @@ async def test_index_html_served(tmp_path: Path) -> None:
 
     assert resp.status_code == 200
     assert "<style>" in resp.text
-    assert "--slideshow-transition-ms" in resp.text
+    assert "--feed-initial-count" in resp.text
 
 
 async def test_build_html_missing_file() -> None:
@@ -53,5 +53,5 @@ async def test_build_html_real_index() -> None:
 
     # Use real paths (index.html exists in src/static/)
     result = main_mod._build_html()
-    assert "--slideshow-transition-ms" in result
+    assert "--feed-initial-count" in result
     assert "<style>" in result
