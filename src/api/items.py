@@ -86,3 +86,31 @@ async def mark_seen(
         raise HTTPException(status_code=404, detail="Not found")
 
     return {"seen_at": row[0]}
+
+
+@router.get("/items/count")
+async def count_items(
+    unseen: bool = True,
+    feed_id: str | None = None,
+    db: _DbDep = None,  # type: ignore[assignment]
+) -> dict[str, int]:
+    """Return the total count of media items matching the filter.
+
+    Defaults to unseen=true to match the frontend's default request. Used
+    by the WebUI to populate the N / total counter and to detect "end of
+    feed" without a separate count query per page.
+    """
+    conditions: list[str] = []
+    params: list[Any] = []
+
+    if unseen:
+        conditions.append("seen_at IS NULL")
+    if feed_id is not None:
+        conditions.append("feed_id = ?")
+        params.append(feed_id)
+
+    where_clause = ("WHERE " + " AND ".join(conditions)) if conditions else ""
+    query = f"SELECT COUNT(*) FROM items {where_clause}"
+    async with db.execute(query, params) as cur:
+        row = await cur.fetchone()
+    return {"count": row[0]}
