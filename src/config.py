@@ -30,6 +30,7 @@ class Settings(BaseSettings):
     # --- Item retention ---
     keep_items: int = 1000  # max rows in the items table
     items_max_age_hours: int = 168  # delete seen items older than 7 days
+    prefetch_ahead: int = 5  # items to pre-warm ahead of scroll (used by /api/prefetch/hint)
 
     # --- WebUI behaviour (injected as CSS variables at startup) ---
     feed_initial_count: int = 10  # initial placeholders + lookahead window
