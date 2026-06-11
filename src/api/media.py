@@ -11,7 +11,7 @@ from fastapi.responses import FileResponse
 
 from src.config import settings
 from src.db.connection import get_db
-from src.media.cache import cache_read, cache_stream_write
+from src.media.cache import cache_read, cache_read_meta, cache_stream_write
 from src.media.prefetch import prefetch_ahead
 from src.scheduler import get_http_client, get_last_opml_sync
 
@@ -31,7 +31,12 @@ async def proxy_media(url: str = Query(...)) -> FileResponse:
     """
     path = cache_read(url)
     if path is not None:
-        return FileResponse(str(path))
+        # Cached file is named by sha256(url) with no extension, so FileResponse
+        # would otherwise infer application/octet-stream and the browser would
+        # refuse to e.g. animate a cached GIF. The sidecar written at cache
+        # time holds the upstream Content-Type.
+        media_type = cache_read_meta(url)
+        return FileResponse(str(path), media_type=media_type)
 
     client = get_http_client()
     try:
@@ -39,7 +44,7 @@ async def proxy_media(url: str = Query(...)) -> FileResponse:
             if not response.is_success:
                 raise HTTPException(status_code=502, detail="upstream error")
             content_type = response.headers.get("content-type", "application/octet-stream")
-            path = await cache_stream_write(url, response.aiter_bytes(65536))
+            path = await cache_stream_write(url, response.aiter_bytes(65536), content_type)
     except HTTPException:
         raise
     except Exception as exc:

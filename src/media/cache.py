@@ -3,6 +3,11 @@
 Files are stored as {CACHE_DIR}/{sha256(url)} — flat directory, no extension.
 The sha256 filename makes lookup O(1) and handles any characters in the URL.
 
+A sidecar file {CACHE_DIR}/{sha256(url)}.meta holds the upstream Content-Type
+string. The proxy uses it to set a correct Content-Type header on cache
+hits, which matters for the browser to e.g. animate a cached GIF. The
+sidecar is written atomically alongside the data file.
+
 evict() is called after every feed refresh cycle. It removes files that are
 too old first, then trims by count from the oldest end if the directory is
 still over the limit.
@@ -25,21 +30,41 @@ def _cache_path(url: str) -> Path:
     return Path(settings.cache_dir) / hashlib.sha256(url.encode()).hexdigest()
 
 
-async def cache_write(url: str, data: bytes) -> Path:
-    """Write media bytes to the cache and return the path."""
+def _meta_path(url: str) -> Path:
+    """Return the sidecar path holding the cached URL's Content-Type."""
+    return _cache_path(url).with_suffix(".meta")
+
+
+def _write_meta(meta_path: Path, content_type: str) -> None:
+    meta_path.write_text(content_type, encoding="ascii")
+
+
+async def cache_write(url: str, data: bytes, content_type: str = "application/octet-stream") -> Path:
+    """Write media bytes to the cache and return the data-file path.
+
+    The Content-Type is recorded in a sidecar so the proxy can serve the
+    cached file with the right Content-Type header.
+    """
     path = _cache_path(url)
+    meta = _meta_path(url)
     path.parent.mkdir(parents=True, exist_ok=True)
     await asyncio.to_thread(path.write_bytes, data)
+    await asyncio.to_thread(_write_meta, meta, content_type)
     return path
 
 
-async def cache_stream_write(url: str, chunks: AsyncIterable[bytes]) -> Path:
+async def cache_stream_write(
+    url: str, chunks: AsyncIterable[bytes], content_type: str = "application/octet-stream"
+) -> Path:
     """Stream an async byte iterator to the cache file without buffering in memory.
 
     Writes to a .tmp sibling first, then renames atomically so a partial
-    download never leaves a corrupt cache entry.
+    download never leaves a corrupt cache entry. The Content-Type sidecar
+    is written only after the data file is in place, so a partial download
+    leaves no sidecar that would mislead the proxy.
     """
     path = _cache_path(url)
+    meta = _meta_path(url)
     path.parent.mkdir(parents=True, exist_ok=True)
     tmp = path.with_suffix(".tmp")
     try:
@@ -47,8 +72,10 @@ async def cache_stream_write(url: str, chunks: AsyncIterable[bytes]) -> Path:
             async for chunk in chunks:
                 fh.write(chunk)
         await asyncio.to_thread(tmp.rename, path)
+        await asyncio.to_thread(_write_meta, meta, content_type)
     except Exception:
         tmp.unlink(missing_ok=True)
+        meta.unlink(missing_ok=True)
         raise
     return path
 
@@ -59,20 +86,39 @@ def cache_read(url: str) -> Path | None:
     return path if path.exists() else None
 
 
+def cache_read_meta(url: str) -> str | None:
+    """Return the cached Content-Type for a URL, or None if unknown."""
+    meta = _meta_path(url)
+    if not meta.exists():
+        return None
+    return meta.read_text(encoding="ascii").strip() or None
+
+
 def _evict_sync(cache_dir: Path, max_age_secs: float, max_items: int) -> None:
-    """Blocking eviction logic — run via asyncio.to_thread to keep the event loop free."""
+    """Blocking eviction logic — run via asyncio.to_thread to keep the event loop free.
+
+    Each data file and its .meta sidecar share the same mtime (written
+    together), so evicting one takes the other along. Counting is by data
+    file only; .meta entries are skipped so the count matches what the
+    proxy would actually serve.
+    """
     now = time.time()
     files = sorted(cache_dir.iterdir(), key=lambda p: p.stat().st_mtime)
     surviving: list[Path] = []
     for f in files:
+        if f.suffix == ".meta":
+            continue
         if now - f.stat().st_mtime > max_age_secs:
             logger.debug(f"Evicting cache file {f} due to age")
             f.unlink(missing_ok=True)
+            f.with_suffix(".meta").unlink(missing_ok=True)
         else:
             surviving.append(f)
     while len(surviving) > max_items:
         logger.debug(f"Evicting cache file {surviving[0]} due to count limit")
-        surviving.pop(0).unlink(missing_ok=True)
+        head = surviving.pop(0)
+        head.unlink(missing_ok=True)
+        head.with_suffix(".meta").unlink(missing_ok=True)
 
 
 def _evict_if_exists(cache_dir: Path, max_age_secs: float, max_items: int) -> None:

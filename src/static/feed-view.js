@@ -8,7 +8,10 @@
 //
 // The "visible media" rule: at most one <video> plays at a time. The visible
 // video is the one with the highest intersectionRatio (set by the scroll
-// controller). All other videos are paused and muted.
+// controller). All other videos are paused. (We deliberately do NOT mutate
+// the old video's muted state on transition: setting `muted` on a paused
+// video would fire `volumechange`, which the browser uses to infer user
+// interaction in some implementations and would suppress future autoplay.)
 //
 // Public API:
 //   on('currentindex-changed', ...)  // forwards scroll-controller events
@@ -58,14 +61,24 @@
       el.setAttribute("controls", "");
       el.muted = MRR.config.mutedDefault;
       el.loop = !MRR.config.autoscroll;
-      // Track user interaction with the video's browser controls so that
-      // setCurrentMedia can stop auto-playing a video the user has
-      // personally seeked or volume-adjusted. The `pause` event is NOT
-      // tracked here because the browser fires `pause` for its own reasons
-      // (e.g. autoplay policy, visibility change) which would incorrectly
-      // suppress autoplay on the next visible transition.
-      el.addEventListener("seeking", () => { el.userInteracted = true; });
-      el.addEventListener("volumechange", () => { el.userInteracted = true; });
+      // Track explicit user pauses only. The browser fires spurious
+      // 'volumechange' and 'seeking' events for its own reasons (autoplay
+      // policy adjustments, end-of-video seek-backs, visibility changes);
+      // trusting those would suppress autoplay on the next visible
+      // transition. The reliable signal is a `pause` event that was not
+      // preceded by our own pause() call in setCurrentMedia — that is a
+      // real user click on the browser controls.
+      el.addEventListener("pause", () => {
+        if (el._pausedByJs) {
+          el._pausedByJs = false;
+        } else {
+          el.userPaused = true;
+        }
+      });
+      // A subsequent `play` (user clicking the controls) clears userPaused
+      // so a later scroll-back resumes autoplay. Without this the user's
+      // explicit "play" intent is lost the moment they scroll away.
+      el.addEventListener("play", () => { el.userPaused = false; });
       el.addEventListener("error", () => onItemFailed(item.id));
     } else {
       el.addEventListener("error", () => onItemFailed(item.id));
@@ -142,18 +155,21 @@
     if (state.currentVisibleEl === el) return;
     if (state.currentVisibleEl && state.currentVisibleEl !== el) {
       // Mark the old video's pause as JS-initiated so the `pause` event
-      // handler does not interpret it as a user interaction.
+      // handler does not interpret it as a user interaction. The old
+      // video is being paused, so its mute state is irrelevant — leave it
+      // alone. Mutating muted here would fire `volumechange` on the old
+      // element, which the scroll-controller is no longer watching, but
+      // was previously a source of phantom user-interaction flags.
       if (state.currentVisibleEl.tagName === "VIDEO") {
         state.currentVisibleEl._pausedByJs = true;
       }
       state.currentVisibleEl.pause();
-      state.currentVisibleEl.muted = true;
     }
     state.currentVisibleEl = el;
     if (el && el.tagName === "VIDEO") {
       el.muted = MRR.config.mutedDefault;
-      if (!el.userInteracted) {
-        el.play().catch(() => {});
+      if (!el.userPaused) {
+        el.play().catch((err) => console.warn("video play rejected", err));
       }
     }
   }

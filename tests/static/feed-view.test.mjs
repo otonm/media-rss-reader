@@ -234,28 +234,7 @@ test("image wraps do NOT have any video-specific attributes leak onto the <img>"
   assert.equal(wrap.querySelector("video"), null, "image wrap should not contain a <video>");
 });
 
-test("a `seeking` event on a video marks it as userInteracted", () => {
-  const { ctx, feed, items } = setupHarness();
-  const video = ctx.document.createElement("video");
-  ctx.window.MRR.feedView.onItemLoaded("id0", video);
-  const wrap = feed.children.find((c) => c.dataset.id === "id0");
-  const v = wrap.querySelector("video");
-  assert.equal(v.userInteracted, undefined, "freshly mounted video should not be userInteracted");
-  v.dispatchEvent({ type: "seeking" });
-  assert.equal(v.userInteracted, true, "seeking should set userInteracted = true");
-});
-
-test("a `volumechange` event on a video marks it as userInteracted", () => {
-  const { ctx, feed } = setupHarness();
-  const video = ctx.document.createElement("video");
-  ctx.window.MRR.feedView.onItemLoaded("id0", video);
-  const wrap = feed.children.find((c) => c.dataset.id === "id0");
-  const v = wrap.querySelector("video");
-  v.dispatchEvent({ type: "volumechange" });
-  assert.equal(v.userInteracted, true);
-});
-
-test("a `pause` event WITHOUT a preceding JS pause marks the video as userInteracted", () => {
+test("a `pause` event WITHOUT a preceding JS pause marks the video as userPaused", () => {
   const { ctx, feed } = setupHarness();
   const video = ctx.document.createElement("video");
   ctx.window.MRR.feedView.onItemLoaded("id0", video);
@@ -265,10 +244,10 @@ test("a `pause` event WITHOUT a preceding JS pause marks the video as userIntera
   // is dispatched without the JS having set _pausedByJs first.
   v.pause();
   v.dispatchEvent({ type: "pause" });
-  assert.equal(v.userInteracted, true, "user pause should set userInteracted = true");
+  assert.equal(v.userPaused, true, "user pause should set userPaused = true");
 });
 
-test("a `pause` event from a JS-initiated pause does NOT mark the video as userInteracted", () => {
+test("a `pause` event from a JS-initiated pause does NOT mark the video as userPaused", () => {
   const { ctx, feed } = setupHarness();
   const video = ctx.document.createElement("video");
   ctx.window.MRR.feedView.onItemLoaded("id0", video);
@@ -279,25 +258,104 @@ test("a `pause` event from a JS-initiated pause does NOT mark the video as userI
   v._pausedByJs = true;
   v.pause();
   v.dispatchEvent({ type: "pause" });
-  assert.notEqual(v.userInteracted, true, "JS pause must not set userInteracted");
+  assert.notEqual(v.userPaused, true, "JS pause must not set userPaused");
   assert.equal(v._pausedByJs, false, "_pausedByJs flag must be cleared by the pause handler");
 });
 
-test("setCurrentMedia does not auto-play a video the user has interacted with", async () => {
+test("a `play` event clears userPaused (so manual play survives scroll-back)", () => {
+  const { ctx, feed } = setupHarness();
+  const video = ctx.document.createElement("video");
+  ctx.window.MRR.feedView.onItemLoaded("id0", video);
+  const wrap = feed.children.find((c) => c.dataset.id === "id0");
+  const v = wrap.querySelector("video");
+  v.userPaused = true;
+  v.dispatchEvent({ type: "play" });
+  assert.equal(v.userPaused, false, "play must clear userPaused");
+});
+
+test("a `volumechange` event does NOT mark the video as userPaused", () => {
+  // Regression: prior to the fix, volumechange on the old video (caused by
+  // setCurrentMedia writing `muted = true` to it) was treated as user
+  // interaction and suppressed autoplay. With the fix, volumechange is
+  // not tracked at all.
+  const { ctx, feed } = setupHarness();
+  const video = ctx.document.createElement("video");
+  ctx.window.MRR.feedView.onItemLoaded("id0", video);
+  const wrap = feed.children.find((c) => c.dataset.id === "id0");
+  const v = wrap.querySelector("video");
+  v.dispatchEvent({ type: "volumechange" });
+  assert.notEqual(v.userPaused, true, "volumechange must not set userPaused");
+});
+
+test("setCurrentMedia does not auto-play a video the user has paused", async () => {
   const { ctx, feed, items } = setupHarness();
   const video = ctx.document.createElement("video");
-  // Pre-mark the video as user-interacted (e.g. user seeked earlier).
-  video.userInteracted = true;
-  // Spy on play() to detect whether setCurrentMedia triggered it.
+  // Pre-mark the video as user-paused.
+  video.userPaused = true;
   let playCalls = 0;
   video.play = () => { playCalls += 1; return Promise.resolve(); };
   ctx.window.MRR.feedView.onItemLoaded("id0", video);
   const wrap = feed.children.find((c) => c.dataset.id === "id0");
   const v = wrap.querySelector("video");
-  v.userInteracted = true;
-  // setCurrentMedia is the visible-media switch.
+  v.userPaused = true;
   ctx.window.MRR.feedView.setCurrentMedia(v);
-  // Give the setInterval a chance to fire.
-  await new Promise((r) => setTimeout(r, 250));
-  assert.equal(playCalls, 0, "userInteracted video must not be auto-played");
+  await new Promise((r) => setTimeout(r, 50));
+  assert.equal(playCalls, 0, "userPaused video must not be auto-played");
+});
+
+test("scroll-away and scroll-back replays a video even if a volumechange fired in between", async () => {
+  // Regression: prior to the fix, setCurrentMedia wrote `muted = true` on
+  // the OLD video when transitioning away. That fired `volumechange` and
+  // (under the old userInteracted flag) suppressed autoplay on scroll-back.
+  // With the fix, the OLD video's mute state is not touched, volumechange
+  // is not tracked, and the video plays again on the next visible transition.
+  const { ctx, feed, items } = setupHarness();
+  const video = ctx.document.createElement("video");
+  let playCalls = 0;
+  video.play = () => { playCalls += 1; return Promise.resolve(); };
+  ctx.window.MRR.feedView.onItemLoaded("id0", video);
+  const v = feed.querySelector("video");
+  assert.equal(v, video);
+
+  // Initial bind: setCurrentMedia(v) calls play() once.
+  ctx.window.MRR.feedView.setCurrentMedia(v);
+  assert.equal(playCalls, 1);
+
+  // Transition AWAY to a different video (a sibling). setCurrentMedia must
+  // NOT touch the old video's muted property.
+  const otherVideo = ctx.document.createElement("video");
+  otherVideo.play = () => { playCalls += 1; return Promise.resolve(); };
+  ctx.window.MRR.feedView.onItemLoaded("id2", otherVideo);
+  const v2 = feed.querySelectorAll("video")[1];
+  ctx.window.MRR.feedView.setCurrentMedia(v2);
+  assert.equal(playCalls, 2);
+
+  // v's muted must be exactly what createMediaWrap set it to (default true).
+  // No additional volumechange-causing write may have happened.
+  assert.equal(v.muted, true, "old video's muted must be left at the createMediaWrap value");
+
+  // Transition BACK. setCurrentMedia(v) must call play() again on v.
+  ctx.window.MRR.feedView.setCurrentMedia(v);
+  assert.equal(playCalls, 3, "play() must be called again on scroll-back");
+});
+
+test("setCurrentMedia logs a warning when play() rejects", async () => {
+  const { ctx, feed, items } = setupHarness();
+  const originalWarn = console.warn;
+  const warnings = [];
+  console.warn = (...args) => warnings.push(args);
+  try {
+    const video = ctx.document.createElement("video");
+    video.play = () => Promise.reject(new Error("autoplay blocked"));
+    ctx.window.MRR.feedView.onItemLoaded("id0", video);
+    const v = feed.querySelector("video");
+    ctx.window.MRR.feedView.setCurrentMedia(v);
+    await new Promise((r) => setTimeout(r, 20));
+    assert.ok(
+      warnings.some((w) => w[0] === "video play rejected"),
+      `expected a "video play rejected" warning, got: ${JSON.stringify(warnings)}`,
+    );
+  } finally {
+    console.warn = originalWarn;
+  }
 });

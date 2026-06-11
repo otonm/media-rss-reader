@@ -168,6 +168,53 @@ async def test_proxy_cache_hit(client: AsyncClient, tmp_path: object, monkeypatc
     assert resp.content == b"cached"
 
 
+async def test_proxy_cache_hit_returns_correct_content_type(
+    client: AsyncClient, tmp_path: object, monkeypatch: object
+) -> None:
+    """Cache hit must serve the stored Content-Type, not octet-stream.
+
+    The cached file is named by sha256(url) with no extension, so
+    FileResponse's extension-inference would otherwise return
+    application/octet-stream. That breaks the browser's ability to
+    animate a cached GIF.
+    """
+    import hashlib
+
+    import src.media.cache as cache_mod
+
+    monkeypatch.setattr(cache_mod.settings, "cache_dir", str(tmp_path))
+    url = "http://example.com/anim.gif"
+    filename = hashlib.sha256(url.encode()).hexdigest()
+    (tmp_path / filename).write_bytes(b"GIF89a")  # type: ignore[operator]
+    (tmp_path / f"{filename}.meta").write_text("image/gif")  # type: ignore[operator]
+
+    resp = await client.get(f"/api/media/proxy?url={url}")
+    assert resp.status_code == 200
+    assert resp.headers["content-type"].startswith("image/gif")
+
+
+async def test_proxy_cache_hit_falls_back_when_sidecar_missing(
+    client: AsyncClient, tmp_path: object, monkeypatch: object
+) -> None:
+    """Pre-sidecar cached files (no .meta sibling) must still be servable."""
+    import hashlib
+
+    import src.media.cache as cache_mod
+
+    monkeypatch.setattr(cache_mod.settings, "cache_dir", str(tmp_path))
+    url = "http://example.com/anim.gif"
+    filename = hashlib.sha256(url.encode()).hexdigest()
+    (tmp_path / filename).write_bytes(b"GIF89a")  # type: ignore[operator]
+    # no .meta written — simulates a cache file from before sidecars existed
+
+    resp = await client.get(f"/api/media/proxy?url={url}")
+    assert resp.status_code == 200
+    assert resp.content == b"GIF89a"
+    # No assertion on content-type here — the sidecar is missing, so the
+    # inferred type is used. The important contract is that the request
+    # succeeds.
+
+
 async def test_proxy_cache_miss(client: AsyncClient, tmp_path: object, monkeypatch: object) -> None:
     import httpx
     import respx
@@ -188,6 +235,12 @@ async def test_proxy_cache_miss(client: AsyncClient, tmp_path: object, monkeypat
 
     assert resp.status_code == 200
     assert resp.content == b"freshdata"
+    # Sidecar must have been written so a subsequent cache hit serves the
+    # correct Content-Type.
+    import hashlib
+
+    fname = hashlib.sha256(url.encode()).hexdigest()
+    assert (tmp_path / f"{fname}.meta").read_text() == "image/jpeg"  # type: ignore[operator]
 
 
 async def test_proxy_upstream_error(client: AsyncClient, tmp_path: object, monkeypatch: object) -> None:

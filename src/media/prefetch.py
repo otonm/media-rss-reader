@@ -30,7 +30,8 @@ async def _warm(url: str, client: httpx.AsyncClient) -> None:
     try:
         async with client.stream("GET", url, follow_redirects=True, timeout=30) as response:
             if response.is_success:
-                await cache_stream_write(url, response.aiter_bytes(65536))
+                content_type = response.headers.get("content-type", "application/octet-stream")
+                await cache_stream_write(url, response.aiter_bytes(65536), content_type)
     except Exception as exc:  # pragma: no cover
         logger.debug("prefetch failed for %s: %s", url, exc)
 

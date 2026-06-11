@@ -1,14 +1,10 @@
 // ---------------------------------------------------------------------------
-// autoscroll-controller.test.mjs — tests for the GIF → canvas swap.
+// autoscroll-controller.test.mjs — tests for autoscroll behaviour across
+// image, gif, and video media types.
 //
-// Bug: when autoscroll is ON and the current item is a GIF, the <img>
-// keeps looping visually. The autoscroll timer fires after the parsed GIF
-// duration, but the user sees the GIF animate many times during that
-// window. We want the GIF to effectively "play once": replace the looping
-// <img> with a <canvas> showing the first frame for the duration of the
-// autoscroll window, then snap to next. When autoscroll is turned OFF,
-// the canvas is swapped back to a fresh <img> so the GIF resumes looping
-// naturally.
+// GIF behaviour: in autoscroll mode, the GIF <img> is left intact so the
+// browser keeps animating it. The autoscroll timer fires after the parsed
+// GIF duration and snaps to the next item.
 // ---------------------------------------------------------------------------
 
 import test from "node:test";
@@ -23,8 +19,6 @@ const STATIC = resolve(__dirname, "../../src/static");
 
 // Build a minimal GIF89a 1x1 image (35 bytes) so the duration parser
 // finds no GCE blocks and falls back to the imageAutoscrollDelayMs default.
-// The 2D context will draw the image successfully because the mock canvas
-// does not actually decode pixels.
 const TINY_GIF = Uint8Array.from([
   0x47, 0x49, 0x46, 0x38, 0x39, 0x61, 0x01, 0x00, 0x01, 0x00, 0x80, 0x00, 0x00,
   0xff, 0xff, 0xff, 0x00, 0x00, 0x00, 0x21, 0xf9, 0x04, 0x01, 0x00, 0x00, 0x00,
@@ -33,9 +27,6 @@ const TINY_GIF = Uint8Array.from([
 ]);
 
 function makeGifWrap(ctx, id = "gif0", src = "https://example/foo.gif") {
-  // Build the wrap inside the document's feed container so the
-  // restoreAllSwappedGifs() query (#feed .media-item[data-media-type="gif"])
-  // can find it.
   const feed = ctx.document.getElementById("feed") || ctx.document.createElement("div");
   if (!feed.id) { feed.id = "feed"; ctx.document.register(feed); }
   const wrap = ctx.document.createElement("div");
@@ -76,7 +67,7 @@ function installItemStore(ctx, items) {
   };
 }
 
-test("bindIfVisible for a gif wrap replaces the <img> with a <canvas> and draws the first frame", async () => {
+test("bindIfVisible for a gif wrap leaves the <img> in place (browser keeps animating)", () => {
   const ctx = createDomContext();
   const { wrap, img } = makeGifWrap(ctx);
   installItemStore(ctx, [{ id: "gif0", media_type: "gif", media_url: "https://example/foo.gif" }]);
@@ -84,29 +75,45 @@ test("bindIfVisible for a gif wrap replaces the <img> with a <canvas> and draws 
   ctx.window.MRR.autoscrollController.setAutoscroll(true);
   ctx.window.MRR.autoscrollController.bindIfVisible(wrap);
 
-  // The swap is synchronous inside bindIfVisible — the duration fetch is
-  // async and only schedules the snap-to-next timer.
-  assert.equal(wrap.children[0].tagName, "CANVAS", "first child should be a <canvas>");
-  assert.equal(img.parentNode, null, "the original <img> should be detached");
-  const canvas = wrap.children[0];
-  assert.ok(canvas._ctxCalls?.some((c) => c.method === "drawImage"), "drawImage should be called on the canvas 2D context");
+  // The <img> must still be there — no <canvas> swap.
+  assert.equal(wrap.children[0].tagName, "IMG", "first child should still be an <img>");
+  assert.equal(wrap.children[0], img, "the original <img> must not be replaced");
 });
 
-test("setAutoscroll(false) restores the <img> so the GIF loops again", async () => {
+test("bindIfVisible for a gif wrap does not call getGifDuration synchronously (it schedules snapToNext after the duration)", async () => {
+  const ctx = createDomContext();
+  const { wrap, img } = makeGifWrap(ctx);
+  let snapCalls = 0;
+  installItemStore(ctx, [{ id: "gif0", media_type: "gif", media_url: "https://example/foo.gif" }]);
+  ctx.window.MRR.feedView.snapToNext = () => { snapCalls += 1; };
+  loadScript(resolve(STATIC, "autoscroll-controller.js"), ctx);
+  ctx.window.MRR.autoscrollController.setAutoscroll(true);
+  ctx.window.MRR.autoscrollController.bindIfVisible(wrap);
+
+  // snapToNext is scheduled by the async getGifDuration promise, which the
+  // mock fetch resolves with the tiny GIF buffer (no GCE blocks, so the
+  // duration falls back to imageAutoscrollDelayMs = 2000).
+  assert.equal(snapCalls, 0, "snapToNext must not fire synchronously");
+  await new Promise((r) => setTimeout(r, 10));
+  assert.equal(snapCalls, 0, "snapToNext must not fire before the 2000ms delay");
+  await new Promise((r) => setTimeout(r, 2050));
+  assert.equal(snapCalls, 1, "snapToNext must fire once after the GIF duration");
+});
+
+test("setAutoscroll(false) does not touch the GIF <img>", () => {
   const ctx = createDomContext();
   const { wrap, img } = makeGifWrap(ctx);
   installItemStore(ctx, [{ id: "gif0", media_type: "gif", media_url: "https://example/foo.gif" }]);
   loadScript(resolve(STATIC, "autoscroll-controller.js"), ctx);
   ctx.window.MRR.autoscrollController.setAutoscroll(true);
   ctx.window.MRR.autoscrollController.bindIfVisible(wrap);
-  // sanity: the swap happened
-  assert.equal(wrap.children[0].tagName, "CANVAS");
+  // sanity: still the same <img>
+  assert.equal(wrap.children[0].tagName, "IMG");
 
   ctx.window.MRR.autoscrollController.setAutoscroll(false);
-  // After turning autoscroll off, the canvas should be replaced with a
-  // fresh <img> carrying the original src.
-  assert.equal(wrap.children[0].tagName, "IMG", "first child should be an <img> after autoscroll off");
-  assert.equal(wrap.children[0].src, "https://example/foo.gif", "restored img should have the original src");
+  // After turning autoscroll off, the <img> must still be there unchanged.
+  assert.equal(wrap.children[0].tagName, "IMG", "<img> must remain after autoscroll off");
+  assert.equal(wrap.children[0], img, "the original <img> must still be in the wrap");
 });
 
 test("bindIfVisible for a non-gif wrap is not affected by the swap (image/video paths unchanged)", () => {
