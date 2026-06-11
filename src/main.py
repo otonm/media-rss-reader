@@ -33,8 +33,6 @@ def _build_html() -> str:
     style = (
         f"<style>:root{{"
         f"--feed-initial-count:{settings.feed_initial_count};"
-        f"--video-buffer-threshold-pct:{settings.video_buffer_threshold_pct};"
-        f"--video-buffer-threshold-min-s:{settings.video_buffer_threshold_min_s};"
         f"--image-autoscroll-delay-s:{settings.image_autoscroll_delay_s};"
         f"}}</style>"
     )

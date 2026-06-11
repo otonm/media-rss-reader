@@ -47,59 +47,20 @@
     return wrap;
   }
 
-  // Returns the forward-seconds buffered past the playhead, or null if the
-  // buffer is empty / not yet reported. Used by the buffer-threshold logic.
-  function forwardSeconds(video) {
-    const b = video.buffered;
-    if (!b.length) return 0;
-    let total = 0;
-    for (let i = 0; i < b.length; i++) {
-      const start = b.start(i);
-      const end = b.end(i);
-      if (end >= video.currentTime) total += end - Math.max(start, video.currentTime);
+  function playWhenReady(video) {
+    if (video.userInteracted) return;
+    function tryPlay() {
+      if (state.currentVisibleEl !== video) return;
+      video.play().catch(() => {});
+      video.removeEventListener("canplay", tryPlay);
+      video._canPlayHandler = null;
     }
-    return total;
-  }
-
-  function bufferedPct(video) {
-    if (!video.duration || !isFinite(video.duration)) return 0;
-    const b = video.buffered;
-    if (!b.length) return 0;
-    return (b.end(b.length - 1) / video.duration) * 100;
-  }
-
-  // Wait until the buffer reaches the configured threshold AND `video` is
-  // the currently visible media, then play. The 'progress' event fires on
-  // each buffer growth; we evaluate on each. On browsers where 'progress'
-  // is sparse (notably iOS Safari), a 100ms setInterval re-evaluates the
-  // same condition until the video starts. We also short-circuit if the
-  // video stops being the visible one (e.g. the user scrolled away).
-  function playWhenBufferedAndVisible(video) {
-    const cfg = MRR.config;
-    let intervalId = null;
-    let cleared = false;
-    function clearAll() {
-      if (cleared) return;
-      cleared = true;
-      if (intervalId !== null) { clearInterval(intervalId); intervalId = null; }
-      video.removeEventListener("progress", evaluate);
-      video.removeEventListener("canplay", evaluate);
-      video.removeEventListener("playing", onPlaying);
+    if (video.readyState >= 3) {
+      tryPlay();
+    } else {
+      video._canPlayHandler = tryPlay;
+      video.addEventListener("canplay", tryPlay);
     }
-    function evaluate() {
-      if (state.currentVisibleEl !== video) { clearAll(); return; }
-      const pct = bufferedPct(video);
-      const fs = forwardSeconds(video);
-      if (pct >= cfg.videoBufferThresholdPct || fs >= cfg.videoBufferThresholdMinS) {
-        video.play().catch(() => {});
-        clearAll();
-      }
-    }
-    function onPlaying() { clearAll(); }
-    video.addEventListener("progress", evaluate);
-    video.addEventListener("canplay", evaluate);
-    intervalId = setInterval(evaluate, 100);
-    video.addEventListener("playing", onPlaying);
   }
 
   function createMediaWrap(item, el) {
@@ -221,7 +182,7 @@
       // (paused, seeked, adjusted volume). The browser's own controls
       // remain available for the user to start playback themselves.
       if (!el.userInteracted) {
-        playWhenBufferedAndVisible(el);
+        playWhenReady(el);
       }
     }
   }

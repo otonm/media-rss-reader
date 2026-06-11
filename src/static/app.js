@@ -23,8 +23,6 @@
     };
     MRR.config = {
       feedInitialCount: num("--feed-initial-count", 10),
-      videoBufferThresholdPct: num("--video-buffer-threshold-pct", 10),
-      videoBufferThresholdMinS: num("--video-buffer-threshold-min-s", 2),
       imageAutoscrollDelayMs: num("--image-autoscroll-delay-s", 2) * 1000,
       autoscroll: false,
       mutedDefault: true,

@@ -10,10 +10,6 @@ def test_settings_defaults() -> None:
     assert s.feed_initial_count == 10
     assert s.cache_max_items == 500
     assert s.opml_sync_interval == 3600
-    # Bumped defaults: give videos a bigger buffer lead time before
-    # playback starts, so the spinner is less common.
-    assert s.video_buffer_threshold_pct == 20
-    assert s.video_buffer_threshold_min_s == 4
 
 
 def test_settings_env_override(monkeypatch: pytest.MonkeyPatch) -> None:

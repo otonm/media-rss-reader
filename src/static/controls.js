@@ -21,6 +21,10 @@
     showSeen: false,
   };
 
+  function collapseControls() {
+    document.getElementById("controls")?.classList.remove("expanded");
+  }
+
   function setMuted(muted) {
     state.muted = muted;
     MRR.config.mutedDefault = muted;
@@ -28,6 +32,7 @@
     const btn = document.getElementById("btn-mute");
     btn.setAttribute("aria-pressed", String(muted));
     btn.textContent = muted ? "🔇" : "🔊";
+    collapseControls();
   }
 
   function setAutoscroll(on) {
@@ -35,6 +40,7 @@
     MRR.config.autoscroll = on;
     const btn = document.getElementById("btn-autoscroll");
     btn.setAttribute("aria-pressed", String(on));
+    collapseControls();
   }
 
   function setShowSeen(on) {
@@ -42,9 +48,16 @@
     const btn = document.getElementById("btn-show-seen");
     btn.setAttribute("aria-pressed", String(on));
     MRR.app.setShowSeen(on);
+    collapseControls();
   }
 
   function init() {
+    const fab = document.getElementById("btn-fab");
+    if (fab) {
+      fab.addEventListener("click", () => {
+        document.getElementById("controls").classList.toggle("expanded");
+      });
+    }
     document.getElementById("btn-autoscroll").addEventListener("click", () => {
       const next = document.getElementById("btn-autoscroll").getAttribute("aria-pressed") !== "true";
       setAutoscroll(next);

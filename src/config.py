@@ -34,8 +34,6 @@ class Settings(BaseSettings):
 
     # --- WebUI behaviour (injected as CSS variables at startup) ---
     feed_initial_count: int = 10  # initial placeholders + lookahead window
-    video_buffer_threshold_pct: int = 20  # % of video buffered before playback starts
-    video_buffer_threshold_min_s: int = 4  # minimum seconds buffered (overrides pct if larger)
     image_autoscroll_delay_s: int = 2  # image dwell time in autoscroll mode
 
     # --- Server ---
