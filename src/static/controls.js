@@ -18,6 +18,7 @@
 
   function setMuted(muted) {
     state.muted = muted;
+    MRR.config.mutedDefault = muted;
     document.querySelectorAll("#feed video").forEach((v) => { v.muted = muted; });
     const btn = document.getElementById("btn-mute");
     btn.setAttribute("aria-pressed", String(muted));
@@ -26,6 +27,7 @@
 
   function setAutoscroll(on) {
     MRR.autoscrollController.setAutoscroll(on);
+    MRR.config.autoscroll = on;
     const btn = document.getElementById("btn-autoscroll");
     btn.setAttribute("aria-pressed", String(on));
   }

@@ -39,13 +39,10 @@
     if (!best) return;
     const idx = MRR.itemStore.findIndexById(best.target.dataset.id);
     if (idx === -1) return;
-    const prev = MRR.itemStore.getCurrentIndex();
     MRR.itemStore.setCurrentIndex(idx);
-    if (idx !== prev) {
-      MRR.feedView.setCurrentMedia(best.target.querySelector("video"));
-      MRR.cacheQueue.rebuild(idx, MRR.config.feedInitialCount, MRR.itemStore.getItems());
-      MRR.autoscrollController.reset(best.target);
-    }
+    MRR.feedView.setCurrentMedia(best.target.querySelector("video"));
+    MRR.cacheQueue.rebuild(idx, MRR.config.feedInitialCount, MRR.itemStore.getItems());
+    MRR.autoscrollController.reset(best.target);
   }
 
   function onSeen(entries) {

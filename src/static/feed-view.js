@@ -77,8 +77,14 @@
   function playWhenBufferedAndVisible(video) {
     const cfg = MRR.config;
     let intervalId = null;
+    let cleared = false;
     function clearAll() {
+      if (cleared) return;
+      cleared = true;
       if (intervalId !== null) { clearInterval(intervalId); intervalId = null; }
+      video.removeEventListener("progress", evaluate);
+      video.removeEventListener("canplay", evaluate);
+      video.removeEventListener("playing", onPlaying);
     }
     function evaluate() {
       if (state.currentVisibleEl !== video) { clearAll(); return; }
@@ -87,14 +93,13 @@
       if (pct >= cfg.videoBufferThresholdPct || fs >= cfg.videoBufferThresholdMinS) {
         video.play().catch(() => {});
         clearAll();
-        video.removeEventListener("progress", evaluate);
-        video.removeEventListener("canplay", evaluate);
       }
     }
+    function onPlaying() { clearAll(); }
     video.addEventListener("progress", evaluate);
     video.addEventListener("canplay", evaluate);
     intervalId = setInterval(evaluate, 100);
-    video.addEventListener("playing", clearAll, { once: true });
+    video.addEventListener("playing", onPlaying);
   }
 
   function createMediaWrap(item, el) {
