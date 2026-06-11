@@ -112,10 +112,6 @@
       // this video becomes the current visible one. Setting autoplay
       // would bypass that gate.
       el.addEventListener("error", () => onItemFailed(item.id));
-      // The cache-queue download already produced 'loadeddata' on `el`, so
-      // the first frame is paintable now; we still gate .play() on the
-      // buffer threshold so playback doesn't stall mid-stream.
-      playWhenBufferedAndVisible(el);
     } else {
       el.addEventListener("error", () => onItemFailed(item.id));
     }
