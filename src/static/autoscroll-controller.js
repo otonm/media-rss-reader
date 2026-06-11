@@ -36,9 +36,8 @@
   }
 
   function currentVisibleWrap() {
-    const idx = MRR.itemStore.getCurrentIndex();
-    const items = document.querySelectorAll("#feed .media-item");
-    return items[idx] || null;
+    const item = MRR.itemStore.getItemAt(MRR.itemStore.getCurrentIndex());
+    return item ? document.querySelector(`#feed .media-item[data-id="${item.id}"]`) : null;
   }
 
   function bindIfVisible(wrap) {
