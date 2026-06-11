@@ -93,6 +93,17 @@
   function rebuild(currentIndex, lookaheadN, items) {
     priorityRebuild(currentIndex, lookaheadN, items);
     if (state.running && state.loadingId === null) processNext();
+    // Fire a server-side prewarm hint so the disk cache gets the next
+    // PREFETCH_AHEAD items warmed while the browser-side worker is busy
+    // downloading the lookahead. Fire-and-forget; failures are silent.
+    if (currentIndex >= 0 && currentIndex < items.length) {
+      const itemId = items[currentIndex].id;
+      fetch("/api/prefetch/hint", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ item_id: itemId }),
+      }).catch(() => {});
+    }
   }
   function isCached(id) { return state.cached.has(id); }
 

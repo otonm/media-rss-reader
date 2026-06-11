@@ -137,7 +137,15 @@
     const wrap = createMediaWrap(item, el);
     placeholder.replaceWith(wrap);
     MRR.scrollController.observe(wrap);
-    MRR.autoscrollController.bindIfVisible(wrap);
+    // Only call bindIfVisible when the newly loaded item IS the currently
+    // visible one. bindIfVisible rebinds unconditionally, so calling it
+    // for a lookahead item would steal the `ended` listener from the
+    // item the user is actually watching. The scroll-controller will
+    // call bindIfVisible via reset() when the visible item changes.
+    const currentItem = MRR.itemStore.getItemAt(MRR.itemStore.getCurrentIndex());
+    if (currentItem && currentItem.id === id) {
+      MRR.autoscrollController.bindIfVisible(wrap);
+    }
   }
 
   function onItemFailed(id) {
