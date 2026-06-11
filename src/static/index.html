@@ -2,38 +2,25 @@
 <html lang="en" data-theme="dark">
 <head>
   <meta charset="UTF-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
   <title>Media RSS Reader</title>
   <link rel="icon" type="image/svg+xml" href="/static/favicon.svg">
-  <!-- SLIDESHOW_TRANSITION -->
+  <!-- CONFIG_VARS -->
   <link rel="stylesheet" href="/static/style.css">
 </head>
 <body>
-  <div id="scroll-view">
-    <div id="empty-state" class="hidden">Fetching media… check back in a moment.</div>
-    <div id="feed-list"></div>
-  </div>
-  <div id="slideshow-view" class="hidden">
-    <div class="slide-layer" id="slide-a"></div>
-    <div class="slide-layer" id="slide-b"></div>
-  </div>
+  <div id="feed" aria-label="Media feed"></div>
+  <div id="counter" aria-live="polite">— / —</div>
   <div id="controls">
-    <button class="ctrl-btn" id="ctrl-autoscroll" title="Auto-scroll [a]" onclick="toggleAutoScroll();updateControls()">⟳</button>
-    <button class="ctrl-btn" id="ctrl-slideshow"  title="Slideshow [s]"   onclick="toggleSlideshow();updateControls()">⊞</button>
-    <button class="ctrl-btn" id="ctrl-mute"       title="Mute [m]"        onclick="toggleMute();updateControls()">🔇</button>
-    <button class="ctrl-btn" id="ctrl-show-seen"  title="Show seen"       onclick="toggleShowSeen()">👁</button>
-    <button class="ctrl-btn" id="ctrl-theme"      title="Theme [d]"       onclick="toggleTheme();updateControls()">🌙</button>
+    <button id="btn-autoscroll" type="button" aria-pressed="false" aria-label="Toggle autoscroll" title="Autoscroll [a]">⟳</button>
+    <button id="btn-mute" type="button" aria-pressed="true" aria-label="Toggle mute" title="Mute [m]">🔇</button>
   </div>
-  <div id="fab-container">
-    <div id="fab-menu" class="hidden">
-      <button class="fab-btn" id="fab-theme"      title="Theme"       onclick="toggleTheme();updateControls()">🌙</button>
-      <button class="fab-btn" id="fab-mute"       title="Mute"        onclick="toggleMute();updateControls()">🔇</button>
-      <button class="fab-btn" id="fab-show-seen"  title="Show seen"   onclick="toggleShowSeen()">👁</button>
-      <button class="fab-btn" id="fab-slideshow"  title="Slideshow"   onclick="toggleSlideshow();updateControls()">⊞</button>
-      <button class="fab-btn" id="fab-autoscroll" title="Auto-scroll" onclick="toggleAutoScroll();updateControls()">⟳</button>
-    </div>
-    <button id="fab" title="Menu" onclick="toggleFab()">☰</button>
-  </div>
+  <script src="/static/item-store.js"></script>
+  <script src="/static/cache-queue.js"></script>
+  <script src="/static/feed-view.js"></script>
+  <script src="/static/scroll-controller.js"></script>
+  <script src="/static/autoscroll-controller.js"></script>
+  <script src="/static/controls.js"></script>
   <script src="/static/app.js"></script>
 </body>
 </html>
