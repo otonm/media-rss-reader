@@ -22,6 +22,7 @@
     boundType: null,
     timerId: null,
     videoEndedHandler: null,
+    gifCancelToken: null,
     onAutoscrollChanged: null,
   };
 
@@ -78,8 +79,10 @@
     } else if (type === "image") {
       scheduleAfter(cfg.imageAutoscrollDelayMs);
     } else if (type === "gif") {
+      state.gifCancelToken = {};
+      const myToken = state.gifCancelToken;
       getGifDuration(wrap.querySelector("img,canvas").src).then((ms) => {
-        if (state.boundItem !== wrap) return;
+        if (state.boundItem !== wrap || state.gifCancelToken !== myToken) return;
         scheduleAfter(ms);
       });
     }
@@ -98,6 +101,7 @@
     state.boundItem = null;
     state.boundType = null;
     state.videoEndedHandler = null;
+    state.gifCancelToken = null;
   }
 
   function getGifDuration(url) {
