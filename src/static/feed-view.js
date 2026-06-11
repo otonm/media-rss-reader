@@ -153,17 +153,16 @@
 
   function setCurrentMedia(el) {
     if (state.currentVisibleEl === el) return;
-    if (state.currentVisibleEl && state.currentVisibleEl !== el) {
-      // Mark the old video's pause as JS-initiated so the `pause` event
-      // handler does not interpret it as a user interaction. The old
-      // video is being paused, so its mute state is irrelevant — leave it
-      // alone. Mutating muted here would fire `volumechange` on the old
-      // element, which the scroll-controller is no longer watching, but
-      // was previously a source of phantom user-interaction flags.
-      if (state.currentVisibleEl.tagName === "VIDEO") {
-        state.currentVisibleEl._pausedByJs = true;
-      }
-      state.currentVisibleEl.pause();
+    // Enforce the visible-media rule across the WHOLE feed, not just the
+    // previous currentVisibleEl. Each video is created with autoplay=true
+    // and starts as soon as it lands in the DOM; the old single-pause code
+    // left the others running, so unmuting any one of them (via the global
+    // mute toggle) leaked audio from non-visible items.
+    if (state.feed) {
+      state.feed.querySelectorAll("video").forEach((v) => {
+        v._pausedByJs = true;
+        v.pause();
+      });
     }
     state.currentVisibleEl = el;
     if (el && el.tagName === "VIDEO") {

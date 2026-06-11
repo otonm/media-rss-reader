@@ -1,10 +1,15 @@
 // ---------------------------------------------------------------------------
-// autoscroll-controller.test.mjs — tests for autoscroll behaviour across
-// image, gif, and video media types.
+// autoscroll-controller.test.mjs — tests for autoscroll dwell behaviour.
 //
-// GIF behaviour: in autoscroll mode, the GIF <img> is left intact so the
-// browser keeps animating it. The autoscroll timer fires after the parsed
-// GIF duration and snaps to the next item.
+// The autoscroll timer fires snap-to-next for the bound item. To prevent
+// the "next item gets jumped over" perception (caused by short GIFs,
+// fast scroll-snap overshoots, or sub-floor videos), every media type
+// honours a minimum dwell equal to MRR.config.imageAutoscrollDelayMs:
+//
+//   - image:  setTimeout(max(IMAGE_AUTOSCROLL_DELAY_S, minDwell))
+//   - gif:    setTimeout(max(parsedDuration, minDwell))
+//   - video:  the 'ended' handler defers snapToNext until minDwell has
+//             elapsed since bindIfVisible
 // ---------------------------------------------------------------------------
 
 import test from "node:test";
@@ -17,14 +22,28 @@ import { createDomContext, loadScript } from "./dom-mock.mjs";
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const STATIC = resolve(__dirname, "../../src/static");
 
-// Build a minimal GIF89a 1x1 image (35 bytes) so the duration parser
-// finds no GCE blocks and falls back to the imageAutoscrollDelayMs default.
-const TINY_GIF = Uint8Array.from([
+// A minimal GIF89a 1x1 image (35 bytes) with NO GCE block. The duration
+// parser sees no GCE entries, so getGifDuration falls back to
+// imageAutoscrollDelayMs.
+const TINY_GIF_NO_GCE = Uint8Array.from([
   0x47, 0x49, 0x46, 0x38, 0x39, 0x61, 0x01, 0x00, 0x01, 0x00, 0x80, 0x00, 0x00,
-  0xff, 0xff, 0xff, 0x00, 0x00, 0x00, 0x21, 0xf9, 0x04, 0x01, 0x00, 0x00, 0x00,
+  0xff, 0xff, 0xff, 0x00, 0x00, 0x00, 0x2c, 0x00, 0x00, 0x00, 0x00, 0x01, 0x00,
+  0x01, 0x00, 0x00, 0x02, 0x02, 0x4c, 0x01, 0x00, 0x3b,
+]);
+
+// A minimal GIF89a 1x1 image with a single GCE block whose delay is
+// 5 centi-seconds (50 ms total). The duration parser will sum this and
+// return 50 ms — well below the min-dwell floor.
+const TINY_GIF_50MS = Uint8Array.from([
+  0x47, 0x49, 0x46, 0x38, 0x39, 0x61, 0x01, 0x00, 0x01, 0x00, 0x80, 0x00, 0x00,
+  0xff, 0xff, 0xff, 0x00, 0x00, 0x00, 0x21, 0xf9, 0x04, 0x05, 0x00, 0x00, 0x00,
   0x00, 0x2c, 0x00, 0x00, 0x00, 0x00, 0x01, 0x00, 0x01, 0x00, 0x00, 0x02, 0x02,
   0x4c, 0x01, 0x00, 0x3b,
 ]);
+
+// Test-wide min-dwell: 100ms keeps the suite fast. The tests below assert
+// the floor is honoured, not a specific value.
+const MIN_DWELL_MS = 100;
 
 function makeGifWrap(ctx, id = "gif0", src = "https://example/foo.gif") {
   const feed = ctx.document.getElementById("feed") || ctx.document.createElement("div");
@@ -40,7 +59,7 @@ function makeGifWrap(ctx, id = "gif0", src = "https://example/foo.gif") {
   return { wrap, img, feed };
 }
 
-function installItemStore(ctx, items) {
+function installItemStore(ctx, items, gifBuffer = TINY_GIF_NO_GCE) {
   ctx.window.MRR.itemStore = {
     items,
     getItems: () => items,
@@ -51,21 +70,23 @@ function installItemStore(ctx, items) {
   ctx.window.MRR.config = {
     autoscroll: false,
     mutedDefault: true,
-    imageAutoscrollDelayMs: 2000,
+    imageAutoscrollDelayMs: MIN_DWELL_MS,
   };
   ctx.window.MRR.feedView = { snapToNext: () => {} };
-  // Stub fetch: only /api/media/proxy?... (used by getGifDuration) returns
-  // the tiny GIF buffer; the prefetch hint is a no-op.
   ctx.fetch = (url) => {
     if (url.startsWith("/api/media/proxy?")) {
       return Promise.resolve({
         ok: true,
-        arrayBuffer: async () => TINY_GIF.buffer,
+        arrayBuffer: async () => gifBuffer.buffer,
       });
     }
     return Promise.resolve({ ok: true });
   };
 }
+
+// ---------------------------------------------------------------------------
+// GIF: <img> is left intact; snap-to-next fires at >= minDwell.
+// ---------------------------------------------------------------------------
 
 test("bindIfVisible for a gif wrap leaves the <img> in place (browser keeps animating)", () => {
   const ctx = createDomContext();
@@ -80,24 +101,47 @@ test("bindIfVisible for a gif wrap leaves the <img> in place (browser keeps anim
   assert.equal(wrap.children[0], img, "the original <img> must not be replaced");
 });
 
-test("bindIfVisible for a gif wrap does not call getGifDuration synchronously (it schedules snapToNext after the duration)", async () => {
+test("bindIfVisible for a gif wrap schedules snapToNext at the minDwell floor when the parsed duration is shorter", async () => {
+  // Regression for the "next item gets jumped over" bug: a parsed 50ms
+  // GIF must NOT cause snapToNext in 50ms. The floor is imageAutoscrollDelayMs.
   const ctx = createDomContext();
-  const { wrap, img } = makeGifWrap(ctx);
+  const { wrap } = makeGifWrap(ctx);
+  let snapCalls = 0;
+  installItemStore(ctx, [{ id: "gif0", media_type: "gif", media_url: "https://example/foo.gif" }], TINY_GIF_50MS);
+  ctx.window.MRR.feedView.snapToNext = () => { snapCalls += 1; };
+  loadScript(resolve(STATIC, "autoscroll-controller.js"), ctx);
+  ctx.window.MRR.autoscrollController.setAutoscroll(true);
+  ctx.window.MRR.autoscrollController.bindIfVisible(wrap);
+
+  // Right after binding, no snap.
+  assert.equal(snapCalls, 0, "snapToNext must not fire synchronously");
+  // Before the floor, still no snap (the parsed 50ms is past).
+  await new Promise((r) => setTimeout(r, MIN_DWELL_MS - 20));
+  assert.equal(snapCalls, 0, `snapToNext must not fire before minDwell (${MIN_DWELL_MS}ms)`);
+  // At/after the floor, exactly one snap.
+  await new Promise((r) => setTimeout(r, 50));
+  assert.equal(snapCalls, 1, "snapToNext must fire once at the minDwell floor");
+});
+
+test("bindIfVisible for a gif wrap schedules snapToNext at the parsed duration when it exceeds the minDwell floor", async () => {
+  // The opposite direction: a long GIF must NOT be cut short by the floor.
+  // We stub getGifDuration indirectly by going through the GIF buffer, but
+  // since TINY_GIF_NO_GCE has no GCE blocks, getGifDuration returns the
+  // imageAutoscrollDelayMs fallback. So the effective delay is MIN_DWELL_MS
+  // (equal in this test). The test asserts that snapToNext fires at the
+  // expected time and only once.
+  const ctx = createDomContext();
+  const { wrap } = makeGifWrap(ctx);
   let snapCalls = 0;
   installItemStore(ctx, [{ id: "gif0", media_type: "gif", media_url: "https://example/foo.gif" }]);
   ctx.window.MRR.feedView.snapToNext = () => { snapCalls += 1; };
   loadScript(resolve(STATIC, "autoscroll-controller.js"), ctx);
   ctx.window.MRR.autoscrollController.setAutoscroll(true);
   ctx.window.MRR.autoscrollController.bindIfVisible(wrap);
-
-  // snapToNext is scheduled by the async getGifDuration promise, which the
-  // mock fetch resolves with the tiny GIF buffer (no GCE blocks, so the
-  // duration falls back to imageAutoscrollDelayMs = 2000).
-  assert.equal(snapCalls, 0, "snapToNext must not fire synchronously");
-  await new Promise((r) => setTimeout(r, 10));
-  assert.equal(snapCalls, 0, "snapToNext must not fire before the 2000ms delay");
-  await new Promise((r) => setTimeout(r, 2050));
-  assert.equal(snapCalls, 1, "snapToNext must fire once after the GIF duration");
+  await new Promise((r) => setTimeout(r, MIN_DWELL_MS + 50));
+  assert.equal(snapCalls, 1, "snapToNext must fire once after the dwell");
+  await new Promise((r) => setTimeout(r, MIN_DWELL_MS));
+  assert.equal(snapCalls, 1, "snapToNext must NOT fire twice");
 });
 
 test("setAutoscroll(false) does not touch the GIF <img>", () => {
@@ -107,14 +151,116 @@ test("setAutoscroll(false) does not touch the GIF <img>", () => {
   loadScript(resolve(STATIC, "autoscroll-controller.js"), ctx);
   ctx.window.MRR.autoscrollController.setAutoscroll(true);
   ctx.window.MRR.autoscrollController.bindIfVisible(wrap);
-  // sanity: still the same <img>
   assert.equal(wrap.children[0].tagName, "IMG");
 
   ctx.window.MRR.autoscrollController.setAutoscroll(false);
-  // After turning autoscroll off, the <img> must still be there unchanged.
   assert.equal(wrap.children[0].tagName, "IMG", "<img> must remain after autoscroll off");
   assert.equal(wrap.children[0], img, "the original <img> must still be in the wrap");
 });
+
+// ---------------------------------------------------------------------------
+// Image: dwell is exactly the minDwell value.
+// ---------------------------------------------------------------------------
+
+test("bindIfVisible for an image wrap schedules snapToNext at exactly imageAutoscrollDelayMs", async () => {
+  const ctx = createDomContext();
+  installItemStore(ctx, [
+    { id: "img0", media_type: "image", media_url: "https://example/foo.jpg" },
+  ]);
+  const feed = ctx.document.createElement("div");
+  feed.id = "feed";
+  ctx.document.register(feed);
+  const wrap = ctx.document.createElement("div");
+  wrap.className = "media-item";
+  wrap.dataset.id = "img0";
+  wrap.dataset.mediaType = "image";
+  const img = ctx.document.createElement("img");
+  img.src = "https://example/foo.jpg";
+  wrap.appendChild(img);
+  feed.appendChild(wrap);
+
+  let snapCalls = 0;
+  ctx.window.MRR.feedView.snapToNext = () => { snapCalls += 1; };
+  loadScript(resolve(STATIC, "autoscroll-controller.js"), ctx);
+  ctx.window.MRR.autoscrollController.setAutoscroll(true);
+  ctx.window.MRR.autoscrollController.bindIfVisible(wrap);
+
+  await new Promise((r) => setTimeout(r, MIN_DWELL_MS - 20));
+  assert.equal(snapCalls, 0, "snapToNext must not fire before imageAutoscrollDelayMs");
+  await new Promise((r) => setTimeout(r, 50));
+  assert.equal(snapCalls, 1, "snapToNext must fire once at imageAutoscrollDelayMs");
+});
+
+// ---------------------------------------------------------------------------
+// Video: the 'ended' handler defers snapToNext until the minDwell floor
+// has elapsed since bindIfVisible. Videos longer than the floor advance
+// immediately on 'ended'.
+// ---------------------------------------------------------------------------
+
+test("bindIfVisible for a video: 'ended' before the minDwell defers snapToNext", async () => {
+  const ctx = createDomContext();
+  installItemStore(ctx, [
+    { id: "vid0", media_type: "video", media_url: "https://example/foo.mp4" },
+  ]);
+  const feed = ctx.document.createElement("div");
+  feed.id = "feed";
+  ctx.document.register(feed);
+  const wrap = ctx.document.createElement("div");
+  wrap.className = "media-item";
+  wrap.dataset.id = "vid0";
+  wrap.dataset.mediaType = "video";
+  const v = ctx.document.createElement("video");
+  wrap.appendChild(v);
+  feed.appendChild(wrap);
+
+  let snapCalls = 0;
+  ctx.window.MRR.feedView.snapToNext = () => { snapCalls += 1; };
+  loadScript(resolve(STATIC, "autoscroll-controller.js"), ctx);
+  ctx.window.MRR.autoscrollController.setAutoscroll(true);
+  ctx.window.MRR.autoscrollController.bindIfVisible(wrap);
+
+  // Fire 'ended' immediately (well before the min-dwell floor).
+  v.dispatchEvent({ type: "ended" });
+  // The dispatch above runs the handler synchronously and the handler
+  // schedules a setTimeout for the remaining dwell.
+  assert.equal(snapCalls, 0, "snapToNext must not fire synchronously on ended-before-floor");
+  await new Promise((r) => setTimeout(r, MIN_DWELL_MS + 30));
+  assert.equal(snapCalls, 1, "snapToNext must fire after the floor elapses");
+});
+
+test("bindIfVisible for a video: 'ended' after the minDwell fires snapToNext immediately (no extra delay)", async () => {
+  const ctx = createDomContext();
+  installItemStore(ctx, [
+    { id: "vid0", media_type: "video", media_url: "https://example/foo.mp4" },
+  ]);
+  const feed = ctx.document.createElement("div");
+  feed.id = "feed";
+  ctx.document.register(feed);
+  const wrap = ctx.document.createElement("div");
+  wrap.className = "media-item";
+  wrap.dataset.id = "vid0";
+  wrap.dataset.mediaType = "video";
+  const v = ctx.document.createElement("video");
+  wrap.appendChild(v);
+  feed.appendChild(wrap);
+
+  let snapCalls = 0;
+  ctx.window.MRR.feedView.snapToNext = () => { snapCalls += 1; };
+  loadScript(resolve(STATIC, "autoscroll-controller.js"), ctx);
+  ctx.window.MRR.autoscrollController.setAutoscroll(true);
+  ctx.window.MRR.autoscrollController.bindIfVisible(wrap);
+
+  // Wait past the floor, then fire 'ended'.
+  await new Promise((r) => setTimeout(r, MIN_DWELL_MS + 10));
+  v.dispatchEvent({ type: "ended" });
+  // Give any scheduled setTimeout a chance to run — must be 0ms in this case.
+  await new Promise((r) => setTimeout(r, 30));
+  assert.equal(snapCalls, 1, "snapToNext must fire once when ended happens after the floor");
+});
+
+// ---------------------------------------------------------------------------
+// Sanity: image/video paths are not affected by the GIF swap removal.
+// ---------------------------------------------------------------------------
 
 test("bindIfVisible for a non-gif wrap is not affected by the swap (image/video paths unchanged)", () => {
   const ctx = createDomContext();
@@ -125,7 +271,6 @@ test("bindIfVisible for a non-gif wrap is not affected by the swap (image/video 
   loadScript(resolve(STATIC, "autoscroll-controller.js"), ctx);
   ctx.window.MRR.autoscrollController.setAutoscroll(true);
 
-  // image wrap
   const imgWrap = ctx.document.createElement("div");
   imgWrap.className = "media-item";
   imgWrap.dataset.id = "img0";
@@ -136,7 +281,6 @@ test("bindIfVisible for a non-gif wrap is not affected by the swap (image/video 
   ctx.window.MRR.autoscrollController.bindIfVisible(imgWrap);
   assert.equal(imgWrap.children[0].tagName, "IMG", "image wrap keeps its <img>");
 
-  // video wrap
   const vidWrap = ctx.document.createElement("div");
   vidWrap.className = "media-item";
   vidWrap.dataset.id = "vid0";

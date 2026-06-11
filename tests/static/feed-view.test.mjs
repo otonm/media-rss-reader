@@ -359,3 +359,161 @@ test("setCurrentMedia logs a warning when play() rejects", async () => {
     console.warn = originalWarn;
   }
 });
+
+// ---------------------------------------------------------------------------
+// Visible-media rule across the whole feed.
+//
+// Each video is created with autoplay=true and starts as soon as it lands
+// in the DOM. The OLD setCurrentMedia only paused the previous
+// currentVisibleEl, so off-screen videos kept playing in the background.
+// Unmuting (via the global mute toggle) would then leak audio from
+// non-visible items. Fix: setCurrentMedia pauses every video in the feed.
+// ---------------------------------------------------------------------------
+
+test("setCurrentMedia pauses every video in the feed, not just the previous currentVisibleEl", () => {
+  // Build a feed with three videos and per-video play/pause spies.
+  const ctx = createDomContext();
+  const items = [
+    makeItem("id0", "video"),
+    makeItem("id1", "video"),
+    makeItem("id2", "video"),
+  ];
+  ctx.window.MRR.itemStore = {
+    items,
+    getItems: () => items,
+    getCurrentIndex: () => 0,
+    getItemAt: (i) => items[i],
+    findIndexById: (id) => items.findIndex((it) => it.id === id),
+    setCurrentIndex: () => {},
+  };
+  ctx.window.MRR.config = { autoscroll: false, mutedDefault: true };
+  ctx.window.MRR.autoscrollController = {
+    bindIfVisible() {},
+    reset() {},
+    setAutoscroll() {},
+  };
+  ctx.window.MRR.scrollController = { observe() {} };
+  loadScript(resolve(STATIC, "feed-view.js"), ctx);
+
+  const feed = ctx.document.createElement("div");
+  feed.id = "feed";
+  ctx.document.register(feed);
+  ctx.window.MRR.feedView.renderInitial(items);
+
+  // Three videos with per-video pause spies.
+  const pauses = { v0: 0, v1: 0, v2: 0 };
+  const makes = (id) => {
+    const v = ctx.document.createElement("video");
+    v.paused = false;  // simulate the browser having started playback
+    const origPause = v.pause.bind(v);
+    v.pause = () => { pauses[id] += 1; return origPause(); };
+    return v;
+  };
+  const v0 = makes("v0"); ctx.window.MRR.feedView.onItemLoaded("id0", v0);
+  const v1 = makes("v1"); ctx.window.MRR.feedView.onItemLoaded("id1", v1);
+  const v2 = makes("v2"); ctx.window.MRR.feedView.onItemLoaded("id2", v2);
+
+  // Reset spy counts (onItemLoaded may have side-effects we don't care about).
+  pauses.v0 = 0; pauses.v1 = 0; pauses.v2 = 0;
+
+  // Transition to v1. v0 (the previous currentVisibleEl would be) AND
+  // every other video in the feed must be paused, even though v0 is
+  // already currentVisibleEl — actually no, on first transition, the
+  // loop pauses all videos (including the one we're about to play).
+  // That's correct: the new currentVisibleEl.play() will start it.
+  ctx.window.MRR.feedView.setCurrentMedia(v1);
+  assert.equal(pauses.v0, 1, "v0 must be paused on the first transition");
+  assert.equal(pauses.v1, 1, "v1 must be paused-then-played on transition");
+  assert.equal(pauses.v2, 1, "v2 must be paused even though it was never current");
+});
+
+test("setCurrentMedia on a non-current video pauses the old currentVisibleEl AND every other video in the feed", () => {
+  // Same harness, but focus on the transition pattern: a → c, skipping b.
+  const ctx = createDomContext();
+  const items = [
+    makeItem("id0", "video"),
+    makeItem("id1", "video"),
+    makeItem("id2", "video"),
+  ];
+  ctx.window.MRR.itemStore = {
+    items,
+    getItems: () => items,
+    getCurrentIndex: () => 0,
+    getItemAt: (i) => items[i],
+    findIndexById: (id) => items.findIndex((it) => it.id === id),
+    setCurrentIndex: () => {},
+  };
+  ctx.window.MRR.config = { autoscroll: false, mutedDefault: true };
+  ctx.window.MRR.autoscrollController = {
+    bindIfVisible() {},
+    reset() {},
+    setAutoscroll() {},
+  };
+  ctx.window.MRR.scrollController = { observe() {} };
+  loadScript(resolve(STATIC, "feed-view.js"), ctx);
+
+  const feed = ctx.document.createElement("div");
+  feed.id = "feed";
+  ctx.document.register(feed);
+  ctx.window.MRR.feedView.renderInitial(items);
+
+  const pauses = { v0: 0, v1: 0, v2: 0 };
+  const makes = (id) => {
+    const v = ctx.document.createElement("video");
+    v.paused = false;
+    const origPause = v.pause.bind(v);
+    v.pause = () => { pauses[id] += 1; return origPause(); };
+    return v;
+  };
+  const v0 = makes("v0"); ctx.window.MRR.feedView.onItemLoaded("id0", v0);
+  const v1 = makes("v1"); ctx.window.MRR.feedView.onItemLoaded("id1", v1);
+  const v2 = makes("v2"); ctx.window.MRR.feedView.onItemLoaded("id2", v2);
+  pauses.v0 = 0; pauses.v1 = 0; pauses.v2 = 0;
+
+  // Set v0 as current first, then jump straight to v2 (skips v1).
+  ctx.window.MRR.feedView.setCurrentMedia(v0);
+  pauses.v0 = 0; pauses.v1 = 0; pauses.v2 = 0;
+
+  ctx.window.MRR.feedView.setCurrentMedia(v2);
+  assert.equal(pauses.v0, 1, "previous currentVisibleEl (v0) must be paused");
+  assert.equal(pauses.v1, 1, "the skipped-over video (v1) must be paused too — no audio leak");
+  assert.equal(pauses.v2, 1, "the new currentVisibleEl (v2) must be paused-then-played");
+});
+
+test("setCurrentMedia marks every paused video as JS-paused so the pause handler doesn't treat it as a user pause", () => {
+  // Regression: the OLD code only set _pausedByJs on the previous
+  // currentVisibleEl. The new code must set it on every paused video
+  // because a user's prior unmute + autoplay would otherwise re-flag
+  // every off-screen video as userPaused via the pause event.
+  const ctx = createDomContext();
+  const items = [
+    makeItem("id0", "video"),
+    makeItem("id1", "video"),
+  ];
+  ctx.window.MRR.itemStore = {
+    items,
+    getItems: () => items,
+    getCurrentIndex: () => 0,
+    getItemAt: (i) => items[i],
+    findIndexById: (id) => items.findIndex((it) => it.id === id),
+    setCurrentIndex: () => {},
+  };
+  ctx.window.MRR.config = { autoscroll: false, mutedDefault: true };
+  ctx.window.MRR.autoscrollController = { bindIfVisible() {}, reset() {}, setAutoscroll() {} };
+  ctx.window.MRR.scrollController = { observe() {} };
+  loadScript(resolve(STATIC, "feed-view.js"), ctx);
+
+  const feed = ctx.document.createElement("div");
+  feed.id = "feed";
+  ctx.document.register(feed);
+  ctx.window.MRR.feedView.renderInitial(items);
+
+  const v0 = ctx.document.createElement("video");
+  const v1 = ctx.document.createElement("video");
+  ctx.window.MRR.feedView.onItemLoaded("id0", v0);
+  ctx.window.MRR.feedView.onItemLoaded("id1", v1);
+
+  ctx.window.MRR.feedView.setCurrentMedia(v1);
+  assert.equal(v0._pausedByJs, true, "v0 must be marked JS-paused");
+  assert.equal(v1._pausedByJs, true, "v1 must be marked JS-paused even though it's the new current");
+});

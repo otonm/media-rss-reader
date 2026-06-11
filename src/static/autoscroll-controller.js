@@ -48,27 +48,39 @@
     state.boundItem = wrap;
     const type = wrap.dataset.mediaType;
     state.boundType = type;
+    // Minimum dwell — a floor on the snap-to-next delay so that short
+    // GIFs (parsed sub-100ms durations), very short videos, or fast
+    // scroll-snap overshoots don't make the user perceive items as
+    // "jumped over". Reuses the existing IMAGE_DISPLAY_DELAY_MS config
+    // value as a sensible default.
+    const cfg = MRR.config;
+    const minDwellMs = cfg.imageAutoscrollDelayMs;
+    const fireSnap = () => {
+      if (state.boundItem === wrap) MRR.feedView.snapToNext();
+    };
+    const scheduleAfter = (ms) => {
+      state.timerId = setTimeout(fireSnap, Math.max(ms, minDwellMs));
+    };
     if (type === "video") {
       const v = wrap.querySelector("video");
       if (v) {
+        const bindTime = Date.now();
         state.videoEndedHandler = () => {
-          if (state.boundItem === wrap) MRR.feedView.snapToNext();
+          if (state.boundItem !== wrap) return;
+          // Hold the snap-to-next until the floor is reached, even if
+          // the video ended naturally before then. Videos longer than
+          // the floor advance immediately.
+          const remaining = Math.max(0, minDwellMs - (Date.now() - bindTime));
+          state.timerId = setTimeout(fireSnap, remaining);
         };
         v.addEventListener("ended", state.videoEndedHandler, { once: true });
       }
     } else if (type === "image") {
-      const cfg = MRR.config;
-      state.timerId = setTimeout(() => {
-        if (state.boundItem === wrap) MRR.feedView.snapToNext();
-      }, cfg.imageAutoscrollDelayMs);
+      scheduleAfter(cfg.imageAutoscrollDelayMs);
     } else if (type === "gif") {
-      // GIFs animate naturally in their <img> — the browser loops them on
-      // its own. We just schedule the snap-to-next after one full duration.
       getGifDuration(wrap.querySelector("img,canvas").src).then((ms) => {
         if (state.boundItem !== wrap) return;
-        state.timerId = setTimeout(() => {
-          if (state.boundItem === wrap) MRR.feedView.snapToNext();
-        }, ms);
+        scheduleAfter(ms);
       });
     }
   }
