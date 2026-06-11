@@ -8,6 +8,7 @@
 // Public API:
 //   start(), stop()
 //   rebuild(currentIndex, lookaheadN, items)
+//   isCached(id)
 //   on('item-loaded', (id, el) => ...)
 //   on('item-failed', (id) => ...)
 //
@@ -45,7 +46,7 @@
     const behind = items.slice(0, currentIndex).reverse();
     behind.forEach((it) => { if (!state.cached.has(it.id)) newQueue.push(it.id); });
     items.slice(currentIndex + 1 + lookaheadN).forEach((it) => newQueue.push(it.id));
-    state.queue = newQueue.filter((id) => !state.cached.has(id));
+    state.queue = newQueue.filter((id) => !state.cached.has(id) && id !== state.loadingId);
   }
 
   async function processNext() {
