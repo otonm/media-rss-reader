@@ -33,13 +33,6 @@
     autoscrollBound: false,
   };
 
-  const listeners = { "currentindex-changed": [] };
-  function on(event, cb) {
-    if (!listeners[event]) throw new Error("unknown event: " + event);
-    listeners[event].push(cb);
-  }
-  function emit(event, ...args) { listeners[event].forEach((cb) => cb(...args)); }
-
   function createPlaceholder(item) {
     const wrap = document.createElement("div");
     wrap.className = "placeholder";
@@ -174,7 +167,6 @@
   }
 
   MRR.feedView = {
-    on,
     createPlaceholder,
     renderInitial,
     onItemLoaded,

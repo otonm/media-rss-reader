@@ -39,20 +39,6 @@ def _write_meta(meta_path: Path, content_type: str) -> None:
     meta_path.write_text(content_type, encoding="ascii")
 
 
-async def cache_write(url: str, data: bytes, content_type: str = "application/octet-stream") -> Path:
-    """Write media bytes to the cache and return the data-file path.
-
-    The Content-Type is recorded in a sidecar so the proxy can serve the
-    cached file with the right Content-Type header.
-    """
-    path = _cache_path(url)
-    meta = _meta_path(url)
-    path.parent.mkdir(parents=True, exist_ok=True)
-    await asyncio.to_thread(path.write_bytes, data)
-    await asyncio.to_thread(_write_meta, meta, content_type)
-    return path
-
-
 async def cache_stream_write(
     url: str, chunks: AsyncIterable[bytes], content_type: str = "application/octet-stream"
 ) -> Path:
@@ -102,6 +88,8 @@ def _evict_sync(cache_dir: Path, max_age_secs: float, max_items: int) -> None:
     file only; .meta entries are skipped so the count matches what the
     proxy would actually serve.
     """
+    if not cache_dir.exists():
+        return
     now = time.time()
     files = sorted(cache_dir.iterdir(), key=lambda p: p.stat().st_mtime)
     surviving: list[Path] = []
@@ -121,13 +109,6 @@ def _evict_sync(cache_dir: Path, max_age_secs: float, max_items: int) -> None:
         head.with_suffix(".meta").unlink(missing_ok=True)
 
 
-def _evict_if_exists(cache_dir: Path, max_age_secs: float, max_items: int) -> None:
-    """Check existence and evict — runs in a thread to keep the event loop free."""
-    if not cache_dir.exists():
-        return
-    _evict_sync(cache_dir, max_age_secs, max_items)
-
-
 async def evict() -> None:
     """Evict stale or excess cache entries without blocking the event loop.
 
@@ -137,7 +118,7 @@ async def evict() -> None:
     """
     cache_dir = Path(settings.cache_dir)
     await asyncio.to_thread(
-        _evict_if_exists,
+        _evict_sync,
         cache_dir,
         settings.cache_max_age_hours * 3600,
         settings.cache_max_items,

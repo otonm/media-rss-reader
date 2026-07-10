@@ -260,7 +260,7 @@ async def test_setup_page_shows_secret(
     auth_client: HttpxAsyncClient,
 ) -> None:
     secret = pyotp.random_base32()
-    setup_token = sign_setup_cookie(secret, settings.auth_secret_key.get_secret_value())
+    setup_token = sign_setup_cookie(secret, settings.auth_secret_key)
     auth_client.cookies.set(SETUP_COOKIE, setup_token)
     r = await auth_client.get("/setup")
     assert r.status_code == 200
@@ -273,7 +273,7 @@ async def test_setup_confirms_totp(
     db: aiosqlite.Connection,
 ) -> None:
     secret = pyotp.random_base32()
-    setup_token = sign_setup_cookie(secret, settings.auth_secret_key.get_secret_value())
+    setup_token = sign_setup_cookie(secret, settings.auth_secret_key)
     auth_client.cookies.set(SETUP_COOKIE, setup_token)
     code = pyotp.TOTP(secret).now()
     r = await auth_client.post("/setup", data={"totp_code": code})
@@ -292,7 +292,7 @@ async def test_setup_wrong_totp_does_not_persist(
     db: aiosqlite.Connection,
 ) -> None:
     secret = pyotp.random_base32()
-    setup_token = sign_setup_cookie(secret, settings.auth_secret_key.get_secret_value())
+    setup_token = sign_setup_cookie(secret, settings.auth_secret_key)
     auth_client.cookies.set(SETUP_COOKIE, setup_token)
     r = await auth_client.post("/setup", data={"totp_code": "000000"})
     assert r.status_code == 200

@@ -15,7 +15,9 @@ def test_settings_defaults() -> None:
 def test_settings_env_override(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("PORT", "9090")
     monkeypatch.setenv("LOG_LEVEL", "debug")
-    s = Settings()
+    from src.config import _load_settings
+
+    s = _load_settings()
     assert s.port == 9090
     assert s.log_level == "debug"
 

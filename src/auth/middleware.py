@@ -33,7 +33,7 @@ class AuthMiddleware(BaseHTTPMiddleware):
             return await call_next(request)
 
         token = request.cookies.get(SESSION_COOKIE, "")
-        if not verify_session(token, settings.auth_secret_key.get_secret_value()):
+        if not verify_session(token, settings.auth_secret_key):
             return RedirectResponse("/login", status_code=302)
 
         return await call_next(request)

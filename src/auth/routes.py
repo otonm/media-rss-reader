@@ -47,7 +47,7 @@ def _client_ip(request: Request) -> str:
 
 
 def _set_session_cookie(response: Response) -> None:
-    token = sign_session(settings.auth_secret_key.get_secret_value())
+    token = sign_session(settings.auth_secret_key)
     response.set_cookie(
         SESSION_COOKIE,
         token,
@@ -59,7 +59,7 @@ def _set_session_cookie(response: Response) -> None:
 
 
 def _set_setup_cookie(response: Response, totp_secret: str) -> None:
-    token = sign_setup_cookie(totp_secret, settings.auth_secret_key.get_secret_value())
+    token = sign_setup_cookie(totp_secret, settings.auth_secret_key)
     response.set_cookie(
         SETUP_COOKIE,
         token,
@@ -95,7 +95,7 @@ async def post_login(
         return Response("Too many failed attempts. Try again later.", status_code=429)
 
     username_ok = secrets.compare_digest(username, settings.auth_username)
-    password_ok = secrets.compare_digest(password, settings.auth_password.get_secret_value())
+    password_ok = secrets.compare_digest(password, settings.auth_password)
 
     if not (username_ok and password_ok):
         _lockout.record_failure(ip)
@@ -125,7 +125,7 @@ async def get_setup(request: Request, db: _DbDep = None) -> Response:  # type: i
         return RedirectResponse("/login", status_code=302)
 
     setup_token = request.cookies.get(SETUP_COOKIE, "")
-    secret = verify_setup_cookie(setup_token, settings.auth_secret_key.get_secret_value())
+    secret = verify_setup_cookie(setup_token, settings.auth_secret_key)
     if secret is None:
         return Response("Setup session expired. Please log in again.", status_code=403)
 
@@ -152,7 +152,7 @@ async def post_setup(
         return RedirectResponse("/login", status_code=302)
 
     setup_token = request.cookies.get(SETUP_COOKIE, "")
-    secret = verify_setup_cookie(setup_token, settings.auth_secret_key.get_secret_value())
+    secret = verify_setup_cookie(setup_token, settings.auth_secret_key)
     if secret is None:
         return Response("Setup session expired. Please log in again.", status_code=403)
 

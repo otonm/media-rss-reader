@@ -23,7 +23,7 @@ async def test_index_html_served(tmp_path: Path) -> None:
         # Force rebuild of HTML (since we patched the path) and store in app.state
         app.state.html = main_mod._build_html()
 
-        token = sign_session(settings.auth_secret_key.get_secret_value())
+        token = sign_session(settings.auth_secret_key)
         async with AsyncClient(
             transport=ASGITransport(app=app),
             base_url="https://test",

@@ -7,10 +7,7 @@ dependencies = [
     "uvicorn[standard]",
     "httpx",
     "feedparser",
-    "listparser",
-    "apscheduler",
     "aiosqlite",
-    "pydantic-settings",
     "itsdangerous",
     "pyotp",
     "python-multipart>=0.0.27",
@@ -54,9 +51,4 @@ exclude_lines = [
     "pragma: no cover",
     "if TYPE_CHECKING:",
     "raise NotImplementedError",
-]
-
-[dependency-groups]
-dev = [
-    "python-multipart>=0.0.27",
 ]

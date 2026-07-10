@@ -62,11 +62,9 @@ from src.config import settings  # noqa: E402
 @pytest.fixture
 def auth_settings(monkeypatch: pytest.MonkeyPatch) -> None:
     """Override settings attributes for auth tests. Resets after each test."""
-    from pydantic import SecretStr
-
     monkeypatch.setattr(settings, "auth_username", "admin")
-    monkeypatch.setattr(settings, "auth_password", SecretStr("hunter2"))
-    monkeypatch.setattr(settings, "auth_secret_key", SecretStr("test-secret-key-minimum-32-chars!!"))
+    monkeypatch.setattr(settings, "auth_password", "hunter2")
+    monkeypatch.setattr(settings, "auth_secret_key", "test-secret-key-minimum-32-chars!!")
     monkeypatch.setattr(settings, "auth_lockout_attempts", 5)
     monkeypatch.setattr(settings, "auth_lockout_minutes", 15)
 
@@ -110,6 +108,6 @@ async def auth_client(
 @pytest.fixture
 async def authed_client(auth_client: HttpxAsyncClient) -> HttpxAsyncClient:
     """auth_client pre-loaded with a valid session cookie."""
-    token = sign_session(settings.auth_secret_key.get_secret_value())
+    token = sign_session(settings.auth_secret_key)
     auth_client.cookies.set(SESSION_COOKIE, token)
     return auth_client

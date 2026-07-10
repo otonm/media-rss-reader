@@ -26,16 +26,6 @@
     showSeen: false,
   };
 
-  const listeners = { "items-appended": [], "currentindex-changed": [] };
-
-  function on(event, cb) {
-    if (!listeners[event]) throw new Error("unknown event: " + event);
-    listeners[event].push(cb);
-  }
-  function emit(event, ...args) {
-    listeners[event].forEach((cb) => cb(...args));
-  }
-
   // When showSeen is true we ask the API for ALL items (unseen=false),
   // so seen items appear in the feed with their checkmark. Otherwise the
   // default is unseen-only.
@@ -58,7 +48,6 @@
       }
       state.items = state.items.concat(newItems);
       state.page += 1;
-      emit("items-appended", newItems);
     } finally {
       state.fetching = false;
     }
@@ -74,7 +63,6 @@
 
   function getItems() { return state.items; }
   function getCurrentIndex() { return state.currentIndex; }
-  function getTotal() { return state.total; }
   function hasMoreItems() { return state.hasMore; }
   function getItemAt(idx) { return state.items[idx]; }
   function findIndexById(id) { return state.items.findIndex((i) => i.id === id); }
@@ -83,7 +71,6 @@
     if (idx === state.currentIndex) return;
     if (idx < 0 || idx >= state.items.length) return;
     state.currentIndex = idx;
-    emit("currentindex-changed", idx);
   }
 
   function setShowSeen(on) {
@@ -112,10 +99,8 @@
   }
 
   MRR.itemStore = {
-    on,
     getItems,
     getCurrentIndex,
-    getTotal,
     hasMoreItems,
     getItemAt,
     findIndexById,

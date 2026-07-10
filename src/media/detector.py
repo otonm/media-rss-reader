@@ -8,11 +8,8 @@ Media type is determined by file extension only at ingest time. GIF vs image
 is distinguished by extension; the proxy can confirm via Content-Type later.
 """
 
-import logging
 from html.parser import HTMLParser
 from pathlib import PurePosixPath
-
-logger = logging.getLogger(__name__)
 
 # Supported extensions per media type. Query strings are stripped before matching.
 _IMAGE_EXTS = {".jpg", ".jpeg", ".png", ".webp", ".avif", ".svg"}
@@ -69,34 +66,18 @@ def detect_media(entry: dict) -> tuple[str, str] | None:
 
     Returns None if no media is found or no URL has a supported extension.
     """
-    for enc in entry.get("enclosures", []):
-        url = enc.get("url", "")
-        media_type = detect_type(url)
-        logger.debug(f"Checking enclosure URL {url} with detected media type {media_type}")
-        if url and media_type:
-            return url, media_type
+    for key in ("enclosures", "media_content", "media_thumbnail"):
+        for item in entry.get(key, []):
+            url = item.get("url", "")
+            media_type = detect_type(url)
+            if url and media_type:
+                return url, media_type
 
-    for mc in entry.get("media_content", []):
-        url = mc.get("url", "")
-        media_type = detect_type(url)
-        logger.debug(f"Checking media_content URL {url} with detected media type {media_type}")
-        if url and media_type:
-            return url, media_type
-
-    for mt in entry.get("media_thumbnail", []):
-        url = mt.get("url", "")
-        media_type = detect_type(url)
-        logger.debug(f"Checking media_thumbnail URL {url} with detected media type {media_type}")
-        if url and media_type:
-            return url, media_type
-
-    # Last resort: scrape og:image from the entry's HTML summary field.
     summary = entry.get("summary", "")
     if summary:
         og_url = _extract_og_image(summary)
         if og_url:
             media_type = detect_type(og_url)
-            logger.debug(f"Checking og:image URL {og_url} with detected media type {media_type}")
             if media_type:
                 return og_url, media_type
 

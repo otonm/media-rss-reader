@@ -1,4 +1,5 @@
 import asyncio
+from collections.abc import AsyncGenerator
 from pathlib import Path
 
 import httpx
@@ -30,8 +31,12 @@ async def test_warm_skips_if_cached(tmp_path: Path, monkeypatch: pytest.MonkeyPa
     """_warm skips the HTTP request when URL is already cached."""
     monkeypatch.setattr(cache_mod.settings, "cache_dir", str(tmp_path))
     url = "http://example.com/cached.jpg"
+
     # Pre-populate cache
-    await cache_mod.cache_write(url, b"cached")
+    async def _data() -> AsyncGenerator[bytes]:
+        yield b"cached"
+
+    await cache_mod.cache_stream_write(url, _data())
 
     with respx.mock:
         # If _warm makes any request, respx will raise NoMatchFound
