@@ -1,18 +1,11 @@
 // ---------------------------------------------------------------------------
 // scrollController
 //
-// Two IntersectionObservers:
-//   observer      (threshold 0.6) — tracks the most-visible item, drives
-//                                  currentIndex, video play/pause, cache rebuild
-//   seenObserver  (threshold 0.8) — fires POST /api/items/{id}/seen when an
-//                                  item becomes 80% visible (the user is
-//                                  looking at it). Also handles the fallback
-//                                  case: media loads after the user already
-//                                  scrolled past (element above viewport).
-//
-// Dedup: the seen POST is only sent if the in-memory item's seen_at is null.
-// The browser stores the returned seen_at on the item object via
-// itemStore.markSeen, preventing a second POST for the same item.
+// A single IntersectionObserver (threshold 0.6) tracks the most-visible item.
+// When the most-visible item changes, the previous one is marked as seen via
+// POST /api/items/{id}/seen. This piggybacks on the existing "which item is
+// being viewed" determination — no separate seen observer, no threshold
+// crossing timing gap between placeholder and media-element replacement.
 // ---------------------------------------------------------------------------
 
 (function () {
@@ -22,14 +15,13 @@
 
   const state = {
     observer: null,
-    seenObserver: null,
+    lastSeenItemId: null,
   };
 
   function init() {
     state.observer = new IntersectionObserver(onIntersect, {
       threshold: 0.6,
     });
-    state.seenObserver = new IntersectionObserver(onSeen, { threshold: 0.8 });
   }
 
   function onIntersect(entries) {
@@ -43,34 +35,25 @@
       }
     });
     if (!best) return;
-    const idx = MRR.itemStore.findIndexById(best.target.dataset.id);
+    const newId = best.target.dataset.id;
+    const idx = MRR.itemStore.findIndexById(newId);
     if (idx === -1) return;
+
+    // Mark the previous most-visible item as seen (user scrolled past it).
+    if (state.lastSeenItemId && state.lastSeenItemId !== newId) {
+      postSeen(state.lastSeenItemId);
+    }
+    state.lastSeenItemId = newId;
+
     MRR.itemStore.setCurrentIndex(idx);
     MRR.feedView.setCurrentMedia(best.target.querySelector("video"));
     MRR.cacheQueue.rebuild(idx, MRR.config.feedInitialCount, MRR.itemStore.getItems());
     MRR.autoscrollController.reset(best.target);
   }
 
-  function onSeen(entries) {
-    entries.forEach((entry) => {
-      if (!entry.target.dataset.mediaType) return; // skip placeholders/spinners
-      const id = entry.target.dataset.id;
-      const item = MRR.itemStore.getItems().find((i) => i.id === id);
-      if (!item || item.seen_at) return; // dedup: already marked seen
-
-      // Primary: item entered viewport and is 80%+ visible.
-      if (entry.isIntersecting && entry.intersectionRatio >= 0.8) {
-        postSeen(id);
-        return;
-      }
-      // Fallback: media loaded after user already scrolled past (element above viewport).
-      if (entry.boundingClientRect.bottom <= 0) {
-        postSeen(id);
-      }
-    });
-  }
-
   function postSeen(id) {
+    const item = MRR.itemStore.getItems().find((i) => i.id === id);
+    if (!item || item.seen_at) return;
     fetch(`/api/items/${id}/seen`, { method: "POST" })
       .then((r) => (r.ok ? r.json() : null))
       .then((data) => {
@@ -83,7 +66,6 @@
 
   function observe(el) {
     state.observer.observe(el);
-    state.seenObserver.observe(el);
   }
 
   MRR.scrollController = { init, observe };
