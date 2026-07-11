@@ -1,17 +1,20 @@
 // ---------------------------------------------------------------------------
 // scrollController
 //
-// A single IntersectionObserver with threshold 0.6 tracks which item is
-// currently most visible. On change, emits 'currentindex-changed' (which
-// itemStore.setCurrentIndex and feedView.setCurrentMedia respond to) and
-// triggers a cacheQueue.rebuild around the new position.
+// Two IntersectionObservers:
+//   observer      (threshold 0.6) — tracks the most-visible item, drives
+//                                  currentIndex, video play/pause, cache rebuild
+//   seenObserver  (threshold 0.8) — fires POST /api/items/{id}/seen when an
+//                                  item becomes 80% visible (the user is
+//                                  looking at it). Also handles the fallback
+//                                  case: media loads after the user already
+//                                  scrolled past (element above viewport).
 //
-// Also owns the 'seen' observer: when a media item scrolls fully past the top
-// of the viewport, POST /api/items/{id}/seen so the scheduler can prune it.
-// Placeholders (spinners) are skipped — they have no dataset.mediaType. On a
-// successful POST we also call itemStore.markSeen + feedView.markSeen so the
-// in-memory item and the live DOM wrap are updated to show the checkmark.
+// Dedup: the seen POST is only sent if the in-memory item's seen_at is null.
+// The browser stores the returned seen_at on the item object via
+// itemStore.markSeen, preventing a second POST for the same item.
 // ---------------------------------------------------------------------------
+
 (function () {
   "use strict";
 
@@ -26,7 +29,7 @@
     state.observer = new IntersectionObserver(onIntersect, {
       threshold: 0.6,
     });
-    state.seenObserver = new IntersectionObserver(onSeen, { threshold: 0 });
+    state.seenObserver = new IntersectionObserver(onSeen, { threshold: 0.8 });
   }
 
   function onIntersect(entries) {
@@ -50,21 +53,32 @@
 
   function onSeen(entries) {
     entries.forEach((entry) => {
-      if (entry.isIntersecting) return;
-      if (entry.boundingClientRect.bottom > 0) return;
       if (!entry.target.dataset.mediaType) return; // skip placeholders/spinners
       const id = entry.target.dataset.id;
-      // Fire-and-forget POST; on success, update the local state and the
-      // live DOM so the seen checkmark appears without a refetch.
-      fetch(`/api/items/${id}/seen`, { method: "POST" })
-        .then((r) => (r.ok ? r.json() : null))
-        .then((data) => {
-          if (!data) return;
-          MRR.itemStore.markSeen(id, data.seen_at);
-          MRR.feedView.markSeen(id);
-        })
-        .catch(() => {});
+      const item = MRR.itemStore.getItems().find((i) => i.id === id);
+      if (!item || item.seen_at) return; // dedup: already marked seen
+
+      // Primary: item entered viewport and is 80%+ visible.
+      if (entry.isIntersecting && entry.intersectionRatio >= 0.8) {
+        postSeen(id);
+        return;
+      }
+      // Fallback: media loaded after user already scrolled past (element above viewport).
+      if (entry.boundingClientRect.bottom <= 0) {
+        postSeen(id);
+      }
     });
+  }
+
+  function postSeen(id) {
+    fetch(`/api/items/${id}/seen`, { method: "POST" })
+      .then((r) => (r.ok ? r.json() : null))
+      .then((data) => {
+        if (!data) return;
+        MRR.itemStore.markSeen(id, data.seen_at);
+        MRR.feedView.markSeen(id);
+      })
+      .catch(() => {});
   }
 
   function observe(el) {
