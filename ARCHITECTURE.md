@@ -25,7 +25,7 @@ Three planes interact at runtime:
 │  FastAPI  (Uvicorn, async)                              │
 │  /health  /login  /setup  /logout                       │
 │  /api/feeds  /api/items  /api/media/proxy               │
-│  /api/prefetch/hint  /api/status                        │
+│  /api/prefetch/hint  /api/status  /api/reddit-feeds/status │
 └───────────┬─────────────────────┬───────────────────────┘
             │  aiosqlite          │  filesystem
 ┌───────────▼──────────┐  ┌───────▼──────────────────────┐
@@ -77,7 +77,8 @@ src/
 ├── api/
 │   ├── feeds.py     GET /api/feeds
 │   ├── items.py     GET /api/items, POST /api/items/{id}/seen
-│   └── media.py     GET /api/media/proxy, POST /api/prefetch/hint, GET /api/status
+│   ├── media.py     GET /api/media/proxy, POST /api/prefetch/hint, GET /api/status
+│   └── reddit_feeds.py  GET /api/reddit-feeds/status (proxies Reddit Feeds API)
 │
 └── static/
     ├── index.html      App shell; <!-- SLIDESHOW_TRANSITION --> injection point
@@ -250,6 +251,10 @@ Sets `seen_at = datetime('now')` and returns the timestamp. The browser sets `it
 ### `GET /api/status`
 
 Aggregates counts from both tables and computes cache directory size in MB. Used for health checks and operator dashboards.
+
+### `GET /api/reddit-feeds/status`
+
+Backend proxy for the [Reddit Feeds](https://github.com/otonm/reddit-feeds) companion service. Uses the shared `httpx.AsyncClient` to fetch `GET /status` from the URL configured in `REDDIT_FEEDS_API_URL`, forwards the JSON response on success, returns 502 if the upstream is unreachable, or passes through the upstream error status. The frontend renders the response in a modal accessible from the controls bar (📊 button).
 
 ---
 

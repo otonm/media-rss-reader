@@ -16,6 +16,7 @@ The backend continuously fetches feeds in the background (no browser session req
 - **OPML-driven** — manage your feed list with any RSS reader's export format
 - **Authentication** — username/password + TOTP (set up on first login), signed 7-day session cookies, IP-based brute-force lockout
 - **Docker-native** — single container, volume-mounted data, no external database service
+- **Reddit Feeds integration** — status modal showing companion service health (feed names, last fetch, item counts)
 
 ## Key Bindings
 
@@ -109,6 +110,7 @@ Generate a suitable secret key with `openssl rand -hex 32`.
 | `AUTO_SCROLL_SPEED` | `1.5` | Pixels scrolled per animation frame (~90 px/s at 60 fps) |
 | `PORT` | `8080` | Port the server listens on inside the container (host port is set by the `-p` flag in Docker / Compose) |
 | `LOG_LEVEL` | `info` | Uvicorn log level: `debug` \| `info` \| `warning` \| `error` |
+| `REDDIT_FEEDS_API_URL` | `http://127.0.0.1:9090` | URL of the Reddit Feeds status API (for the status modal) |
 
 ## Deployment: Docker Only
 
