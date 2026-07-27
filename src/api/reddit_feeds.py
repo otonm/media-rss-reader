@@ -13,9 +13,9 @@ async def reddit_feeds_status() -> dict:
     client = get_http_client()
     url = f"{settings.reddit_feeds_api_url.rstrip('/')}/status"
     try:
-        resp = await client.get(url)
+        resp = await client.get(url, timeout=10)
     except Exception:
         raise HTTPException(status_code=502, detail="Reddit Feeds API unreachable")
     if resp.is_error:
-        raise HTTPException(status_code=resp.status_code, detail=resp.text)
+        raise HTTPException(status_code=resp.status_code, detail="Reddit Feeds API error")
     return resp.json()
