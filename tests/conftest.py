@@ -17,6 +17,7 @@ from httpx import AsyncClient as HttpxAsyncClient
 from src.api import feeds as feeds_router
 from src.api import items as items_router
 from src.api import media as media_router
+from src.api import reddit_feeds as reddit_feeds_router
 from src.db.connection import get_db, open_db
 from src.db.migrations import run_migrations
 from src.db.schema import create_schema
@@ -43,6 +44,7 @@ async def client(db: aiosqlite.Connection) -> AsyncGenerator[HttpxAsyncClient]:
     test_app.include_router(feeds_router.router, prefix="/api")
     test_app.include_router(items_router.router, prefix="/api")
     test_app.include_router(media_router.router, prefix="/api")
+    test_app.include_router(reddit_feeds_router.router, prefix="/api")
 
     async def _override_db() -> AsyncIterator[aiosqlite.Connection]:
         yield db

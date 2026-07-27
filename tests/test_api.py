@@ -1,5 +1,7 @@
 import aiosqlite
+import httpx
 import pytest
+import respx
 from httpx import AsyncClient
 
 
@@ -329,6 +331,67 @@ async def test_status_empty(client: AsyncClient, tmp_path: object, monkeypatch: 
     assert data["items_total"] == 0
     assert data["items_unseen"] == 0
     assert data["cache_size_mb"] == 0.0
+
+
+# ---------------------------------------------------------------------------
+# GET /api/reddit-feeds/status tests
+# ---------------------------------------------------------------------------
+
+
+async def test_reddit_feeds_status_success(
+    client: AsyncClient, mock_http: respx.MockRouter, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    upstream_json = {
+        "feeds": [
+            {
+                "name": "EarthPorn",
+                "last_status": "success",
+                "last_fetch": "2026-07-27T14:02:00.123456+00:00",
+                "last_item_count": 5,
+                "total_items": 42,
+            }
+        ],
+        "last_run": "2026-07-27T14:02:05.654321+00:00",
+    }
+    mock_http.get("http://127.0.0.1:9090/status").mock(
+        return_value=httpx.Response(200, json=upstream_json)
+    )
+    real_client = httpx.AsyncClient()
+    monkeypatch.setattr("src.api.reddit_feeds.get_http_client", lambda: real_client)
+    resp = await client.get("/api/reddit-feeds/status")
+    await real_client.aclose()
+    assert resp.status_code == 200
+    assert resp.json() == upstream_json
+
+
+async def test_reddit_feeds_status_unreachable(
+    client: AsyncClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import src.api.reddit_feeds as rf_mod
+
+    fake_client = httpx.AsyncClient()
+
+    async def fake_get(url: str, **kwargs) -> httpx.Response:
+        raise httpx.ConnectError("Connection refused")
+
+    fake_client.get = fake_get  # type: ignore[method-assign]
+    monkeypatch.setattr(rf_mod, "get_http_client", lambda: fake_client)
+
+    resp = await client.get("/api/reddit-feeds/status")
+    assert resp.status_code == 502
+
+
+async def test_reddit_feeds_status_upstream_error(
+    client: AsyncClient, mock_http: respx.MockRouter, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    mock_http.get("http://127.0.0.1:9090/status").mock(
+        return_value=httpx.Response(500)
+    )
+    real_client = httpx.AsyncClient()
+    monkeypatch.setattr("src.api.reddit_feeds.get_http_client", lambda: real_client)
+    resp = await client.get("/api/reddit-feeds/status")
+    await real_client.aclose()
+    assert resp.status_code == 500
 
 
 @pytest.mark.asyncio
