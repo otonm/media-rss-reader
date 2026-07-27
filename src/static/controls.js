@@ -16,6 +16,69 @@
 
   const MRR = (window.MRR = window.MRR || {});
 
+  const statusModal = document.getElementById("status-modal");
+  const statusBody = document.getElementById("status-modal-body");
+
+  function openStatusModal() {
+    statusModal.setAttribute("aria-hidden", "false");
+    statusModal.classList.add("open");
+    statusBody.innerHTML =
+      '<div class="status-loading"><div class="spinner"></div></div>';
+    fetch("/api/reddit-feeds/status")
+      .then((r) => r.json().then((d) => ({ ok: r.ok, status: r.status, data: d })))
+      .then((result) => {
+        if (!result.ok) {
+          statusBody.innerHTML =
+            '<div class="status-error">' +
+            (result.data.detail || "Reddit Feeds API error") +
+            "</div>";
+          return;
+        }
+        renderStatus(result.data);
+      })
+      .catch(() => {
+        statusBody.innerHTML =
+          '<div class="status-error">Failed to reach status endpoint</div>';
+      });
+    collapseControls();
+  }
+
+  function renderStatus(data) {
+    const feeds = data.feeds || [];
+    if (feeds.length === 0) {
+      statusBody.innerHTML =
+        '<div class="status-empty">No feed data yet — first run hasn\'t completed</div>';
+      return;
+    }
+    const rows = feeds
+      .map(
+        (f) =>
+          "<tr>" +
+          "<td>" + f.name + "</td>" +
+          "<td><span class='status-dot " + f.last_status + "'></span>" + f.last_status + "</td>" +
+          "<td>" + (f.last_fetch ? new Date(f.last_fetch).toLocaleString() : "—") + "</td>" +
+          "<td>" + (f.last_item_count != null ? f.last_item_count : "—") + "</td>" +
+          "<td>" + (f.total_items != null ? f.total_items : "—") + "</td>" +
+          "</tr>"
+      )
+      .join("");
+    statusBody.innerHTML =
+      '<table class="status-table">' +
+      "<thead><tr>" +
+      "<th>Feed</th><th>Status</th><th>Last Fetch</th><th>Last Count</th><th>Total</th>" +
+      "</tr></thead>" +
+      "<tbody>" + rows + "</tbody>" +
+      "</table>" +
+      (data.last_run
+        ? '<div class="status-footer">Last run: ' + new Date(data.last_run).toLocaleString() + "</div>"
+        : "");
+  }
+
+  function closeStatusModal() {
+    statusModal.classList.remove("open");
+    statusModal.setAttribute("aria-hidden", "true");
+  }
+
   const state = {
     muted: true,
     showSeen: false,
@@ -68,6 +131,22 @@
     document.getElementById("btn-show-seen").addEventListener("click", () => {
       const next = document.getElementById("btn-show-seen").getAttribute("aria-pressed") !== "true";
       setShowSeen(next);
+    });
+    document.getElementById("btn-status").addEventListener("click", () => {
+      if (statusModal.classList.contains("open")) {
+        closeStatusModal();
+      } else {
+        openStatusModal();
+      }
+    });
+    document.getElementById("status-modal-close").addEventListener("click", closeStatusModal);
+    statusModal.addEventListener("click", (e) => {
+      if (e.target === statusModal) closeStatusModal();
+    });
+    document.addEventListener("keydown", (e) => {
+      if (e.key === "Escape" && statusModal.classList.contains("open")) {
+        closeStatusModal();
+      }
     });
     setMuted(true);
     setAutoscroll(false);
