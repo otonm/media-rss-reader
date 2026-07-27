@@ -9,7 +9,7 @@ from fastapi import FastAPI, Request
 from fastapi.responses import HTMLResponse
 from fastapi.staticfiles import StaticFiles
 
-from src.api import feeds, items, media
+from src.api import feeds, items, media, reddit_feeds
 from src.auth import routes as auth_routes
 from src.auth.middleware import AuthMiddleware
 from src.config import settings
@@ -58,6 +58,7 @@ app.include_router(auth_routes.router)
 app.include_router(feeds.router, prefix="/api")
 app.include_router(items.router, prefix="/api")
 app.include_router(media.router, prefix="/api")
+app.include_router(reddit_feeds.router, prefix="/api")
 
 if _static_dir.exists():
     app.mount("/static", StaticFiles(directory=str(_static_dir)), name="static")
