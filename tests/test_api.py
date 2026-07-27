@@ -353,9 +353,7 @@ async def test_reddit_feeds_status_success(
         ],
         "last_run": "2026-07-27T14:02:05.654321+00:00",
     }
-    mock_http.get("http://127.0.0.1:9090/status").mock(
-        return_value=httpx.Response(200, json=upstream_json)
-    )
+    mock_http.get("http://127.0.0.1:9090/status").mock(return_value=httpx.Response(200, json=upstream_json))
     real_client = httpx.AsyncClient()
     monkeypatch.setattr("src.api.reddit_feeds.get_http_client", lambda: real_client)
     resp = await client.get("/api/reddit-feeds/status")
@@ -364,14 +362,12 @@ async def test_reddit_feeds_status_success(
     assert resp.json() == upstream_json
 
 
-async def test_reddit_feeds_status_unreachable(
-    client: AsyncClient, monkeypatch: pytest.MonkeyPatch
-) -> None:
+async def test_reddit_feeds_status_unreachable(client: AsyncClient, monkeypatch: pytest.MonkeyPatch) -> None:
     import src.api.reddit_feeds as rf_mod
 
     fake_client = httpx.AsyncClient()
 
-    async def fake_get(url: str, **kwargs) -> httpx.Response:
+    async def fake_get(url: str, **kwargs: object) -> httpx.Response:
         raise httpx.ConnectError("Connection refused")
 
     fake_client.get = fake_get  # type: ignore[method-assign]
@@ -384,9 +380,7 @@ async def test_reddit_feeds_status_unreachable(
 async def test_reddit_feeds_status_upstream_error(
     client: AsyncClient, mock_http: respx.MockRouter, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    mock_http.get("http://127.0.0.1:9090/status").mock(
-        return_value=httpx.Response(500)
-    )
+    mock_http.get("http://127.0.0.1:9090/status").mock(return_value=httpx.Response(500))
     real_client = httpx.AsyncClient()
     monkeypatch.setattr("src.api.reddit_feeds.get_http_client", lambda: real_client)
     resp = await client.get("/api/reddit-feeds/status")
