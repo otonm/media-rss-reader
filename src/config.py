@@ -45,6 +45,9 @@ class Settings:
     auth_lockout_attempts: int = 5
     auth_lockout_minutes: int = 15
 
+    # --- Reddit Feeds integration ---
+    reddit_feeds_api_url: str = "http://127.0.0.1:9090"
+
 
 def _load_settings() -> Settings:
     kwargs: dict[str, str | int] = {}
