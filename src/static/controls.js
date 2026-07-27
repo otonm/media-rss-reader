@@ -25,22 +25,29 @@
     statusBody.innerHTML =
       '<div class="status-loading"><div class="spinner"></div></div>';
     fetch("/api/reddit-feeds/status")
-      .then((r) => r.json().then((d) => ({ ok: r.ok, status: r.status, data: d })))
-      .then((result) => {
-        if (!result.ok) {
-          statusBody.innerHTML =
-            '<div class="status-error">' +
-            (result.data.detail || "Reddit Feeds API error") +
-            "</div>";
+      .then((r) => r.text().then((t) => ({ ok: r.ok, body: t })))
+      .then(({ ok, body }) => {
+        if (!ok) {
+          const msg = (tryParse(body) || {}).detail || "Reddit Feeds API error";
+          statusBody.innerHTML = '<div class="status-error">' + msg + "</div>";
           return;
         }
-        renderStatus(result.data);
+        const data = tryParse(body);
+        if (data && data.feeds != null) {
+          renderStatus(data);
+        } else {
+          statusBody.innerHTML = '<div class="status-error">Unexpected response format</div>';
+        }
       })
       .catch(() => {
         statusBody.innerHTML =
           '<div class="status-error">Failed to reach status endpoint</div>';
       });
     collapseControls();
+  }
+
+  function tryParse(text) {
+    try { return JSON.parse(text); } catch (e) { return null; }
   }
 
   function renderStatus(data) {
