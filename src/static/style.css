@@ -172,7 +172,7 @@ html, body {
 }
 
 /* -----------------------------------------------------------------------
-   Mobile — controls collapse to a circle FAB, options slide out to the right
+   Mobile — controls collapse to a circle FAB, options stack vertically below
    ----------------------------------------------------------------------- */
 @media (max-width: 768px) {
   #controls {
@@ -180,42 +180,34 @@ html, body {
     left: calc(1rem + env(safe-area-inset-left, 0px));
     right: auto;
     bottom: auto;
-    padding: 0;
-    width: var(--control-btn-size);
-    height: var(--control-btn-size);
-    border-radius: 50%;
-    background: rgba(20, 20, 28, 0.4);
-    border: 1px solid rgba(255, 255, 255, 0.08);
+    padding: 0.4rem;
+    background: var(--control-bg);
+    backdrop-filter: blur(12px);
+    -webkit-backdrop-filter: blur(12px);
+    border: 1px solid var(--control-border);
+    border-radius: 28px;
     display: flex;
+    flex-direction: column;
     align-items: center;
-    justify-content: center;
+    gap: 0.5rem;
   }
 
   #controls .fab-only {
     display: flex;
-    position: relative;
-    z-index: 1;
   }
 
   #controls .option {
-    position: absolute;
-    left: calc(100% + 0.5rem);
-    top: 50%;
-    transform: translateY(-50%) scale(0.8);
+    position: static;
     opacity: 0;
     pointer-events: none;
+    transform: scale(0.8);
     transition: opacity 0.15s, transform 0.15s;
   }
-
-  #controls .option:nth-of-type(2) { left: calc(100% + 0.5rem); }
-  #controls .option:nth-of-type(3) { left: calc(100% + 0.5rem + var(--control-btn-size) + 0.5rem); }
-  #controls .option:nth-of-type(4) { left: calc(100% + 0.5rem + 2 * (var(--control-btn-size) + 0.5rem)); }
-  #controls .option:nth-of-type(5) { left: calc(100% + 0.5rem + 3 * (var(--control-btn-size) + 0.5rem)); }
 
   #controls.expanded .option {
     opacity: 1;
     pointer-events: auto;
-    transform: translateY(-50%) scale(1);
+    transform: scale(1);
   }
 }
 
