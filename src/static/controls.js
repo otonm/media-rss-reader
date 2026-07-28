@@ -43,7 +43,7 @@
         statusBody.innerHTML =
           '<div class="status-error">Failed to reach status endpoint</div>';
       });
-    collapseControls();
+    requestAnimationFrame(() => collapseControls());
   }
 
   function tryParse(text) {
