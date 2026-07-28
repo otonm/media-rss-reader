@@ -89,8 +89,6 @@
 
   function init() {
     readConfig();
-    // Apply the show-seen preference from localStorage BEFORE the first
-    // fetch so itemStore routes to the right ?unseen= flag.
     MRR.itemStore.setShowSeen(readShowSeenPref());
     MRR.scrollController.init();
     MRR.controls.init();
@@ -157,6 +155,10 @@
         });
       }
     }, 2000);
+
+    if ("serviceWorker" in navigator) {
+      navigator.serviceWorker.register("/static/sw.js").catch(() => {});
+    }
   }
 
   MRR.app = { reloadFeed, setShowSeen };
