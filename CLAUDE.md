@@ -204,6 +204,7 @@ CREATE TABLE IF NOT EXISTS items (
     title       TEXT,
     media_url   TEXT NOT NULL,
     media_type  TEXT NOT NULL,              -- 'image' | 'gif' | 'video'
+    media_json  TEXT,                       -- v5+: JSON [{url,type}, ...] for galleries; slide 1 = media_url
     pub_date    TIMESTAMP,
     fetched_at  TIMESTAMP DEFAULT (datetime('now')),
     seen_at     TIMESTAMP,                  -- NULL = unseen
@@ -301,6 +302,7 @@ GET  /api/items                     → paginated media items
                                       ?feed_id=<id>  filter by feed
                                       ?page=0&size=50
                                       → [{id, feed_id, title, media_url, media_type,
+                                           media: [{url, type}, ...],   -- galleries: >1 entry
                                            pub_date, fetched_at, seen_at}]
 
 POST /api/items/{id}/seen           → {seen_at: iso8601}

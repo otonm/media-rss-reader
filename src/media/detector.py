@@ -82,3 +82,26 @@ def detect_media(entry: dict) -> tuple[str, str] | None:
                 return og_url, media_type
 
     return None
+
+
+def detect_all_media(entry: dict) -> list[tuple[str, str]]:
+    """Return all media of an entry as (url, media_type) pairs, in display order.
+
+    Galleries are built from enclosures and media:content only (deduped by URL);
+    media:thumbnail and og:image stay single-item fallbacks so a thumbnail of
+    the main image never becomes a bogus second slide. Returns [] when the
+    entry has no usable media.
+    """
+    found: list[tuple[str, str]] = []
+    seen_urls: set[str] = set()
+    for key in ("enclosures", "media_content"):
+        for item in entry.get(key, []):
+            url = item.get("url", "")
+            media_type = detect_type(url)
+            if url and media_type and url not in seen_urls:
+                seen_urls.add(url)
+                found.append((url, media_type))
+    if found:
+        return found
+    single = detect_media(entry)
+    return [single] if single else []

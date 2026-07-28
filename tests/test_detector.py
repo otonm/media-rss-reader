@@ -1,4 +1,4 @@
-from src.media.detector import detect_media, detect_type
+from src.media.detector import detect_all_media, detect_media, detect_type
 
 
 def test_detect_type_jpeg() -> None:
@@ -73,3 +73,56 @@ def test_detect_media_enclosure_takes_priority_over_media_content() -> None:
     }
     url, _ = detect_media(entry)
     assert url == "https://example.com/enc.jpg"
+
+
+def test_detect_all_media_multi_enclosure_gallery() -> None:
+    entry = {
+        "enclosures": [
+            {"url": "https://example.com/a.jpg"},
+            {"url": "https://example.com/b.gif"},
+            {"url": "https://example.com/c.mp4"},
+        ]
+    }
+    assert detect_all_media(entry) == [
+        ("https://example.com/a.jpg", "image"),
+        ("https://example.com/b.gif", "gif"),
+        ("https://example.com/c.mp4", "video"),
+    ]
+
+
+def test_detect_all_media_combines_enclosures_and_media_content_deduped() -> None:
+    entry = {
+        "enclosures": [{"url": "https://example.com/a.jpg"}],
+        "media_content": [
+            {"url": "https://example.com/a.jpg"},  # duplicate of the enclosure
+            {"url": "https://example.com/b.jpg"},
+        ],
+    }
+    assert detect_all_media(entry) == [
+        ("https://example.com/a.jpg", "image"),
+        ("https://example.com/b.jpg", "image"),
+    ]
+
+
+def test_detect_all_media_skips_unsupported_extensions() -> None:
+    entry = {
+        "enclosures": [
+            {"url": "https://example.com/doc.pdf"},
+            {"url": "https://example.com/ok.png"},
+        ]
+    }
+    assert detect_all_media(entry) == [("https://example.com/ok.png", "image")]
+
+
+def test_detect_all_media_thumbnail_fallback_returns_single() -> None:
+    entry = {"media_thumbnail": [{"url": "https://example.com/thumb.jpg"}]}
+    assert detect_all_media(entry) == [("https://example.com/thumb.jpg", "image")]
+
+
+def test_detect_all_media_og_image_fallback_returns_single() -> None:
+    entry = {"summary": '<meta property="og:image" content="https://example.com/og.png"/>'}
+    assert detect_all_media(entry) == [("https://example.com/og.png", "image")]
+
+
+def test_detect_all_media_returns_empty_when_no_media() -> None:
+    assert detect_all_media({"summary": "<p>text only</p>"}) == []

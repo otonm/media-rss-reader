@@ -48,7 +48,8 @@
     const idx = MRR.itemStore.findIndexById(best.target.dataset.id);
     if (idx === -1) return;
     MRR.itemStore.setCurrentIndex(idx);
-    MRR.feedView.setCurrentMedia(best.target.querySelector("video"));
+    const mediaEl = MRR.feedView.activeMediaEl(best.target);
+    MRR.feedView.setCurrentMedia(mediaEl && mediaEl.tagName === "VIDEO" ? mediaEl : null);
     MRR.cacheQueue.rebuild(idx, MRR.config.feedInitialCount, MRR.itemStore.getItems());
     MRR.autoscrollController.reset(best.target);
   }

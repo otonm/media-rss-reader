@@ -1,5 +1,6 @@
 import datetime
 import hashlib
+import json
 from pathlib import Path
 from unittest.mock import patch
 
@@ -82,6 +83,35 @@ async def test_refresh_all_feeds_deduplicates(db: aiosqlite.Connection, tmp_path
             await refresh_all_feeds(db, client)
     async with db.execute("SELECT COUNT(*) FROM items") as cur:
         assert (await cur.fetchone())[0] == 1
+
+
+_GALLERY_RSS = """\
+<?xml version="1.0"?>
+<rss version="2.0"><channel><title>Feed</title>
+  <item>
+    <guid>g-gallery</guid>
+    <enclosure url="https://example.com/a.jpg" type="image/jpeg" length="0"/>
+    <enclosure url="https://example.com/b.gif" type="image/gif" length="0"/>
+  </item>
+</channel></rss>"""
+
+
+async def test_refresh_all_feeds_stores_media_json(db: aiosqlite.Connection, tmp_path: Path) -> None:
+    f = tmp_path / "feeds.opml"
+    f.write_text(_OPML)
+    with respx.mock:
+        respx.get("https://example.com/feed.xml").mock(return_value=httpx.Response(200, text=_GALLERY_RSS))
+        async with httpx.AsyncClient() as client:
+            await opml_sync(db, str(f), client)
+            await refresh_all_feeds(db, client)
+    async with db.execute("SELECT media_url, media_type, media_json FROM items") as cur:
+        row = await cur.fetchone()
+    assert row["media_url"] == "https://example.com/a.jpg"
+    assert row["media_type"] == "image"
+    assert json.loads(row["media_json"]) == [
+        {"url": "https://example.com/a.jpg", "type": "image"},
+        {"url": "https://example.com/b.gif", "type": "gif"},
+    ]
 
 
 def _sqlite_dt(dt: datetime.datetime) -> str:

@@ -19,6 +19,7 @@
   const state = {
     autoscroll: false,
     boundItem: null,
+    boundMediaEl: null,  // active slide's media; a slide change rebinds the same wrap
     boundType: null,
     timerId: null,
     videoEndedHandler: null,
@@ -44,10 +45,14 @@
 
   function bindIfVisible(wrap) {
     if (!state.autoscroll) return;
-    if (state.boundItem === wrap) return;
+    const mediaEl = MRR.feedView.activeMediaEl(wrap);
+    if (state.boundItem === wrap && state.boundMediaEl === mediaEl) return;
     unbind();
     state.boundItem = wrap;
-    const type = wrap.dataset.mediaType;
+    state.boundMediaEl = mediaEl;
+    // Gallery slides carry their own media type; the wrap's type is slide 1's.
+    const slide = mediaEl ? mediaEl.closest(".gallery-slide") : null;
+    const type = slide ? slide.dataset.mediaType : wrap.dataset.mediaType;
     state.boundType = type;
     // Minimum dwell — a floor on the snap-to-next delay so that short
     // GIFs (parsed sub-100ms durations), very short videos, or fast
@@ -57,13 +62,13 @@
     const cfg = MRR.config;
     const minDwellMs = cfg.imageAutoscrollDelayMs;
     const fireSnap = () => {
-      if (state.boundItem === wrap) MRR.feedView.snapToNext();
+      if (state.boundItem === wrap) MRR.feedView.advanceOrNext(wrap);
     };
     const scheduleAfter = (ms) => {
       state.timerId = setTimeout(fireSnap, Math.max(ms, minDwellMs));
     };
     if (type === "video") {
-      const v = wrap.querySelector("video");
+      const v = mediaEl && mediaEl.tagName === "VIDEO" ? mediaEl : null;
       if (v) {
         const bindTime = Date.now();
         state.videoEndedHandler = () => {
@@ -75,13 +80,16 @@
           state.timerId = setTimeout(fireSnap, remaining);
         };
         v.addEventListener("ended", state.videoEndedHandler, { once: true });
+        // Gallery slide videos don't autoplay offscreen; autoscroll implies
+        // watching, so start playback (unless the user paused explicitly).
+        if (!v.userPaused) v.play().catch((err) => console.warn("video play rejected", err));
       }
     } else if (type === "image") {
       scheduleAfter(cfg.imageAutoscrollDelayMs);
     } else if (type === "gif") {
       state.gifCancelToken = {};
       const myToken = state.gifCancelToken;
-      getGifDuration(wrap.querySelector("img,canvas").src).then((ms) => {
+      getGifDuration(mediaEl.src).then((ms) => {
         if (state.boundItem !== wrap || state.gifCancelToken !== myToken) return;
         scheduleAfter(ms);
       });
@@ -94,11 +102,11 @@
 
   function unbind() {
     if (state.timerId !== null) { clearTimeout(state.timerId); state.timerId = null; }
-    if (state.boundItem && state.boundType === "video" && state.videoEndedHandler) {
-      const v = state.boundItem.querySelector("video");
-      if (v) v.removeEventListener("ended", state.videoEndedHandler);
+    if (state.boundMediaEl && state.boundType === "video" && state.videoEndedHandler) {
+      state.boundMediaEl.removeEventListener("ended", state.videoEndedHandler);
     }
     state.boundItem = null;
+    state.boundMediaEl = null;
     state.boundType = null;
     state.videoEndedHandler = null;
     state.gifCancelToken = null;

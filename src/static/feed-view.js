@@ -21,6 +21,8 @@
 //   onItemFailed(id)
 //   snapToIndex(idx), snapToNext(), snapToPrev()
 //   setCurrentMedia(el)
+//   activeMediaEl(wrap)   // media of the active gallery slide (or single media)
+//   advanceOrNext(wrap)   // next gallery slide, or snapToNext on the last one
 // ---------------------------------------------------------------------------
 (function () {
   "use strict";
@@ -43,42 +45,146 @@
     return wrap;
   }
 
+  // Shared wiring for every video element (single items and gallery slides).
+  // We deliberately do NOT mutate the old video's muted state on transition:
+  // setting `muted` on a paused video would fire `volumechange`, which the
+  // browser uses to infer user interaction in some implementations and would
+  // suppress future autoplay.
+  function wireVideo(el) {
+    el.setAttribute("playsinline", "");
+    el.setAttribute("webkit-playsinline", "");
+    el.setAttribute("controls", "");
+    el.muted = MRR.config.mutedDefault;
+    el.loop = !MRR.config.autoscroll;
+    // Track explicit user pauses only. The browser fires spurious
+    // 'volumechange' and 'seeking' events for its own reasons (autoplay
+    // policy adjustments, end-of-video seek-backs, visibility changes);
+    // trusting those would suppress autoplay on the next visible
+    // transition. The reliable signal is a `pause` event that was not
+    // preceded by our own pause() call in setCurrentMedia — that is a
+    // real user click on the browser controls.
+    el.addEventListener("pause", () => {
+      if (el._pausedByJs) {
+        el._pausedByJs = false;
+      } else {
+        el.userPaused = true;
+      }
+    });
+    // A subsequent `play` (user clicking the controls) clears userPaused
+    // so a later scroll-back resumes autoplay. Without this the user's
+    // explicit "play" intent is lost the moment they scroll away.
+    el.addEventListener("play", () => { el.userPaused = false; });
+  }
+
   function createMediaWrap(item, el) {
     const wrap = document.createElement("div");
     wrap.className = "media-item";
     wrap.dataset.id = item.id;
     wrap.dataset.mediaType = item.media_type;
-    if (item.media_type === "video") {
-      el.setAttribute("playsinline", "");
-      el.setAttribute("webkit-playsinline", "");
-      el.setAttribute("controls", "");
-      el.muted = MRR.config.mutedDefault;
-      el.loop = !MRR.config.autoscroll;
-      // Track explicit user pauses only. The browser fires spurious
-      // 'volumechange' and 'seeking' events for its own reasons (autoplay
-      // policy adjustments, end-of-video seek-backs, visibility changes);
-      // trusting those would suppress autoplay on the next visible
-      // transition. The reliable signal is a `pause` event that was not
-      // preceded by our own pause() call in setCurrentMedia — that is a
-      // real user click on the browser controls.
-      el.addEventListener("pause", () => {
-        if (el._pausedByJs) {
-          el._pausedByJs = false;
-        } else {
-          el.userPaused = true;
-        }
-      });
-      // A subsequent `play` (user clicking the controls) clears userPaused
-      // so a later scroll-back resumes autoplay. Without this the user's
-      // explicit "play" intent is lost the moment they scroll away.
-      el.addEventListener("play", () => { el.userPaused = false; });
-      el.addEventListener("error", () => onItemFailed(item.id));
+    const galleryMedia = Array.isArray(item.media) && item.media.length > 1 ? item.media : null;
+    if (galleryMedia) {
+      buildGallery(wrap, galleryMedia, el);
     } else {
+      if (item.media_type === "video") wireVideo(el);
       el.addEventListener("error", () => onItemFailed(item.id));
+      wrap.appendChild(el);
     }
-    wrap.appendChild(el);
     if (item.seen_at) tagAsSeen(wrap);
     return wrap;
+  }
+
+  // Builds a horizontally scrollable gallery: one .gallery-slide per media
+  // entry plus a dot per slide on the lower edge. Slide 1 reuses the element
+  // already downloaded by the cache queue; the remaining slides point at the
+  // media proxy directly and load natively in the background.
+  function buildGallery(wrap, mediaList, firstEl) {
+    const gallery = document.createElement("div");
+    gallery.className = "gallery";
+    const dots = document.createElement("div");
+    dots.className = "gallery-dots";
+    mediaList.forEach((m, i) => {
+      const slide = document.createElement("div");
+      slide.className = "gallery-slide" + (i === 0 ? " active" : "");
+      slide.dataset.mediaType = m.type;
+      let el;
+      if (i === 0) {
+        el = firstEl;
+      } else {
+        el = m.type === "video" ? document.createElement("video") : new Image();
+        el.src = `/api/media/proxy?url=${encodeURIComponent(m.url)}`;
+      }
+      if (m.type === "video") wireVideo(el);
+      el.addEventListener("error", () => removeSlide(wrap, gallery, dots, slide), { once: true });
+      slide.appendChild(el);
+      gallery.appendChild(slide);
+      const dot = document.createElement("span");
+      dot.className = "gallery-dot" + (i === 0 ? " active" : "");
+      dots.appendChild(dot);
+    });
+    gallery.addEventListener("scroll", () => onGalleryScroll(wrap, gallery, dots), { passive: true });
+    wrap.appendChild(gallery);
+    wrap.appendChild(dots);
+  }
+
+  // A slide's media failed to load: drop the slide and its dot so the
+  // indicator stays in sync. With no slides left, fail the whole item.
+  function removeSlide(wrap, gallery, dots, slide) {
+    const idx = Array.prototype.indexOf.call(gallery.children, slide);
+    slide.remove();
+    if (dots.children[idx]) dots.children[idx].remove();
+    if (gallery.children.length === 0) {
+      onItemFailed(wrap.dataset.id);
+    } else if (gallery.children.length === 1) {
+      dots.remove(); // a single remaining slide needs no indicator
+    }
+  }
+
+  // Debounced gallery scroll: mark the active slide + dot, pause offscreen
+  // slide videos, and — when this wrap is the current feed item — re-point
+  // the visible-media rule and autoscroll at the new slide.
+  function onGalleryScroll(wrap, gallery, dots) {
+    clearTimeout(wrap._galleryScrollTimer);
+    wrap._galleryScrollTimer = setTimeout(() => {
+      const slides = gallery.children;
+      if (slides.length === 0) return;
+      const idx = Math.max(0, Math.min(Math.round(gallery.scrollLeft / gallery.clientWidth), slides.length - 1));
+      if (slides[idx].classList.contains("active")) return;
+      for (let i = 0; i < slides.length; i++) {
+        slides[i].classList.toggle("active", i === idx);
+        if (dots.children[i]) dots.children[i].classList.toggle("active", i === idx);
+      }
+      gallery.querySelectorAll("video").forEach((v) => {
+        if (v.closest(".gallery-slide") !== slides[idx]) { v._pausedByJs = true; v.pause(); }
+      });
+      const currentItem = MRR.itemStore.getItemAt(MRR.itemStore.getCurrentIndex());
+      if (currentItem && currentItem.id === wrap.dataset.id) {
+        const mediaEl = slides[idx].querySelector("img, video");
+        setCurrentMedia(mediaEl && mediaEl.tagName === "VIDEO" ? mediaEl : null);
+        MRR.autoscrollController.reset(wrap);
+      }
+    }, 60);
+  }
+
+  // The media element the user is currently looking at: the active gallery
+  // slide's media, or the single media element for non-gallery wraps.
+  function activeMediaEl(wrap) {
+    const slide = wrap.querySelector(".gallery-slide.active");
+    if (slide) return slide.querySelector("img, video");
+    return wrap.querySelector(":scope > img, :scope > video");
+  }
+
+  // Autoscroll advance: galleries step to the next slide first; on the last
+  // slide (or for non-gallery items) advance the feed itself.
+  function advanceOrNext(wrap) {
+    const gallery = wrap.querySelector(".gallery");
+    if (gallery) {
+      const idx = Math.round(gallery.scrollLeft / gallery.clientWidth);
+      if (idx < gallery.children.length - 1) {
+        gallery.scrollTo({ left: (idx + 1) * gallery.clientWidth, behavior: "smooth" });
+        return; // the gallery scroll handler rebinds autoscroll to the new slide
+      }
+    }
+    snapToNext();
   }
 
   // Add the `.seen` class and a small corner badge to a wrap. Idempotent:
@@ -176,5 +282,7 @@
     snapToNext,
     snapToPrev,
     setCurrentMedia,
+    activeMediaEl,
+    advanceOrNext,
   };
 })();

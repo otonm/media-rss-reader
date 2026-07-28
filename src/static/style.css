@@ -122,6 +122,63 @@ html, body {
 .media-item:not(.seen) .seen-badge { display: none; }
 
 /* -----------------------------------------------------------------------
+   Galleries — entries with multiple media scroll horizontally inside the
+   feed item. Dots on the lower edge mark the slides; the active slide's
+   dot is larger. Dots are pure indicators (pointer-events: none keeps
+   video controls beneath them clickable).
+   ----------------------------------------------------------------------- */
+.gallery {
+  display: flex;
+  width: 100%;
+  height: 100%;
+  overflow-x: scroll;
+  overflow-y: hidden;
+  scroll-snap-type: x mandatory;
+  scrollbar-width: none;
+  overscroll-behavior: contain;
+}
+
+.gallery::-webkit-scrollbar { display: none; }
+
+.gallery-slide {
+  flex: 0 0 100%;
+  width: 100%;
+  height: 100%;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  scroll-snap-align: center;
+  scroll-snap-stop: always;
+  overflow: hidden;
+}
+
+.gallery-dots {
+  position: absolute;
+  bottom: 1rem;
+  left: 50%;
+  transform: translateX(-50%);
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  z-index: 10;
+  pointer-events: none;
+}
+
+.gallery-dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: rgba(255, 255, 255, 0.4);
+  transition: width 0.15s, height 0.15s, background 0.15s;
+}
+
+.gallery-dot.active {
+  width: 12px;
+  height: 12px;
+  background: rgba(255, 255, 255, 0.95);
+}
+
+/* -----------------------------------------------------------------------
    Controls
    ----------------------------------------------------------------------- */
 #controls {

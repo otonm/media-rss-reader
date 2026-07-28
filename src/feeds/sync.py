@@ -69,8 +69,8 @@ async def _refresh_feed(
         logger.debug(f"Storing item {item['title']} with media URL {item['media_url']} and ID {item['id']}")
         cursor = await db.execute(
             """INSERT OR IGNORE INTO items
-               (id, feed_id, guid, title, media_url, media_type, pub_date)
-               VALUES (:id, :feed_id, :guid, :title, :media_url, :media_type, :pub_date)""",
+               (id, feed_id, guid, title, media_url, media_type, media_json, pub_date)
+               VALUES (:id, :feed_id, :guid, :title, :media_url, :media_type, :media_json, :pub_date)""",
             item,
         )
         inserted += cursor.rowcount

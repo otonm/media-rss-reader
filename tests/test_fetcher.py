@@ -1,3 +1,5 @@
+import json
+
 import httpx
 import respx
 
@@ -56,3 +58,42 @@ async def test_fetch_feed_same_guid_produces_same_id(mock_http: respx.MockRouter
     async with httpx.AsyncClient() as client:
         items2 = await fetch_feed("https://example.com/feed.xml", client)
     assert items1[0]["id"] == items2[0]["id"]
+
+
+_GALLERY_RSS = """\
+<?xml version="1.0"?>
+<rss version="2.0" xmlns:media="http://search.yahoo.com/mrss/">
+  <channel>
+    <title>Gallery Feed</title>
+    <item>
+      <title>Gallery</title>
+      <guid>guid-gallery-1</guid>
+      <enclosure url="https://example.com/one.jpg" type="image/jpeg" length="0"/>
+      <enclosure url="https://example.com/two.gif" type="image/gif" length="0"/>
+      <media:content url="https://example.com/three.mp4" type="video/mp4"/>
+    </item>
+  </channel>
+</rss>"""
+
+
+async def test_fetch_feed_gallery_item_has_media_json(mock_http: respx.MockRouter) -> None:
+    mock_http.get("https://example.com/feed.xml").mock(return_value=httpx.Response(200, text=_GALLERY_RSS))
+    async with httpx.AsyncClient() as client:
+        items = await fetch_feed("https://example.com/feed.xml", client)
+    assert len(items) == 1
+    item = items[0]
+    assert item["media_url"] == "https://example.com/one.jpg"
+    assert item["media_type"] == "image"
+    assert json.loads(item["media_json"]) == [
+        {"url": "https://example.com/one.jpg", "type": "image"},
+        {"url": "https://example.com/two.gif", "type": "gif"},
+        {"url": "https://example.com/three.mp4", "type": "video"},
+    ]
+
+
+async def test_fetch_feed_single_media_item_has_one_element_media_json(mock_http: respx.MockRouter) -> None:
+    mock_http.get("https://example.com/feed.xml").mock(return_value=httpx.Response(200, text=_RSS))
+    async with httpx.AsyncClient() as client:
+        items = await fetch_feed("https://example.com/feed.xml", client)
+    img = next(i for i in items if i["media_type"] == "image")
+    assert json.loads(img["media_json"]) == [{"url": "https://example.com/photo.jpg", "type": "image"}]

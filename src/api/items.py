@@ -1,5 +1,6 @@
 """GET /api/items and POST /api/items/{id}/seen."""
 
+import json
 from typing import Annotated, Any
 
 import aiosqlite
@@ -10,6 +11,22 @@ from src.db.connection import get_db
 router = APIRouter()
 
 _DbDep = Annotated[aiosqlite.Connection, Depends(get_db)]
+
+
+def _row_to_item(row: aiosqlite.Row) -> dict[str, Any]:
+    """Convert an items row to the API shape, expanding media_json to `media`.
+
+    Rows predating migration v5 have media_json NULL; they fall back to a
+    1-element list built from media_url/media_type so the frontend always
+    receives a `media` array.
+    """
+    item = dict(row)
+    raw = item.pop("media_json")
+    if raw:
+        item["media"] = json.loads(raw)
+    else:
+        item["media"] = [{"url": item["media_url"], "type": item["media_type"]}]
+    return item
 
 
 @router.get("/items")
@@ -47,14 +64,14 @@ async def list_items(
             FROM items
             {where_clause}
         )
-        SELECT id, feed_id, title, media_url, media_type, pub_date, fetched_at, seen_at
+        SELECT id, feed_id, title, media_url, media_type, media_json, pub_date, fetched_at, seen_at
         FROM ranked
         ORDER BY rn ASC, feed_id ASC
         LIMIT ? OFFSET ?
     """
     async with db.execute(query, params) as cur:
         rows = await cur.fetchall()
-    return [dict(row) for row in rows]
+    return [_row_to_item(row) for row in rows]
 
 
 @router.post("/items/{item_id}/seen")

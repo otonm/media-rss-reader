@@ -7,12 +7,13 @@ Items without a detectable media URL are silently skipped.
 
 import asyncio
 import hashlib
+import json
 import logging
 
 import feedparser
 import httpx
 
-from src.media.detector import detect_media
+from src.media.detector import detect_all_media
 
 logger = logging.getLogger(__name__)
 
@@ -41,12 +42,12 @@ async def fetch_feed(url: str, client: httpx.AsyncClient) -> list[dict]:
 
     items = []
     for entry in feed.entries:
-        result = detect_media(entry)
-        if result is None:
+        results = detect_all_media(entry)
+        if not results:
             logger.debug(f"No media detected in entry {entry.get('title')}")
             continue
 
-        media_url, media_type = result
+        media_url, media_type = results[0]
         logger.debug(f"Detected media in entry {entry.get('title')}: {media_url} ({media_type})")
 
         # Use entry.id as the canonical GUID; fall back to link, then media URL.
@@ -59,6 +60,7 @@ async def fetch_feed(url: str, client: httpx.AsyncClient) -> list[dict]:
                 "title": entry.get("title"),
                 "media_url": media_url,
                 "media_type": media_type,
+                "media_json": json.dumps([{"url": u, "type": t} for u, t in results]),
                 "pub_date": entry.get("published") or entry.get("updated"),
             }
         )

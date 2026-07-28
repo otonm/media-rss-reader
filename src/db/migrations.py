@@ -29,6 +29,8 @@ MIGRATIONS: list[str] = [
     ),
     # v4: auth_config table for storing TOTP secret
     "CREATE TABLE IF NOT EXISTS auth_config (key TEXT PRIMARY KEY, value TEXT NOT NULL)",
+    # v5: media_json stores all slides of a gallery item as a JSON array of {url, type}
+    "ALTER TABLE items ADD COLUMN media_json TEXT",
 ]
 
 

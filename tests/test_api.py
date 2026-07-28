@@ -125,6 +125,38 @@ async def test_items_pagination(client: AsyncClient, db: aiosqlite.Connection) -
     assert len(resp_page1.json()) == 1
 
 
+async def test_items_returns_media_array_from_media_json(client: AsyncClient, db: aiosqlite.Connection) -> None:
+    await _insert_feed(db)
+    media_json = (
+        '[{"url": "http://example.com/a.jpg", "type": "image"},'
+        ' {"url": "http://example.com/b.gif", "type": "gif"}]'
+    )
+    await db.execute(
+        """INSERT INTO items(id, feed_id, guid, title, media_url, media_type, media_json, pub_date)
+           VALUES ('g1', 'feed1', 'g1', 'Gallery', 'http://example.com/a.jpg', 'image', ?, datetime('now'))""",
+        (media_json,),
+    )
+    await db.commit()
+    resp = await client.get("/api/items")
+    assert resp.status_code == 200
+    (item,) = resp.json()
+    assert item["media"] == [
+        {"url": "http://example.com/a.jpg", "type": "image"},
+        {"url": "http://example.com/b.gif", "type": "gif"},
+    ]
+    assert "media_json" not in item
+
+
+async def test_items_without_media_json_falls_back(client: AsyncClient, db: aiosqlite.Connection) -> None:
+    # Rows predating migration v5 have media_json NULL; the API must still
+    # return a 1-element media array built from media_url/media_type.
+    await _insert_feed(db)
+    await _insert_item(db, "item1", "feed1")
+    resp = await client.get("/api/items")
+    (item,) = resp.json()
+    assert item["media"] == [{"url": "http://example.com/img.jpg", "type": "image"}]
+
+
 # ---------------------------------------------------------------------------
 # POST /api/items/{id}/seen tests
 # ---------------------------------------------------------------------------
