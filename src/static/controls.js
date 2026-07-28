@@ -140,6 +140,15 @@
       setShowSeen(next);
     });
     document.getElementById("btn-status").addEventListener("click", () => {
+      const indicator = document.createElement("div");
+      indicator.textContent = "TAP " + Date.now();
+      Object.assign(indicator.style, {
+        position: "fixed", top: "50%", left: "50%", transform: "translate(-50%,-50%)",
+        background: "red", color: "white", padding: "1rem", zIndex: "99999",
+        fontSize: "2rem", borderRadius: "8px", pointerEvents: "none"
+      });
+      document.body.appendChild(indicator);
+      setTimeout(() => indicator.remove(), 2000);
       if (statusModal.classList.contains("open")) {
         closeStatusModal();
       } else {
