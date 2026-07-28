@@ -27,7 +27,6 @@ def build_png(width: int, height: int, bg_r: int, bg_g: int, bg_b: int) -> bytes
 
 def triangle_png(size: int, bg_r: int, bg_g: int, bg_b: int, fg_r: int, fg_g: int, fg_b: int) -> bytes:
     """Create a square PNG with a centred play-triangle."""
-    width = height = size
     m = max(size // 5, 1)
     x0, y0 = m * 2, m * 2
     x1, y1 = size - m * 2, size // 2

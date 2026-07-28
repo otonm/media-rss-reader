@@ -121,6 +121,34 @@ html, body {
 
 .media-item:not(.seen) .seen-badge { display: none; }
 
+.count-badge {
+  position: absolute;
+  top: 0.75rem;
+  left: 0.75rem;
+  z-index: 10;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: var(--counter-size);
+  height: var(--counter-size);
+  padding: 0 3px;
+  border-radius: 999px;
+  background: var(--fg-dim);
+  color: var(--bg);
+  font-size: 0.65rem;
+  font-weight: 700;
+  line-height: 1;
+  user-select: none;
+  pointer-events: none;
+  opacity: 0.7;
+}
+
+.count-badge.gallery {
+  background: var(--accent);
+  color: var(--control-active-icon);
+  opacity: 0.85;
+}
+
 /* -----------------------------------------------------------------------
    Galleries — entries with multiple media scroll horizontally inside the
    feed item. Dots on the lower edge mark the slides; the active slide's

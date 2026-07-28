@@ -81,6 +81,11 @@
     wrap.className = "media-item";
     wrap.dataset.id = item.id;
     wrap.dataset.mediaType = item.media_type;
+    const count = Array.isArray(item.media) ? item.media.length : 1;
+    const countBadge = document.createElement("span");
+    countBadge.className = "count-badge" + (count > 1 ? " gallery" : "");
+    countBadge.textContent = count;
+    wrap.appendChild(countBadge);
     const galleryMedia = Array.isArray(item.media) && item.media.length > 1 ? item.media : null;
     if (galleryMedia) {
       buildGallery(wrap, galleryMedia, el);
