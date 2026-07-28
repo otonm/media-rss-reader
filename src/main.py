@@ -36,7 +36,13 @@ def _build_html() -> str:
         f"--image-autoscroll-delay-s:{settings.image_autoscroll_delay_s};"
         f"}}</style>"
     )
-    return _index_path.read_text().replace("<!-- CONFIG_VARS -->", style)
+    try:
+        from importlib.metadata import version as _get_version
+
+        v = _get_version("media-rss-reader")
+    except Exception:
+        v = "dev"
+    return _index_path.read_text().replace("<!-- CONFIG_VARS -->", style).replace("{{VERSION}}", v)
 
 
 @asynccontextmanager

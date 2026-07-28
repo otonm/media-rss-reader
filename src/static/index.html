@@ -6,7 +6,7 @@
   <title>Media RSS Reader</title>
   <link rel="icon" type="image/svg+xml" href="/static/favicon.svg">
   <!-- CONFIG_VARS -->
-  <link rel="stylesheet" href="/static/style.css">
+  <link rel="stylesheet" href="/static/style.css?v={{VERSION}}">
 </head>
 <body>
   <div id="feed" aria-label="Media feed"></div>
@@ -23,12 +23,12 @@
     <button id="btn-show-seen" class="option" type="button" aria-pressed="false" aria-label="Toggle show seen" title="Show seen [s]">✓</button>
     <button id="btn-status" class="option" type="button" aria-label="Reddit Feeds status" title="Status">📊</button>
   </div>
-  <script src="/static/item-store.js"></script>
-  <script src="/static/cache-queue.js"></script>
-  <script src="/static/feed-view.js"></script>
-  <script src="/static/scroll-controller.js"></script>
-  <script src="/static/autoscroll-controller.js"></script>
-  <script src="/static/controls.js"></script>
-  <script src="/static/app.js"></script>
+  <script src="/static/item-store.js?v={{VERSION}}"></script>
+  <script src="/static/cache-queue.js?v={{VERSION}}"></script>
+  <script src="/static/feed-view.js?v={{VERSION}}"></script>
+  <script src="/static/scroll-controller.js?v={{VERSION}}"></script>
+  <script src="/static/autoscroll-controller.js?v={{VERSION}}"></script>
+  <script src="/static/controls.js?v={{VERSION}}"></script>
+  <script src="/static/app.js?v={{VERSION}}"></script>
 </body>
 </html>

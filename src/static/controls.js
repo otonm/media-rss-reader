@@ -43,7 +43,7 @@
         statusBody.innerHTML =
           '<div class="status-error">Failed to reach status endpoint</div>';
       });
-    requestAnimationFrame(() => collapseControls());
+    collapseControls();
   }
 
   function tryParse(text) {
@@ -139,37 +139,13 @@
       const next = document.getElementById("btn-show-seen").getAttribute("aria-pressed") !== "true";
       setShowSeen(next);
     });
-    const btnStatus = document.getElementById("btn-status");
-    const diag = document.createElement("div");
-    diag.id = "__diag_btn_status";
-    diag.textContent = btnStatus ? "btn-status OK" : "btn-status NULL";
-    Object.assign(diag.style, {
-      position: "fixed", top: "10px", right: "10px", zIndex: "99999",
-      background: btnStatus ? "green" : "red", color: "white",
-      padding: "0.5rem", fontSize: "1rem", borderRadius: "4px"
+    document.getElementById("btn-status").addEventListener("click", () => {
+      if (statusModal.classList.contains("open")) {
+        closeStatusModal();
+      } else {
+        openStatusModal();
+      }
     });
-    document.body.appendChild(diag);
-    try {
-      btnStatus.addEventListener("click", () => {
-        const indicator = document.createElement("div");
-        indicator.textContent = "TAP " + Date.now();
-        Object.assign(indicator.style, {
-          position: "fixed", top: "50%", left: "50%", transform: "translate(-50%,-50%)",
-          background: "red", color: "white", padding: "1rem", zIndex: "99999",
-          fontSize: "2rem", borderRadius: "8px", pointerEvents: "none"
-        });
-        document.body.appendChild(indicator);
-        setTimeout(() => indicator.remove(), 2000);
-        if (statusModal.classList.contains("open")) {
-          closeStatusModal();
-        } else {
-          openStatusModal();
-        }
-      });
-    } catch (e) {
-      diag.textContent = "btn-status err: " + e.message;
-      diag.style.background = "orange";
-    }
     document.getElementById("status-modal-close").addEventListener("click", closeStatusModal);
     statusModal.addEventListener("click", (e) => {
       if (e.target === statusModal) closeStatusModal();
