@@ -1,7 +1,6 @@
 import json
 
 import aiosqlite
-import pytest
 
 from src.media.availability import mark_url_dead_and_maybe_drop
 
