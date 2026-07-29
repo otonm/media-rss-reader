@@ -277,7 +277,7 @@ async def test_proxy_cache_miss(client: AsyncClient, tmp_path: object, monkeypat
     assert (tmp_path / f"{fname}.meta").read_text() == "image/jpeg"  # type: ignore[operator]
 
 
-async def test_proxy_upstream_error(client: AsyncClient, tmp_path: object, monkeypatch: object) -> None:
+async def test_proxy_upstream_error(client: AsyncClient, tmp_path: object, monkeypatch: object, db: aiosqlite.Connection) -> None:
     import httpx
     import respx
 
@@ -294,6 +294,9 @@ async def test_proxy_upstream_error(client: AsyncClient, tmp_path: object, monke
         await real_client.aclose()
 
     assert resp.status_code == 502
+    async with db.execute("SELECT url FROM dead_urls") as cur:
+        rows = await cur.fetchall()
+    assert [r[0] for r in rows] == [url]
 
 
 async def test_proxy_404_marks_item_unavailable(

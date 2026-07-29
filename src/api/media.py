@@ -12,6 +12,7 @@ from fastapi.responses import FileResponse
 
 from src.config import settings
 from src.db.connection import get_db
+from src.media.availability import mark_url_dead_and_maybe_drop
 from src.media.cache import cache_read, cache_read_meta, cache_stream_write
 from src.media.prefetch import prefetch_ahead
 from src.scheduler import get_http_client, get_last_opml_sync
@@ -72,11 +73,9 @@ async def _mark_dead(url: str, item_id: str | None, db: aiosqlite.Connection | N
     if db is None:
         return
     try:
-        from src.media.availability import mark_url_dead_and_maybe_drop
-
         await mark_url_dead_and_maybe_drop(url, item_id, db)
     except Exception as exc:  # pragma: no cover
-        logger.debug("mark_url_dead_and_maybe_drop failed for %s: %s", url, exc)
+        logger.warning("mark_url_dead_and_maybe_drop failed for %s: %s", url, exc)
 
 
 @router.post("/prefetch/hint")
