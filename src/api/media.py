@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import logging
 from pathlib import Path
 from typing import Annotated, Any
 
@@ -17,24 +18,30 @@ from src.scheduler import get_http_client, get_last_opml_sync
 
 router = APIRouter()
 
+logger = logging.getLogger(__name__)
+
 _DbDep = Annotated[aiosqlite.Connection, Depends(get_db)]
 
 
 @router.get("/media/proxy", response_model=None)
-async def proxy_media(url: str = Query(...)) -> FileResponse:
+async def proxy_media(
+    url: str = Query(...),
+    item_id: str | None = Query(None),
+    db: _DbDep = None,  # type: ignore[assignment]
+) -> FileResponse:
     """Cache-through proxy for media files.
 
     On a cache hit: serve the file directly via FileResponse (zero-copy sendfile).
     On a cache miss: stream from upstream to the cache file (no in-memory buffer),
     then serve the cached file. This keeps memory usage O(chunk_size) regardless
     of the media file size.
+
+    On upstream non-success, mark `url` as dead and (if every URL of `item_id`
+    is now dead) drop the item from the DB. Errors from the helper are logged
+    and swallowed -- they must not mask the 502 the client deserves.
     """
     path = cache_read(url)
     if path is not None:
-        # Cached file is named by sha256(url) with no extension, so FileResponse
-        # would otherwise infer application/octet-stream and the browser would
-        # refuse to e.g. animate a cached GIF. The sidecar written at cache
-        # time holds the upstream Content-Type.
         media_type = cache_read_meta(url)
         return FileResponse(str(path), media_type=media_type)
 
@@ -42,6 +49,8 @@ async def proxy_media(url: str = Query(...)) -> FileResponse:
     try:
         async with client.stream("GET", url, follow_redirects=True, timeout=30) as response:
             if not response.is_success:
+                await response.aread()
+                await _mark_dead(url, item_id, db)
                 raise HTTPException(status_code=502, detail="upstream error")
             content_type = response.headers.get("content-type", "application/octet-stream")
             path = await cache_stream_write(url, response.aiter_bytes(65536), content_type)
@@ -51,6 +60,23 @@ async def proxy_media(url: str = Query(...)) -> FileResponse:
         raise HTTPException(status_code=502, detail="upstream fetch failed") from exc
 
     return FileResponse(str(path), media_type=content_type)
+
+
+async def _mark_dead(url: str, item_id: str | None, db: aiosqlite.Connection | None) -> None:
+    """Best-effort: mark url as dead via the availability helper.
+
+    db is injected via the FastAPI dependency and may be None if the proxy is
+    called from a context where the dependency didn't fire (defensive -- should
+    not happen in production). Failures are logged and swallowed.
+    """
+    if db is None:
+        return
+    try:
+        from src.media.availability import mark_url_dead_and_maybe_drop
+
+        await mark_url_dead_and_maybe_drop(url, item_id, db)
+    except Exception as exc:  # pragma: no cover
+        logger.debug("mark_url_dead_and_maybe_drop failed for %s: %s", url, exc)
 
 
 @router.post("/prefetch/hint")

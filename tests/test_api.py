@@ -296,6 +296,85 @@ async def test_proxy_upstream_error(client: AsyncClient, tmp_path: object, monke
     assert resp.status_code == 502
 
 
+async def test_proxy_404_marks_item_unavailable(
+    client: AsyncClient,
+    tmp_path: object,
+    monkeypatch: object,
+    db: aiosqlite.Connection,
+) -> None:
+    """When the upstream returns 404, the proxy must mark the item's URL
+    dead so the post can be dropped once every URL of its gallery is dead."""
+    import httpx
+    import respx
+
+    import src.media.cache as cache_mod
+
+    monkeypatch.setattr(cache_mod.settings, "cache_dir", str(tmp_path))
+
+    feed_id = "f1"
+    item_id = "i1"
+    url = "http://example.com/broken.jpg"
+    await db.execute(
+        "INSERT INTO feeds (id, url, title) VALUES (?, ?, ?)",
+        (feed_id, "http://feed.example.com", "F"),
+    )
+    await db.execute(
+        """INSERT INTO items (id, feed_id, guid, title, media_url, media_type)
+           VALUES (?, ?, ?, ?, ?, 'image')""",
+        (item_id, feed_id, "g1", "T", url),
+    )
+    await db.commit()
+
+    with respx.mock:
+        respx.get(url).mock(return_value=httpx.Response(404))
+        real_client = httpx.AsyncClient()
+        monkeypatch.setattr("src.api.media.get_http_client", lambda: real_client)
+        resp = await client.get(f"/api/media/proxy?url={url}&item_id={item_id}")
+        await real_client.aclose()
+
+    assert resp.status_code == 502
+    async with db.execute("SELECT url FROM dead_urls") as cur:
+        rows = await cur.fetchall()
+    assert [r[0] for r in rows] == [url]
+    # Single-media post: all (1) URLs are dead -> item should be gone.
+    async with db.execute("SELECT id FROM items WHERE id = ?", (item_id,)) as cur:
+        assert await cur.fetchone() is None
+    async with db.execute(
+        "SELECT guid FROM unavailable_guids WHERE feed_id = ?", (feed_id,)
+    ) as cur:
+        rows = await cur.fetchall()
+    assert [r[0] for r in rows] == ["g1"]
+
+
+async def test_proxy_404_without_item_id_still_returns_502(
+    client: AsyncClient,
+    tmp_path: object,
+    monkeypatch: object,
+    db: aiosqlite.Connection,
+) -> None:
+    """Backwards compat: item_id is optional, missing item_id must not
+    break the 502 contract -- the URL still gets marked dead."""
+    import httpx
+    import respx
+
+    import src.media.cache as cache_mod
+
+    monkeypatch.setattr(cache_mod.settings, "cache_dir", str(tmp_path))
+    url = "http://example.com/broken.jpg"
+
+    with respx.mock:
+        respx.get(url).mock(return_value=httpx.Response(404))
+        real_client = httpx.AsyncClient()
+        monkeypatch.setattr("src.api.media.get_http_client", lambda: real_client)
+        resp = await client.get(f"/api/media/proxy?url={url}")
+        await real_client.aclose()
+
+    assert resp.status_code == 502
+    async with db.execute("SELECT url FROM dead_urls") as cur:
+        rows = await cur.fetchall()
+    assert [r[0] for r in rows] == [url]
+
+
 # ---------------------------------------------------------------------------
 # POST /api/prefetch/hint tests
 # ---------------------------------------------------------------------------
