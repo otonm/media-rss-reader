@@ -32,3 +32,5 @@ venv/
 
 # Runtime files
 feeds.opml
+
+examples/
