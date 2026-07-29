@@ -1,6 +1,7 @@
 """FastAPI application entry point."""
 
 import logging
+import time
 from collections.abc import AsyncGenerator
 from contextlib import asynccontextmanager
 from pathlib import Path
@@ -36,12 +37,10 @@ def _build_html() -> str:
         f"--image-autoscroll-delay-s:{settings.image_autoscroll_delay_s};"
         f"}}</style>"
     )
-    try:
-        from importlib.metadata import version as _get_version
-
-        v = _get_version("media-rss-reader")
-    except Exception:
-        v = "dev"
+    # ponytail: per-startup token — the constant package version let browser/SW
+    # caches serve stale assets across deploys. Content hash if bytes must
+    # survive restarts.
+    v = str(int(time.time()))
     return _index_path.read_text().replace("<!-- CONFIG_VARS -->", style).replace("{{VERSION}}", v)
 
 
