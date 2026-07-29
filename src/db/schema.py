@@ -49,6 +49,28 @@ CREATE TABLE IF NOT EXISTS seen_guids (
 )
 """
 
+# dead_urls records every media URL we've ever seen return 404. Used to
+# answer "are all URLs of this item dead?" without re-fetching anything.
+# Grows monotonically; not GC'd.
+_CREATE_DEAD_URLS = """
+CREATE TABLE IF NOT EXISTS dead_urls (
+    url       TEXT PRIMARY KEY,
+    marked_at TIMESTAMP NOT NULL DEFAULT (datetime('now'))
+)
+"""
+
+# unavailable_guids tombstones (feed_id, guid) pairs whose item row has
+# been deleted because every media URL was dead. _refresh_feed reads
+# this to skip re-insert on the next feed poll. Cascade on feed delete.
+_CREATE_UNAVAILABLE_GUIDS = """
+CREATE TABLE IF NOT EXISTS unavailable_guids (
+    feed_id  TEXT NOT NULL REFERENCES feeds(id) ON DELETE CASCADE,
+    guid     TEXT NOT NULL,
+    marked_at TIMESTAMP NOT NULL DEFAULT (datetime('now')),
+    PRIMARY KEY (feed_id, guid)
+)
+"""
+
 # Indexes to support the common query patterns: filter by feed, sort by date,
 # filter unseen, and prune by fetched_at.
 _CREATE_INDEXES = [
@@ -63,6 +85,8 @@ async def create_schema(db: aiosqlite.Connection) -> None:
     await db.execute(_CREATE_FEEDS)
     await db.execute(_CREATE_ITEMS)
     await db.execute(_CREATE_SEEN_GUIDS)
+    await db.execute(_CREATE_DEAD_URLS)
+    await db.execute(_CREATE_UNAVAILABLE_GUIDS)
     for sql in _CREATE_INDEXES:
         await db.execute(sql)
     await db.commit()

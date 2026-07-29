@@ -31,6 +31,21 @@ MIGRATIONS: list[str] = [
     "CREATE TABLE IF NOT EXISTS auth_config (key TEXT PRIMARY KEY, value TEXT NOT NULL)",
     # v5: media_json stores all slides of a gallery item as a JSON array of {url, type}
     "ALTER TABLE items ADD COLUMN media_json TEXT",
+    # v6: dead_urls table — tracks media URLs that have returned 404
+    (
+        "CREATE TABLE IF NOT EXISTS dead_urls ("
+        "url TEXT PRIMARY KEY, "
+        "marked_at TIMESTAMP NOT NULL DEFAULT (datetime('now')))"
+    ),
+    # v7: unavailable_guids tombstone — blocks re-insert of items whose
+    # every media URL is in dead_urls
+    (
+        "CREATE TABLE IF NOT EXISTS unavailable_guids ("
+        "feed_id TEXT NOT NULL REFERENCES feeds(id) ON DELETE CASCADE, "
+        "guid TEXT NOT NULL, "
+        "marked_at TIMESTAMP NOT NULL DEFAULT (datetime('now')), "
+        "PRIMARY KEY (feed_id, guid))"
+    ),
 ]
 
 
