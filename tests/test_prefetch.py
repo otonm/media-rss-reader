@@ -20,7 +20,7 @@ async def test_warm_on_cache_miss(tmp_path: Path, monkeypatch: pytest.MonkeyPatc
             return_value=httpx.Response(200, content=b"imgbytes", headers={"content-type": "image/jpeg"})
         )
         async with httpx.AsyncClient() as client:
-            await _warm(url, client)
+            await _warm("item1", url, client, None)
 
     path = cache_mod.cache_read(url)
     assert path is not None
@@ -41,7 +41,7 @@ async def test_warm_skips_if_cached(tmp_path: Path, monkeypatch: pytest.MonkeyPa
     with respx.mock:
         # If _warm makes any request, respx will raise NoMatchFound
         async with httpx.AsyncClient() as client:
-            await _warm(url, client)  # should not make a request
+            await _warm("item1", url, client, None)  # should not make a request
 
     # Cache is still intact
     path = cache_mod.cache_read(url)
@@ -51,15 +51,24 @@ async def test_warm_skips_if_cached(tmp_path: Path, monkeypatch: pytest.MonkeyPa
 
 async def test_warm_non_success_response(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     """_warm does not cache on non-2xx responses."""
+    from src.db.connection import open_db
+    from src.db.migrations import run_migrations
+    from src.db.schema import create_schema
+
     monkeypatch.setattr(cache_mod.settings, "cache_dir", str(tmp_path))
     url = "http://example.com/missing.jpg"
+
+    conn = await open_db(":memory:")
+    await create_schema(conn)
+    await run_migrations(conn)
 
     with respx.mock:
         respx.get(url).mock(return_value=httpx.Response(404))
         async with httpx.AsyncClient() as client:
-            await _warm(url, client)
+            await _warm("item1", url, client, conn)
 
     assert cache_mod.cache_read(url) is None
+    await conn.close()
 
 
 async def test_prefetch_ahead_fires_tasks(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:

@@ -18,13 +18,16 @@ import aiosqlite
 import httpx
 
 from src.config import settings
+from src.media.availability import mark_url_dead_and_maybe_drop
 from src.media.cache import cache_read, cache_stream_write
 
 logger = logging.getLogger(__name__)
 
 
-async def _warm(url: str, client: httpx.AsyncClient) -> None:
-    """Fetch and cache one URL if it is not already cached. Silent on errors."""
+async def _warm(item_id: str, url: str, client: httpx.AsyncClient, db: aiosqlite.Connection) -> None:
+    """Fetch and cache one URL if it is not already cached. On upstream
+    non-success, mark the URL dead via the availability helper so a fully-dead
+    post can be dropped. Silent on errors."""
     if cache_read(url) is not None:
         return  # already cached — nothing to do
     try:
@@ -32,6 +35,12 @@ async def _warm(url: str, client: httpx.AsyncClient) -> None:
             if response.is_success:
                 content_type = response.headers.get("content-type", "application/octet-stream")
                 await cache_stream_write(url, response.aiter_bytes(65536), content_type)
+            else:
+                await response.aread()
+                try:
+                    await mark_url_dead_and_maybe_drop(url, item_id, db)
+                except Exception as exc:  # pragma: no cover
+                    logger.warning("mark_url_dead_and_maybe_drop failed for %s: %s", url, exc)
     except Exception as exc:  # pragma: no cover
         logger.debug("prefetch failed for %s: %s", url, exc)
 
@@ -45,7 +54,7 @@ async def warm_startup_cache(db: aiosqlite.Connection, client: httpx.AsyncClient
     """
     try:
         async with db.execute(
-            "SELECT media_url FROM items ORDER BY pub_date DESC LIMIT ?",
+            "SELECT id, media_url FROM items ORDER BY pub_date DESC LIMIT ?",
             (settings.cache_max_items,),
         ) as cur:
             rows = await cur.fetchall()
@@ -55,12 +64,12 @@ async def warm_startup_cache(db: aiosqlite.Connection, client: httpx.AsyncClient
 
     sem = asyncio.Semaphore(10)
 
-    async def _bounded_warm(url: str) -> None:
+    async def _bounded_warm(item_id: str, url: str) -> None:
         async with sem:
-            await _warm(url, client)
+            await _warm(item_id, url, client, db)
 
     for row in rows:
-        asyncio.create_task(_bounded_warm(row["media_url"]))
+        asyncio.create_task(_bounded_warm(row["id"], row["media_url"]))
         # Small sleep between task creation to spread the initial burst.
         await asyncio.sleep(0.1)
 
@@ -73,7 +82,7 @@ async def prefetch_ahead(item_id: str, db: aiosqlite.Connection, client: httpx.A
     Each warm task runs independently; errors are silently ignored.
     """
     async with db.execute(
-        """SELECT media_url FROM items
+        """SELECT id, media_url FROM items
            WHERE pub_date < (SELECT pub_date FROM items WHERE id = ?)
            ORDER BY pub_date DESC
            LIMIT ?""",
@@ -81,4 +90,4 @@ async def prefetch_ahead(item_id: str, db: aiosqlite.Connection, client: httpx.A
     ) as cur:
         rows = await cur.fetchall()
     for row in rows:
-        asyncio.create_task(_warm(row["media_url"], client))
+        asyncio.create_task(_warm(row["id"], row["media_url"], client, db))
