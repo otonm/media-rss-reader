@@ -277,7 +277,12 @@ async def test_proxy_cache_miss(client: AsyncClient, tmp_path: object, monkeypat
     assert (tmp_path / f"{fname}.meta").read_text() == "image/jpeg"  # type: ignore[operator]
 
 
-async def test_proxy_upstream_error(client: AsyncClient, tmp_path: object, monkeypatch: object, db: aiosqlite.Connection) -> None:
+async def test_proxy_upstream_error(
+    client: AsyncClient,
+    tmp_path: object,
+    monkeypatch: object,
+    db: aiosqlite.Connection,
+) -> None:
     import httpx
     import respx
 
