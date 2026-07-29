@@ -79,7 +79,7 @@
       }
       el.addEventListener(item.media_type === "video" ? "loadeddata" : "load", () => resolve(el), { once: true });
       el.addEventListener("error", () => reject(new Error("media load failed")), { once: true });
-      el.src = `/api/media/proxy?url=${encodeURIComponent(item.media_url)}`;
+      el.src = `/api/media/proxy?url=${encodeURIComponent(item.media_url)}&item_id=${encodeURIComponent(item.id)}`;
     });
   }
 

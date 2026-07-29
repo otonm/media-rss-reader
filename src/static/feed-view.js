@@ -117,7 +117,7 @@
         el = firstEl;
       } else {
         el = m.type === "video" ? document.createElement("video") : new Image();
-        el.src = `/api/media/proxy?url=${encodeURIComponent(m.url)}`;
+        el.src = `/api/media/proxy?url=${encodeURIComponent(m.url)}&item_id=${encodeURIComponent(item.id)}`;
       }
       if (m.type === "video") wireVideo(el);
       el.addEventListener("error", () => removeSlide(wrap, gallery, dots, slide), { once: true });
