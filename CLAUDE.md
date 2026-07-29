@@ -354,6 +354,7 @@ The UI has two mutually exclusive view modes. The active mode is stored in `loca
 |---|---|
 | `j` / `↓` | Next item |
 | `k` / `↑` | Previous item |
+| `←` / `→` | Previous / next gallery slide (falls through to previous / next item at the edges) |
 | `a` | Toggle auto-scroll |
 | `s` | Toggle slideshow mode |
 | `m` | Toggle mute |

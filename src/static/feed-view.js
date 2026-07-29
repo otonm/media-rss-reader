@@ -23,6 +23,7 @@
 //   setCurrentMedia(el)
 //   activeMediaEl(wrap)   // media of the active gallery slide (or single media)
 //   advanceOrNext(wrap)   // next gallery slide, or snapToNext on the last one
+//   galleryNext(), galleryPrev()  // ←/→ slide stepping on the current item
 // ---------------------------------------------------------------------------
 (function () {
   "use strict";
@@ -192,6 +193,34 @@
     snapToNext();
   }
 
+  // The wrap of the item the feed is currently snapped to, or null.
+  function currentWrap() {
+    if (!state.feed) return null;
+    const item = MRR.itemStore.getItemAt(MRR.itemStore.getCurrentIndex());
+    return item ? state.feed.querySelector(`.media-item[data-id="${item.id}"]`) : null;
+  }
+
+  // Keyboard →: next gallery slide, or next feed item on the last slide.
+  function galleryNext() {
+    const wrap = currentWrap();
+    if (wrap) advanceOrNext(wrap);
+    else snapToNext();
+  }
+
+  // Keyboard ←: previous gallery slide, or previous feed item on the first.
+  function galleryPrev() {
+    const wrap = currentWrap();
+    const gallery = wrap && wrap.querySelector(".gallery");
+    if (gallery) {
+      const idx = Math.round(gallery.scrollLeft / gallery.clientWidth);
+      if (idx > 0) {
+        gallery.scrollTo({ left: (idx - 1) * gallery.clientWidth, behavior: "smooth" });
+        return;
+      }
+    }
+    snapToPrev();
+  }
+
   // Add the `.seen` class and a small corner badge to a wrap. Idempotent:
   // calling it twice does not stack badges.
   function tagAsSeen(wrap) {
@@ -289,5 +318,7 @@
     setCurrentMedia,
     activeMediaEl,
     advanceOrNext,
+    galleryNext,
+    galleryPrev,
   };
 })();

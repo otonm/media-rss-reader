@@ -120,6 +120,14 @@
           e.preventDefault();
           MRR.feedView.snapToPrev();
           break;
+        case "ArrowLeft":
+          e.preventDefault();
+          MRR.feedView.galleryPrev();
+          break;
+        case "ArrowRight":
+          e.preventDefault();
+          MRR.feedView.galleryNext();
+          break;
         case "a":
           e.preventDefault();
           document.getElementById("btn-autoscroll").click();
