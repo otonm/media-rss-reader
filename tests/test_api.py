@@ -420,6 +420,37 @@ async def test_reddit_feeds_status_upstream_error(
     assert resp.status_code == 500
 
 
+async def test_reddit_feeds_status_pending_status(
+    client: AsyncClient, mock_http: respx.MockRouter, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    upstream_json = {
+        "feeds": [
+            {
+                "name": "EarthPorn",
+                "last_status": "pending",
+                "last_fetch": "2026-07-27T14:02:00.123456+00:00",
+                "last_item_count": 5,
+                "total_items": 42,
+            },
+            {
+                "name": "Python",
+                "last_status": "success",
+                "last_fetch": "2026-07-27T14:02:02.123456+00:00",
+                "last_item_count": 3,
+                "total_items": 18,
+            },
+        ],
+        "last_run": "2026-07-27T14:02:05.654321+00:00",
+    }
+    mock_http.get("http://127.0.0.1:9090/status").mock(return_value=httpx.Response(200, json=upstream_json))
+    real_client = httpx.AsyncClient()
+    monkeypatch.setattr("src.api.reddit_feeds.get_http_client", lambda: real_client)
+    resp = await client.get("/api/reddit-feeds/status")
+    await real_client.aclose()
+    assert resp.status_code == 200
+    assert resp.json() == upstream_json
+
+
 @pytest.mark.asyncio
 async def test_items_interleaved_across_feeds(client: AsyncClient, db: aiosqlite.Connection) -> None:
     """Items from multiple feeds should be interleaved round-robin, oldest first."""

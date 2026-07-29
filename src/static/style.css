@@ -383,6 +383,7 @@ html, body {
 
 .status-dot.success { background: #4caf50; }
 .status-dot.error   { background: #f44336; }
+.status-dot.pending { background: var(--accent); animation: spin 1.5s linear infinite; }
 
 .status-footer {
   margin-top: 1rem;
