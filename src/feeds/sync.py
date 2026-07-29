@@ -62,10 +62,23 @@ async def _refresh_feed(
 
     INSERT OR IGNORE on (feed_id, guid) silently skips items that are
     already in the database, so this function is safe to call repeatedly.
+    Items whose (feed_id, guid) is in unavailable_guids are skipped before
+    the INSERT so a previously-dropped dead post is never re-added.
     """
     items = await fetch_feed(url, client)
+
+    async with db.execute(
+        "SELECT guid FROM unavailable_guids WHERE feed_id = ?", (feed_id,)
+    ) as cur:
+        dead_guids = {row["guid"] for row in await cur.fetchall()}
+
     inserted = 0
     for item in items:
+        if item["guid"] in dead_guids:
+            logger.debug(
+                "Skipping tombstoned item guid=%s in feed %s", item["guid"], url
+            )
+            continue
         logger.debug(f"Storing item {item['title']} with media URL {item['media_url']} and ID {item['id']}")
         cursor = await db.execute(
             """INSERT OR IGNORE INTO items

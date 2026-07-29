@@ -204,3 +204,40 @@ async def test_prune_unseen_when_over_limit_after_seen_exhausted(db: aiosqlite.C
     assert len(remaining) == 3
     for uid in ids[2:]:
         assert uid in remaining
+
+
+async def test_refresh_skips_unavailable_guids(
+    db: aiosqlite.Connection, tmp_path: Path
+) -> None:
+    """Items whose (feed_id, guid) is in unavailable_guids must not be
+    re-inserted by a subsequent feed refresh."""
+    f = tmp_path / "feeds.opml"
+    f.write_text(_OPML)
+
+    # Seed: feed + tombstone for guid g1 (no item row — simulates prior drop).
+    feed_id = hashlib.sha256(b"https://example.com/feed.xml").hexdigest()
+    await db.execute(
+        "INSERT INTO feeds (id, url, title) VALUES (?, ?, ?)",
+        (feed_id, "https://example.com/feed.xml", "Feed"),
+    )
+    await db.execute(
+        "INSERT INTO unavailable_guids (feed_id, guid) VALUES (?, ?)",
+        (feed_id, "g1"),
+    )
+    await db.commit()
+
+    with respx.mock:
+        respx.get("https://example.com/feed.xml").mock(return_value=httpx.Response(200, text=_RSS))
+        async with httpx.AsyncClient() as client:
+            await refresh_all_feeds(db, client)
+
+    async with db.execute("SELECT id, guid FROM items") as cur:
+        rows = await cur.fetchall()
+    # g1 is in the RSS feed but tombstoned → not inserted.
+    assert rows == []
+    # Tombstone is untouched.
+    async with db.execute(
+        "SELECT guid FROM unavailable_guids WHERE feed_id = ?", (feed_id,)
+    ) as cur:
+        rows = await cur.fetchall()
+    assert [r[0] for r in rows] == ["g1"]
