@@ -72,7 +72,11 @@ function installItemStore(ctx, items, gifBuffer = TINY_GIF_NO_GCE) {
     mutedDefault: true,
     imageAutoscrollDelayMs: MIN_DWELL_MS,
   };
-  ctx.window.MRR.feedView = { snapToNext: () => {} };
+  ctx.window.MRR.feedView = {
+    snapToNext: () => {},
+    advanceOrNext: (wrap) => { ctx.window.MRR.feedView.snapToNext(); },
+    activeMediaEl: (wrap) => wrap.children[0] || null,
+  };
   ctx.fetch = (url) => {
     if (url.startsWith("/api/media/proxy?")) {
       return Promise.resolve({

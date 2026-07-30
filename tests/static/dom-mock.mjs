@@ -204,22 +204,25 @@ function makeElement(tag) {
       }
     },
     querySelector(selector) {
+      const s = stripScope(selector);
       // Support the small subset used in the production code:
+      //   ":scope > tag"           — direct child by tag (no :scope support in mock)
       //   ".class"                 — first child with class
       //   "tag"                    — first child matching tag
       //   ".class[data-id='...']"  — class + exact data-id value
       for (const c of this.children) {
-        if (matchesSelector(c, selector)) return c;
-        const found = c.querySelector?.(selector);
+        if (matchesSelector(c, s)) return c;
+        const found = c.querySelector?.(s);
         if (found) return found;
       }
       return null;
     },
     querySelectorAll(selector) {
+      const s = stripScope(selector);
       const out = [];
       const visit = (el) => {
         for (const c of el.children) {
-          if (matchesSelector(c, selector)) out.push(c);
+          if (matchesSelector(c, s)) out.push(c);
           visit(c);
         }
       };
@@ -256,6 +259,12 @@ function makeElement(tag) {
         clearRect: () => {},
       };
     },
+    closest(selector) {
+      for (let el = this; el; el = el.parentNode) {
+        if (matchesSelector(el, selector)) return el;
+      }
+      return null;
+    },
     cloneNode() { return makeElement(this.tagName.toLowerCase()); },
   };
   return el;
@@ -269,6 +278,9 @@ function matches(el, selector) {
     default: return false;
   }
 }
+
+// Strip :scope pseudo-class from a compound selector so ":scope > video" becomes "> video".
+function stripScope(s) { return s.replace(/:scope\s*/g, "").replace(/>\s*/g, ""); }
 
 // Supports the small subset of CSS selectors used by the production code.
 function matchesSelector(el, selector) {
