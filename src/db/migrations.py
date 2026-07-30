@@ -9,9 +9,12 @@ To add a migration: append one SQL string to MIGRATIONS. Never edit or
 reorder existing entries — doing so would corrupt the version counter.
 """
 
+import logging
 import sqlite3
 
 import aiosqlite
+
+logger = logging.getLogger(__name__)
 
 MIGRATIONS: list[str] = [
     # v1: index on fetched_at to support age-based pruning queries
@@ -58,11 +61,14 @@ async def run_migrations(db: aiosqlite.Connection) -> None:
     async with db.execute("PRAGMA user_version") as cur:
         row = await cur.fetchone()
     current_version: int = row[0]
+    logger.debug(f"run_migrations current_version={current_version}")
 
     pending = MIGRATIONS[current_version:]
     if not pending:
+        logger.debug("run_migrations no pending migrations")
         return
 
+    logger.debug(f"run_migrations applying {len(pending)} pending migration(s)")
     for i, sql in enumerate(pending, start=current_version + 1):
         try:
             await db.execute(sql)
@@ -72,7 +78,9 @@ async def run_migrations(db: aiosqlite.Connection) -> None:
             # create_schema (which ships the latest schema in CREATE TABLE).
             if "duplicate column name" not in str(exc):
                 raise
+            logger.debug(f"run_migrations step {i} ignored duplicate column error")
         # Commit version update immediately so a crash mid-migration leaves a
         # consistent state — partially applied migrations are not retried.
         await db.execute(f"PRAGMA user_version = {i}")
         await db.commit()
+        logger.debug(f"run_migrations applied step {i}, user_version now {i}")

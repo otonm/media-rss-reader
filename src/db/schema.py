@@ -4,7 +4,11 @@ All statements use IF NOT EXISTS so this module is safe to call on every
 startup without checking whether the schema already exists.
 """
 
+import logging
+
 import aiosqlite
+
+logger = logging.getLogger(__name__)
 
 # feeds stores one row per RSS feed URL found in the OPML file.
 # id is sha256(url) so it is stable across restarts without a sequence counter.
@@ -83,6 +87,7 @@ _CREATE_INDEXES = [
 
 async def create_schema(db: aiosqlite.Connection) -> None:
     """Create tables and indexes if they do not already exist."""
+    logger.debug("create_schema creating tables and indexes")
     await db.execute(_CREATE_FEEDS)
     await db.execute(_CREATE_ITEMS)
     await db.execute(_CREATE_SEEN_GUIDS)
@@ -91,3 +96,4 @@ async def create_schema(db: aiosqlite.Connection) -> None:
     for sql in _CREATE_INDEXES:
         await db.execute(sql)
     await db.commit()
+    logger.debug("create_schema done")

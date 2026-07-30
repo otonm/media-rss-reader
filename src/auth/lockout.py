@@ -5,8 +5,11 @@ it is immune to system clock changes. State is lost on process restart —
 acceptable for a single-process deployment.
 """
 
+import logging
 import time
 from dataclasses import dataclass, field
+
+logger = logging.getLogger(__name__)
 
 
 @dataclass
@@ -27,9 +30,11 @@ class LockoutTracker:
         if entry is None:
             return False
         if entry.locked_until > time.monotonic():
+            logger.debug(f"is_locked ip={ip} locked=True")
             return True
         # Lockout window has elapsed — reset so failures don't accumulate forever.
         if entry.failures >= self._max_attempts:
+            logger.debug(f"is_locked ip={ip} lockout elapsed, resetting counter")
             entry.failures = 0
             entry.locked_until = 0.0
         return False
@@ -40,7 +45,11 @@ class LockoutTracker:
         entry.failures += 1
         if entry.failures >= self._max_attempts:
             entry.locked_until = time.monotonic() + self._lockout_seconds
+            logger.debug(f"record_failure ip={ip} now locked ({entry.failures} failures)")
+        else:
+            logger.debug(f"record_failure ip={ip} failures={entry.failures}")
 
     def reset(self, ip: str) -> None:
         """Clear all failure state for this IP (call on successful login)."""
         self._entries.pop(ip, None)
+        logger.debug(f"reset ip={ip} cleared failures")

@@ -1,5 +1,6 @@
 """GET /api/feeds — list all feeds with item counts."""
 
+import logging
 from typing import Annotated, Any
 
 import aiosqlite
@@ -7,6 +8,7 @@ from fastapi import APIRouter, Depends
 
 from src.db.connection import get_db
 
+logger = logging.getLogger(__name__)
 router = APIRouter()
 
 
@@ -17,6 +19,7 @@ async def list_feeds(db: Annotated[aiosqlite.Connection, Depends(get_db)]) -> li
     The LEFT JOIN + conditional COUNT gives both counts in one query,
     avoiding a second round-trip per feed.
     """
+    logger.debug("list_feeds querying all feeds with counts")
     async with db.execute(
         """SELECT f.id, f.title, f.url, f.last_fetched_at,
                   COUNT(i.id)                                  AS item_count,
@@ -26,4 +29,5 @@ async def list_feeds(db: Annotated[aiosqlite.Connection, Depends(get_db)]) -> li
            GROUP BY f.id"""
     ) as cur:
         rows = await cur.fetchall()
+    logger.debug(f"list_feeds returned {len(rows)} feed(s)")
     return [dict(row) for row in rows]

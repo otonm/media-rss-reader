@@ -4,12 +4,15 @@ open_db() is used by the scheduler (persistent connection held for the process l
 get_db() is a FastAPI dependency that opens and closes a connection per request.
 """
 
+import logging
 from collections.abc import AsyncIterator
 from pathlib import Path
 
 import aiosqlite
 
 from src.config import settings
+
+logger = logging.getLogger(__name__)
 
 
 async def open_db(path: str | None = None) -> aiosqlite.Connection:
@@ -19,6 +22,7 @@ async def open_db(path: str | None = None) -> aiosqlite.Connection:
     can start cleanly even when the data volume is empty.
     """
     path_str = path or settings.db_path
+    logger.debug(f"open_db opening {path_str}")
     Path(path_str).parent.mkdir(parents=True, exist_ok=True)
     db = await aiosqlite.connect(path_str)
     # Row objects behave like dicts — access columns by name throughout the codebase.
@@ -32,8 +36,10 @@ async def open_db(path: str | None = None) -> aiosqlite.Connection:
 
 async def get_db() -> AsyncIterator[aiosqlite.Connection]:
     """FastAPI dependency: yield a short-lived connection, close on request teardown."""
+    logger.debug("get_db opening request-scoped connection")
     db = await open_db()
     try:
         yield db
     finally:
+        logger.debug("get_db closing request-scoped connection")
         await db.close()

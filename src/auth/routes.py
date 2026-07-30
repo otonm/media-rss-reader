@@ -1,6 +1,7 @@
 """Authentication routes: /login, /setup, /logout."""
 
 import html as _html
+import logging
 import secrets
 from pathlib import Path
 from typing import Annotated
@@ -23,6 +24,7 @@ from src.auth.session import (
 from src.config import settings
 from src.db.connection import get_db
 
+logger = logging.getLogger(__name__)
 router = APIRouter()
 
 _static = Path(__file__).parent.parent / "static"
@@ -90,8 +92,10 @@ async def post_login(
     db: _DbDep = None,  # type: ignore[assignment]
 ) -> Response:
     ip = _client_ip(request)
+    logger.debug(f"post_login ip={ip} username_provided={bool(username)}")
 
     if _lockout.is_locked(ip):
+        logger.debug(f"post_login ip={ip} rejected: locked out")
         return Response("Too many failed attempts. Try again later.", status_code=429)
 
     username_ok = secrets.compare_digest(username, settings.auth_username)
@@ -99,11 +103,13 @@ async def post_login(
 
     if not (username_ok and password_ok):
         _lockout.record_failure(ip)
+        logger.debug(f"post_login ip={ip} invalid credentials")
         return Response("Invalid credentials.", status_code=401)
 
     stored_secret = await _load_totp_secret(db)
 
     if stored_secret is None:
+        logger.debug(f"post_login ip={ip} no TOTP configured, redirecting to /setup")
         new_secret = totp_module.generate_secret()
         response = RedirectResponse("/setup", status_code=303)
         _set_setup_cookie(response, new_secret)
@@ -111,9 +117,11 @@ async def post_login(
 
     if not totp_module.verify_code(stored_secret, totp_code):
         _lockout.record_failure(ip)
+        logger.debug(f"post_login ip={ip} TOTP verification failed")
         return Response("Invalid credentials.", status_code=401)
 
     _lockout.reset(ip)
+    logger.debug(f"post_login ip={ip} success, issuing session cookie")
     response = RedirectResponse("/", status_code=303)
     _set_session_cookie(response)
     return response
@@ -121,14 +129,18 @@ async def post_login(
 
 @router.get("/setup")
 async def get_setup(request: Request, db: _DbDep = None) -> Response:  # type: ignore[assignment]
+    logger.debug("get_setup entered")
     if await _load_totp_secret(db) is not None:
+        logger.debug("get_setup TOTP already configured, redirecting to /login")
         return RedirectResponse("/login", status_code=302)
 
     setup_token = request.cookies.get(SETUP_COOKIE, "")
     secret = verify_setup_cookie(setup_token, settings.auth_secret_key)
     if secret is None:
+        logger.debug("get_setup setup cookie missing or expired")
         return Response("Setup session expired. Please log in again.", status_code=403)
 
+    logger.debug("get_setup rendering setup page")
     uri = totp_module.build_uri(secret, settings.auth_username)
     html = (
         _setup_html.replace("{{TOTP_URI}}", _html.escape(uri))
@@ -145,19 +157,24 @@ async def post_setup(
     db: _DbDep = None,  # type: ignore[assignment]
 ) -> Response:
     ip = _client_ip(request)
+    logger.debug(f"post_setup ip={ip}")
     if _lockout.is_locked(ip):
+        logger.debug(f"post_setup ip={ip} rejected: locked out")
         raise HTTPException(status_code=429, detail="Too many attempts. Try again later.")
 
     if await _load_totp_secret(db) is not None:
+        logger.debug("post_setup TOTP already configured, redirecting to /login")
         return RedirectResponse("/login", status_code=302)
 
     setup_token = request.cookies.get(SETUP_COOKIE, "")
     secret = verify_setup_cookie(setup_token, settings.auth_secret_key)
     if secret is None:
+        logger.debug("post_setup setup cookie missing or expired")
         return Response("Setup session expired. Please log in again.", status_code=403)
 
     if not totp_module.verify_code(secret, totp_code):
         _lockout.record_failure(ip)
+        logger.debug(f"post_setup ip={ip} TOTP verification failed")
         uri = totp_module.build_uri(secret, settings.auth_username)
         html = (
             _setup_html.replace("{{TOTP_URI}}", _html.escape(uri))
@@ -169,6 +186,7 @@ async def post_setup(
         return resp
 
     _lockout.reset(ip)
+    logger.debug(f"post_setup ip={ip} success, persisting TOTP secret")
     await db.execute("INSERT OR REPLACE INTO auth_config (key, value) VALUES ('totp_secret', ?)", (secret,))
     await db.commit()
 
@@ -180,6 +198,7 @@ async def post_setup(
 
 @router.post("/logout")
 async def logout() -> Response:
+    logger.debug("logout clearing session cookie")
     response = RedirectResponse("/login", status_code=302)
     response.delete_cookie(SESSION_COOKIE)
     return response

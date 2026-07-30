@@ -1,6 +1,7 @@
 """GET /api/items and POST /api/items/{id}/seen."""
 
 import json
+import logging
 from typing import Annotated, Any
 
 import aiosqlite
@@ -8,6 +9,7 @@ from fastapi import APIRouter, Depends, HTTPException
 
 from src.db.connection import get_db
 
+logger = logging.getLogger(__name__)
 router = APIRouter()
 
 _DbDep = Annotated[aiosqlite.Connection, Depends(get_db)]
@@ -69,8 +71,10 @@ async def list_items(
         ORDER BY rn ASC, feed_id ASC
         LIMIT ? OFFSET ?
     """
+    logger.debug(f"list_items unseen={unseen} feed_id={feed_id} page={page} size={size}")
     async with db.execute(query, params) as cur:
         rows = await cur.fetchall()
+    logger.debug(f"list_items returned {len(rows)} item(s)")
     return [_row_to_item(row) for row in rows]
 
 
@@ -84,6 +88,7 @@ async def mark_seen(
     The browser stores the returned seen_at value on the item object to
     prevent a second POST for the same item during the session.
     """
+    logger.debug(f"mark_seen item_id={item_id}")
     await db.execute(
         "UPDATE items SET seen_at = datetime('now') WHERE id = ?",
         (item_id,),
@@ -100,8 +105,10 @@ async def mark_seen(
         row = await cur.fetchone()
 
     if row is None or row[0] is None:
+        logger.debug(f"mark_seen item_id={item_id} not found after update")
         raise HTTPException(status_code=404, detail="Not found")
 
+    logger.debug(f"mark_seen item_id={item_id} seen_at={row[0]}")
     return {"seen_at": row[0]}
 
 
@@ -128,6 +135,8 @@ async def count_items(
 
     where_clause = ("WHERE " + " AND ".join(conditions)) if conditions else ""
     query = f"SELECT COUNT(*) FROM items {where_clause}"
+    logger.debug(f"count_items unseen={unseen} feed_id={feed_id}")
     async with db.execute(query, params) as cur:
         row = await cur.fetchone()
+    logger.debug(f"count_items result={row[0]}")
     return {"count": row[0]}
