@@ -158,6 +158,9 @@
 
     document.getElementById("feed").addEventListener("pointerdown", (e) => {
       if (e.pointerType === "touch") return;
+      // Video controls (seek, volume) have their own drag behavior;
+      // intercepting them would fight the browser's native handling.
+      if (e.target.closest?.("video")) return;
       dragStart = { x: e.clientX, y: e.clientY };
       const onUp = (ev) => {
         window.removeEventListener("pointerup", onUp);
