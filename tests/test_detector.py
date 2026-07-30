@@ -126,3 +126,88 @@ def test_detect_all_media_og_image_fallback_returns_single() -> None:
 
 def test_detect_all_media_returns_empty_when_no_media() -> None:
     assert detect_all_media({"summary": "<p>text only</p>"}) == []
+
+
+def test_detect_all_media_description_imgs_extend_enclosure_gallery() -> None:
+    entry = {
+        "enclosures": [{"url": "https://i.redd.it/slide1.jpg"}],
+        "summary": (
+            '<img src="https://i.redd.it/slide2.jpg">'
+            '<img src="https://i.redd.it/slide3.gif">'
+            '<img src="https://i.redd.it/slide4.mp4">'
+            '<img src="https://i.redd.it/slide5.jpg">'
+        ),
+    }
+    assert detect_all_media(entry) == [
+        ("https://i.redd.it/slide1.jpg", "image"),
+        ("https://i.redd.it/slide2.jpg", "image"),
+        ("https://i.redd.it/slide3.gif", "gif"),
+        ("https://i.redd.it/slide4.mp4", "video"),
+        ("https://i.redd.it/slide5.jpg", "image"),
+    ]
+
+
+def test_detect_all_media_dedupes_enclosure_against_description() -> None:
+    entry = {
+        "enclosures": [{"url": "https://i.redd.it/slide1.jpg"}],
+        "summary": (
+            '<img src="https://i.redd.it/slide1.jpg">'  # duplicate of enclosure
+            '<img src="https://i.redd.it/slide2.jpg">'
+            '<img src="https://i.redd.it/slide3.jpg">'
+        ),
+    }
+    assert detect_all_media(entry) == [
+        ("https://i.redd.it/slide1.jpg", "image"),
+        ("https://i.redd.it/slide2.jpg", "image"),
+        ("https://i.redd.it/slide3.jpg", "image"),
+    ]
+
+
+def test_detect_all_media_unescapes_entity_encoded_description() -> None:
+    entry = {
+        "enclosures": [{"url": "https://example.com/a.jpg"}],
+        "summary": '&lt;img src="https://i.redd.it/x.jpg"&gt;',
+    }
+    assert detect_all_media(entry) == [
+        ("https://example.com/a.jpg", "image"),
+        ("https://i.redd.it/x.jpg", "image"),
+    ]
+
+
+def test_detect_all_media_skips_unsupported_ext_in_description() -> None:
+    entry = {
+        "enclosures": [{"url": "https://example.com/a.jpg"}],
+        "summary": ('<img src="https://example.com/doc.pdf"><img src="https://example.com/b.jpg">'),
+    }
+    assert detect_all_media(entry) == [
+        ("https://example.com/a.jpg", "image"),
+        ("https://example.com/b.jpg", "image"),
+    ]
+
+
+def test_detect_all_media_description_only_not_promoted_to_gallery() -> None:
+    """Entry with no structured media stays single-slide even with multiple imgs."""
+    entry = {
+        "summary": (
+            '<img src="https://example.com/x.jpg">'
+            '<img src="https://example.com/y.jpg">'
+            '<img src="https://example.com/z.jpg">'
+        ),
+    }
+    assert detect_all_media(entry) == []
+
+
+def test_extract_img_srcs_helper() -> None:
+    from src.media.detector import _extract_img_srcs
+
+    assert _extract_img_srcs("") == []
+    assert _extract_img_srcs('<img src="https://i.redd.it/a.jpg"><img src="https://i.redd.it/b.jpg">') == [
+        "https://i.redd.it/a.jpg",
+        "https://i.redd.it/b.jpg",
+    ]
+    assert _extract_img_srcs('<img src="https://i.redd.it/a.jpg"><img src="https://i.redd.it/a.jpg">') == [
+        "https://i.redd.it/a.jpg",
+    ]
+    assert _extract_img_srcs('&lt;img src="https://i.redd.it/x.jpg"&gt;') == [
+        "https://i.redd.it/x.jpg",
+    ]

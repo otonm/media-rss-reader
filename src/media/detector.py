@@ -1,13 +1,21 @@
 """Media type detection for RSS feed entries.
 
-detect_media() probes four locations in a feedparser entry dict, in order
-of reliability: enclosures, media:content, media:thumbnail, og:image in
-the entry HTML summary. The first match wins.
+detect_media() probes structured metadata (enclosures, media:content,
+media:thumbnail) then falls back to og:image in the entry HTML summary.
+
+detect_all_media() extends detection to produce galleries. Galleries are
+built from three tiers:
+  1. <enclosure> and <media:content> in RSS order (the primary signal).
+  2. <img src=...> tags in <description> HTML (Reddit-style galleries
+     where only the first image is emitted as an enclosure).
+  3. Single-item fallback: media:thumbnail or og:image when tier 1
+     produced nothing.
 
 Media type is determined by file extension only at ingest time. GIF vs image
 is distinguished by extension; the proxy can confirm via Content-Type later.
 """
 
+from html import unescape
 from html.parser import HTMLParser
 from pathlib import PurePosixPath
 
@@ -55,6 +63,41 @@ def _extract_og_image(html: str) -> str | None:
     return parser.og_image
 
 
+class _ImgSrcParser(HTMLParser):
+    """Collects src attributes of every <img> tag, in document order."""
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.srcs: list[str] = []
+
+    def handle_starttag(self, tag: str, attrs: list[tuple[str, str | None]]) -> None:
+        if tag == "img":
+            url = dict(attrs).get("src")
+            if url:
+                self.srcs.append(url)
+
+
+def _extract_img_srcs(html: str) -> list[str]:
+    """Return <img src=...> URLs from an HTML snippet, in document order, deduped.
+
+    RSS <description> bodies are often entity-escaped (Reddit emits
+    &lt;img src=...&gt;). HTMLParser only recognises real '<' tags, so
+    unescape first. CDATA-wrapped content has no entities and is untouched.
+    Returns [] for empty or missing input.
+    """
+    if not html:
+        return []
+    parser = _ImgSrcParser()
+    parser.feed(unescape(html))
+    seen: set[str] = set()
+    out: list[str] = []
+    for url in parser.srcs:
+        if url not in seen:
+            seen.add(url)
+            out.append(url)
+    return out
+
+
 def detect_media(entry: dict) -> tuple[str, str] | None:
     """Return (media_url, media_type) for the first detectable media in an entry.
 
@@ -87,13 +130,21 @@ def detect_media(entry: dict) -> tuple[str, str] | None:
 def detect_all_media(entry: dict) -> list[tuple[str, str]]:
     """Return all media of an entry as (url, media_type) pairs, in display order.
 
-    Galleries are built from enclosures and media:content only (deduped by URL);
-    media:thumbnail and og:image stay single-item fallbacks so a thumbnail of
-    the main image never becomes a bogus second slide. Returns [] when the
-    entry has no usable media.
+    Galleries are built from three tiers:
+    1. <enclosure> and <media:content> in RSS order (the primary signal).
+    2. <img src=...> tags in <description> HTML — covers Reddit-style
+       feeds where only the first image is an enclosure and the rest are
+       inline. Tier 2 only fires when tier 1 produced >= 1 slide, so a
+       feed with no structured media is never promoted to a gallery on
+       the strength of inline thumbnails alone.
+    3. Single-item fallback: media:thumbnail or og:image when tier 1
+       produced nothing.
+
+    Returns [] when no usable media is found.
     """
     found: list[tuple[str, str]] = []
     seen_urls: set[str] = set()
+
     for key in ("enclosures", "media_content"):
         for item in entry.get(key, []):
             url = item.get("url", "")
@@ -101,7 +152,14 @@ def detect_all_media(entry: dict) -> list[tuple[str, str]]:
             if url and media_type and url not in seen_urls:
                 seen_urls.add(url)
                 found.append((url, media_type))
+
     if found:
+        for url in _extract_img_srcs(entry.get("summary", "")):
+            media_type = detect_type(url)
+            if media_type and url not in seen_urls:
+                seen_urls.add(url)
+                found.append((url, media_type))
         return found
+
     single = detect_media(entry)
     return [single] if single else []
