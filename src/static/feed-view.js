@@ -141,13 +141,35 @@
     prevBtn.type = "button";
     prevBtn.setAttribute("aria-label", "Previous slide");
     prevBtn.textContent = "\u276E";
-    prevBtn.addEventListener("click", (e) => { e.stopPropagation(); MRR.feedView.galleryPrev(); });
+    prevBtn.addEventListener("click", (e) => {
+      e.stopPropagation();
+      const wrap = e.currentTarget.closest(".media-item");
+      const gallery = wrap?.querySelector(".gallery");
+      if (!gallery) return;
+      const idx = Math.round(gallery.scrollLeft / gallery.clientWidth);
+      if (idx > 0) {
+        gallery.scrollTo({ left: (idx - 1) * gallery.clientWidth, behavior: "smooth" });
+      } else {
+        MRR.feedView.snapToPrev();
+      }
+    });
     const nextBtn = document.createElement("button");
     nextBtn.className = "gallery-nav next";
     nextBtn.type = "button";
     nextBtn.setAttribute("aria-label", "Next slide");
     nextBtn.textContent = "\u276F";
-    nextBtn.addEventListener("click", (e) => { e.stopPropagation(); MRR.feedView.galleryNext(); });
+    nextBtn.addEventListener("click", (e) => {
+      e.stopPropagation();
+      const wrap = e.currentTarget.closest(".media-item");
+      const gallery = wrap?.querySelector(".gallery");
+      if (!gallery) return;
+      const idx = Math.round(gallery.scrollLeft / gallery.clientWidth);
+      if (idx < gallery.children.length - 1) {
+        gallery.scrollTo({ left: (idx + 1) * gallery.clientWidth, behavior: "smooth" });
+      } else {
+        MRR.feedView.snapToNext();
+      }
+    });
     wrap.appendChild(prevBtn);
     wrap.appendChild(nextBtn);
   }
