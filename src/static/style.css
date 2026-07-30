@@ -201,6 +201,54 @@ html, body {
   background: rgba(255, 255, 255, 0.95);
 }
 
+.gallery-nav {
+  position: absolute;
+  top: 50%;
+  transform: translateY(-50%);
+  z-index: 11;
+  width: 44px;
+  height: 44px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border: 1px solid var(--control-border);
+  border-radius: 50%;
+  background: var(--control-bg);
+  color: var(--control-icon);
+  font-size: 1.2rem;
+  line-height: 1;
+  cursor: pointer;
+  user-select: none;
+  opacity: 0;
+  transition: opacity 0.15s, background 0.15s, color 0.15s;
+  backdrop-filter: blur(8px);
+  -webkit-backdrop-filter: blur(8px);
+}
+
+.gallery-nav.prev { left: 1rem; }
+.gallery-nav.next { right: 1rem; }
+
+.media-item:hover .gallery-nav,
+.gallery-nav:focus-visible {
+  opacity: 0.85;
+}
+
+.gallery-nav:hover,
+.gallery-nav:focus-visible {
+  opacity: 1;
+  background: var(--control-active-bg);
+  color: var(--control-active-icon);
+  outline: none;
+}
+
+@media (pointer: coarse) {
+  .gallery-nav { display: none !important; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .gallery-nav { transition: none; }
+}
+
 /* -----------------------------------------------------------------------
    Controls
    ----------------------------------------------------------------------- */

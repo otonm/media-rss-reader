@@ -136,6 +136,20 @@
     gallery.addEventListener("scroll", () => onGalleryScroll(wrap, gallery, dots), { passive: true });
     wrap.appendChild(gallery);
     wrap.appendChild(dots);
+    const prevBtn = document.createElement("button");
+    prevBtn.className = "gallery-nav prev";
+    prevBtn.type = "button";
+    prevBtn.setAttribute("aria-label", "Previous slide");
+    prevBtn.textContent = "\u276E";
+    prevBtn.addEventListener("click", (e) => { e.stopPropagation(); MRR.feedView.galleryPrev(); });
+    const nextBtn = document.createElement("button");
+    nextBtn.className = "gallery-nav next";
+    nextBtn.type = "button";
+    nextBtn.setAttribute("aria-label", "Next slide");
+    nextBtn.textContent = "\u276F";
+    nextBtn.addEventListener("click", (e) => { e.stopPropagation(); MRR.feedView.galleryNext(); });
+    wrap.appendChild(prevBtn);
+    wrap.appendChild(nextBtn);
   }
 
   // A slide's media failed to load: drop the slide and its dot so the
@@ -148,6 +162,7 @@
       onItemFailed(wrap.dataset.id);
     } else if (gallery.children.length === 1) {
       dots.remove(); // a single remaining slide needs no indicator
+      wrap.querySelectorAll(".gallery-nav").forEach((b) => b.remove());
     }
   }
 
