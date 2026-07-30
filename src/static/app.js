@@ -148,6 +148,43 @@
       }
     });
 
+    // Click-and-hold drag = swipe emulation for mouse/pen. Touch is left
+    // to native scrolling (Task 1 fixed the vertical-bubble bug). We only
+    // read coordinates during the drag and snap on release, so native
+    // scroll-snap and video controls keep working. Below THRESHOLD it is
+    // a plain click — arrow buttons, video controls, etc. unaffected.
+    const DRAG_THRESHOLD = 40; // px — below this is a click, not a swipe
+    let dragStart = null;       // {x, y} on pointerdown, null when not dragging
+
+    document.getElementById("feed").addEventListener("pointerdown", (e) => {
+      if (e.pointerType === "touch") return;
+      dragStart = { x: e.clientX, y: e.clientY };
+      const onMove = (ev) => {
+        // Read-only: just track the delta. No preventDefault — native scroll
+        // and snap keep working; clicks on video controls stay clicks.
+      };
+      const onUp = (ev) => {
+        window.removeEventListener("pointermove", onMove);
+        window.removeEventListener("pointerup", onUp);
+        window.removeEventListener("pointercancel", onUp);
+        if (!dragStart) return;
+        const dx = ev.clientX - dragStart.x;
+        const dy = ev.clientY - dragStart.y;
+        dragStart = null;
+        if (Math.max(Math.abs(dx), Math.abs(dy)) < DRAG_THRESHOLD) return;
+        if (Math.abs(dx) > Math.abs(dy)) {
+          if (dx > 0) MRR.feedView.galleryPrev();
+          else        MRR.feedView.galleryNext();
+        } else {
+          if (dy > 0) MRR.feedView.snapToPrev();
+          else        MRR.feedView.snapToNext();
+        }
+      };
+      window.addEventListener("pointermove", onMove, { passive: true });
+      window.addEventListener("pointerup", onUp, { passive: true });
+      window.addEventListener("pointercancel", onUp, { passive: true });
+    });
+
     // Periodic check to fetch more pages when nearing the end of the loaded list.
     setInterval(() => {
       const cur = MRR.itemStore.getCurrentIndex();
