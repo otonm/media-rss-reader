@@ -517,3 +517,56 @@ test("setCurrentMedia marks every paused video as JS-paused so the pause handler
   assert.equal(v0._pausedByJs, true, "v0 must be marked JS-paused");
   assert.equal(v1._pausedByJs, true, "v1 must be marked JS-paused even though it's the new current");
 });
+
+// ---------------------------------------------------------------------------
+// Regression: gallery rendering with ≥2 slides.
+//
+// Pre-fix: buildGallery referenced `item.id` outside its scope, throwing
+// ReferenceError on the second slide. cache-queue's try/catch then emitted
+// item-failed, removing the placeholder. The user saw an empty feed with no
+// console error. This test fails before the fix in feed-view.js and passes
+// after buildGallery receives itemId as a parameter.
+// ---------------------------------------------------------------------------
+
+test("onItemLoaded for a multi-slide gallery does NOT throw", () => {
+  const ctx = createDomContext();
+  const item = {
+    id: "abc",
+    media_type: "image",
+    media_url: "https://example/1.jpg",
+    media: [
+      { url: "https://example/1.jpg", type: "image" },
+      { url: "https://example/2.jpg", type: "image" },
+      { url: "https://example/3.gif", type: "gif" },
+    ],
+    seen_at: null,
+  };
+  ctx.window.MRR.itemStore = {
+    getItems: () => [item],
+    getCurrentIndex: () => 0,
+    getItemAt: () => item,
+    findIndexById: () => 0,
+    setCurrentIndex: () => {},
+  };
+  ctx.window.MRR.config = { autoscroll: false, mutedDefault: true };
+  ctx.window.MRR.autoscrollController = { bindIfVisible() {}, reset() {}, setAutoscroll() {} };
+  ctx.window.MRR.scrollController = { observe() {} };
+  loadScript(resolve(STATIC, "feed-view.js"), ctx);
+  const feed = ctx.document.createElement("div");
+  feed.id = "feed";
+  ctx.document.register(feed);
+  ctx.window.MRR.feedView.renderInitial([item]);
+
+  const firstEl = ctx.document.createElement("img");
+  // Must not throw.
+  ctx.window.MRR.feedView.onItemLoaded("abc", firstEl);
+
+  // Wrap must be in the feed with a gallery of three slides.
+  const wrap = feed.children.find((c) => c.dataset.id === "abc");
+  assert.ok(wrap, "wrap must replace the placeholder");
+  const slides = wrap.querySelectorAll(".gallery-slide");
+  assert.equal(slides.length, 3, "gallery must have one slide per media entry");
+  // The non-first slide's <img> must carry the proxy URL with item_id.
+  const nonFirst = slides[1].children[0];
+  assert.match(nonFirst.src, /item_id=abc/, "slide >1 must include item_id in proxy URL");
+});
