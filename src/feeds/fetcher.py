@@ -49,6 +49,12 @@ async def fetch_feed(url: str, client: httpx.AsyncClient) -> list[dict]:
 
         media_url, media_type = results[0]
         logger.debug(f"Detected media in entry {entry.get('title')}: {media_url} ({media_type})")
+        logger.debug(
+            "Built media_json for %s: %d slide(s) [first=%s]",
+            entry.get("title"),
+            len(results),
+            media_url,
+        )
 
         # Use entry.id as the canonical GUID; fall back to link, then media URL.
         guid = entry.get("id") or entry.get("link") or media_url

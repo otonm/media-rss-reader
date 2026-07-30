@@ -72,6 +72,10 @@ async def _refresh_feed(
     ) as cur:
         dead_guids = {row["guid"] for row in await cur.fetchall()}
 
+    logger.debug(
+        "Feed %s has %d tombstoned guid(s) to skip", url, len(dead_guids)
+    )
+
     inserted = 0
     for item in items:
         if item["guid"] in dead_guids:
@@ -103,6 +107,12 @@ async def _refresh_feed(
                WHERE sg.feed_id = items.feed_id AND sg.guid = items.guid
            )""",
         (feed_id,),
+    )
+    async with db.execute("SELECT changes()") as cur:
+        restored = (await cur.fetchone())[0]
+    logger.debug(
+        "Feed %s: restored seen_at on %d item(s)",
+        url, restored,
     )
     await db.execute(
         "UPDATE feeds SET last_fetched_at = datetime('now') WHERE id = ?",
@@ -175,7 +185,10 @@ async def prune_items(db: aiosqlite.Connection) -> None:
     await db.commit()
     async with db.execute("SELECT COUNT(*) FROM items") as cur:
         row = await cur.fetchone()
-    logger.debug(f"Items remaining after pruning: {row[0]}")
+    logger.debug(
+        "Prune complete: kept %d items (target ≤ %d)",
+        row[0], settings.keep_items,
+    )
 
 
 async def refresh_all_feeds(db: aiosqlite.Connection, client: httpx.AsyncClient) -> None:
