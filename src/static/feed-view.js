@@ -89,7 +89,7 @@
     wrap.appendChild(countBadge);
     const galleryMedia = Array.isArray(item.media) && item.media.length > 1 ? item.media : null;
     if (galleryMedia) {
-      buildGallery(wrap, galleryMedia, el);
+      buildGallery(wrap, galleryMedia, el, item.id);
     } else {
       if (item.media_type === "video") wireVideo(el);
       el.addEventListener("error", () => onItemFailed(item.id));
@@ -103,7 +103,7 @@
   // entry plus a dot per slide on the lower edge. Slide 1 reuses the element
   // already downloaded by the cache queue; the remaining slides point at the
   // media proxy directly and load natively in the background.
-  function buildGallery(wrap, mediaList, firstEl) {
+  function buildGallery(wrap, mediaList, firstEl, itemId) {
     const gallery = document.createElement("div");
     gallery.className = "gallery";
     const dots = document.createElement("div");
@@ -117,7 +117,7 @@
         el = firstEl;
       } else {
         el = m.type === "video" ? document.createElement("video") : new Image();
-        el.src = `/api/media/proxy?url=${encodeURIComponent(m.url)}&item_id=${encodeURIComponent(item.id)}`;
+        el.src = `/api/media/proxy?url=${encodeURIComponent(m.url)}&item_id=${encodeURIComponent(itemId)}`;
       }
       if (m.type === "video") wireVideo(el);
       el.addEventListener("error", () => removeSlide(wrap, gallery, dots, slide), { once: true });
