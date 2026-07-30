@@ -269,6 +269,8 @@ async def refresh_all_feeds(db: aiosqlite.Connection, client: httpx.AsyncClient)
     async with db.execute("SELECT id, url FROM feeds") as cur:
         feeds = await cur.fetchall()
     for feed in feeds:
+        if not feed["url"].startswith(("http://", "https://")):
+            continue
         try:
             await _refresh_feed(db, feed["id"], feed["url"], client)
         except Exception as exc:
