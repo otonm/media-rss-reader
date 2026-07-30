@@ -44,6 +44,41 @@ export function createDomContext() {
     fetch: () => Promise.resolve({ ok: false }),
     console,
   };
+  // ponytail: minimal Image shim so tests can exercise gallery slides.
+  // feed-view.js does `new Image()` for non-first slides; the real browser
+  // supplies this. Tests need a no-op stand-in to reach the broken line.
+  class _Image {
+    constructor() {
+      Object.assign(this, {
+        tagName: "IMG", nodeName: "IMG", src: "", className: "", dataset: {},
+        children: [], parentNode: null, style: {}, attributes: {},
+        naturalWidth: 320, naturalHeight: 240,
+        _listeners: new Map(),
+        setAttribute() {},
+        getAttribute() { return null; },
+        addEventListener(name, fn, opts) {
+          const arr = this._listeners.get(name) || [];
+          arr.push({ fn, once: !!(opts && opts.once) });
+          this._listeners.set(name, arr);
+        },
+        removeEventListener(name, fn) {
+          const arr = this._listeners.get(name);
+          if (!arr) return;
+          const idx = arr.findIndex((e) => e.fn === fn);
+          if (idx >= 0) arr.splice(idx, 1);
+        },
+        dispatchEvent(evt) {
+          const arr = this._listeners.get(evt.type) || [];
+          for (const e of arr.slice()) {
+            e.fn(evt);
+            if (e.once) arr.splice(arr.indexOf(e), 1);
+          }
+        },
+        cloneNode() { return new _Image(); },
+      });
+    }
+  }
+  ctx.Image = _Image;
   vm.createContext(ctx);
   return ctx;
 }
