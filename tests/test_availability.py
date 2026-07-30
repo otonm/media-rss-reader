@@ -39,16 +39,12 @@ async def _insert_item(
 async def test_single_media_url_404_drops_item(db: aiosqlite.Connection) -> None:
     await _insert_feed(db)
     await _insert_item(db, "i1", "f1", "g1", "http://x.com/a.jpg")
-    dropped = await mark_url_dead_and_maybe_drop(
-        "http://x.com/a.jpg", item_id="i1", db=db
-    )
+    dropped = await mark_url_dead_and_maybe_drop("http://x.com/a.jpg", item_id="i1", db=db)
     assert dropped == ["i1"]
     async with db.execute("SELECT id FROM items") as cur:
         rows = await cur.fetchall()
     assert rows == []
-    async with db.execute(
-        "SELECT guid FROM unavailable_guids WHERE feed_id = ?", ("f1",)
-    ) as cur:
+    async with db.execute("SELECT guid FROM unavailable_guids WHERE feed_id = ?", ("f1",)) as cur:
         rows = await cur.fetchall()
     assert [r[0] for r in rows] == ["g1"]
     async with db.execute("SELECT url FROM dead_urls") as cur:
@@ -65,12 +61,8 @@ async def test_gallery_partial_404_keeps_item(db: aiosqlite.Connection) -> None:
             {"url": "http://x.com/c.jpg", "type": "image"},
         ]
     )
-    await _insert_item(
-        db, "i1", "f1", "g1", "http://x.com/a.jpg", media_json=media_json
-    )
-    dropped = await mark_url_dead_and_maybe_drop(
-        "http://x.com/a.jpg", item_id="i1", db=db
-    )
+    await _insert_item(db, "i1", "f1", "g1", "http://x.com/a.jpg", media_json=media_json)
+    dropped = await mark_url_dead_and_maybe_drop("http://x.com/a.jpg", item_id="i1", db=db)
     assert dropped == []
     async with db.execute("SELECT id FROM items") as cur:
         rows = await cur.fetchall()
@@ -87,20 +79,14 @@ async def test_gallery_all_404_drops_item(db: aiosqlite.Connection) -> None:
             {"url": "http://x.com/b.jpg", "type": "image"},
         ]
     )
-    await _insert_item(
-        db, "i1", "f1", "g1", "http://x.com/a.jpg", media_json=media_json
-    )
+    await _insert_item(db, "i1", "f1", "g1", "http://x.com/a.jpg", media_json=media_json)
     await mark_url_dead_and_maybe_drop("http://x.com/a.jpg", item_id="i1", db=db)
-    dropped = await mark_url_dead_and_maybe_drop(
-        "http://x.com/b.jpg", item_id="i1", db=db
-    )
+    dropped = await mark_url_dead_and_maybe_drop("http://x.com/b.jpg", item_id="i1", db=db)
     assert dropped == ["i1"]
     async with db.execute("SELECT id FROM items") as cur:
         rows = await cur.fetchall()
     assert rows == []
-    async with db.execute(
-        "SELECT guid FROM unavailable_guids WHERE feed_id = ?", ("f1",)
-    ) as cur:
+    async with db.execute("SELECT guid FROM unavailable_guids WHERE feed_id = ?", ("f1",)) as cur:
         rows = await cur.fetchall()
     assert [r[0] for r in rows] == ["g1"]
 
@@ -110,16 +96,12 @@ async def test_url_shared_by_two_items_drops_both(db: aiosqlite.Connection) -> N
     await _insert_feed(db, "f2")
     await _insert_item(db, "i1", "f1", "g1", "http://x.com/shared.jpg")
     await _insert_item(db, "i2", "f2", "g2", "http://x.com/shared.jpg")
-    dropped = await mark_url_dead_and_maybe_drop(
-        "http://x.com/shared.jpg", item_id="i1", db=db
-    )
+    dropped = await mark_url_dead_and_maybe_drop("http://x.com/shared.jpg", item_id="i1", db=db)
     assert sorted(dropped) == ["i1", "i2"]
     async with db.execute("SELECT id FROM items ORDER BY id") as cur:
         rows = await cur.fetchall()
     assert rows == []
-    async with db.execute(
-        "SELECT feed_id, guid FROM unavailable_guids ORDER BY feed_id"
-    ) as cur:
+    async with db.execute("SELECT feed_id, guid FROM unavailable_guids ORDER BY feed_id") as cur:
         rows = await cur.fetchall()
     assert [tuple(r) for r in rows] == [("f1", "g1"), ("f2", "g2")]
 
@@ -128,9 +110,7 @@ async def test_no_item_id_drops_via_media_url_lookup(db: aiosqlite.Connection) -
     """Fallback path: callers without item_id scan by media_url."""
     await _insert_feed(db)
     await _insert_item(db, "i1", "f1", "g1", "http://x.com/a.jpg")
-    dropped = await mark_url_dead_and_maybe_drop(
-        "http://x.com/a.jpg", item_id=None, db=db
-    )
+    dropped = await mark_url_dead_and_maybe_drop("http://x.com/a.jpg", item_id=None, db=db)
     assert dropped == ["i1"]
     async with db.execute("SELECT id FROM items") as cur:
         assert await cur.fetchone() is None
@@ -139,12 +119,8 @@ async def test_no_item_id_drops_via_media_url_lookup(db: aiosqlite.Connection) -
 async def test_repeated_calls_are_idempotent(db: aiosqlite.Connection) -> None:
     await _insert_feed(db)
     await _insert_item(db, "i1", "f1", "g1", "http://x.com/a.jpg")
-    first = await mark_url_dead_and_maybe_drop(
-        "http://x.com/a.jpg", item_id="i1", db=db
-    )
-    second = await mark_url_dead_and_maybe_drop(
-        "http://x.com/a.jpg", item_id="i1", db=db
-    )
+    first = await mark_url_dead_and_maybe_drop("http://x.com/a.jpg", item_id="i1", db=db)
+    second = await mark_url_dead_and_maybe_drop("http://x.com/a.jpg", item_id="i1", db=db)
     assert first == ["i1"]
     assert second == []
     async with db.execute("SELECT url FROM dead_urls") as cur:
@@ -155,9 +131,7 @@ async def test_repeated_calls_are_idempotent(db: aiosqlite.Connection) -> None:
 async def test_unknown_item_id_marks_dead_only(db: aiosqlite.Connection) -> None:
     """If item_id doesn't exist, mark the URL dead but don't crash."""
     await _insert_feed(db)
-    dropped = await mark_url_dead_and_maybe_drop(
-        "http://x.com/a.jpg", item_id="nonexistent", db=db
-    )
+    dropped = await mark_url_dead_and_maybe_drop("http://x.com/a.jpg", item_id="nonexistent", db=db)
     assert dropped == []
     async with db.execute("SELECT url FROM dead_urls") as cur:
         rows = await cur.fetchall()

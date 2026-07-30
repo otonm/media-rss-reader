@@ -206,9 +206,7 @@ async def test_prune_unseen_when_over_limit_after_seen_exhausted(db: aiosqlite.C
         assert uid in remaining
 
 
-async def test_refresh_skips_unavailable_guids(
-    db: aiosqlite.Connection, tmp_path: Path
-) -> None:
+async def test_refresh_skips_unavailable_guids(db: aiosqlite.Connection, tmp_path: Path) -> None:
     """Items whose (feed_id, guid) is in unavailable_guids must not be
     re-inserted by a subsequent feed refresh."""
     f = tmp_path / "feeds.opml"
@@ -236,8 +234,6 @@ async def test_refresh_skips_unavailable_guids(
     # g1 is in the RSS feed but tombstoned → not inserted.
     assert rows == []
     # Tombstone is untouched.
-    async with db.execute(
-        "SELECT guid FROM unavailable_guids WHERE feed_id = ?", (feed_id,)
-    ) as cur:
+    async with db.execute("SELECT guid FROM unavailable_guids WHERE feed_id = ?", (feed_id,)) as cur:
         rows = await cur.fetchall()
     assert [r[0] for r in rows] == ["g1"]

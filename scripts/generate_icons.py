@@ -17,12 +17,7 @@ def build_png(width: int, height: int, bg_r: int, bg_g: int, bg_b: int) -> bytes
         return struct.pack(">I", len(data)) + c + crc
 
     ihdr = struct.pack(">IIBBBBB", width, height, 8, 2, 0, 0, 0)
-    return (
-        b"\x89PNG\r\n\x1a\n"
-        + chunk(b"IHDR", ihdr)
-        + chunk(b"IDAT", zlib.compress(raw))
-        + chunk(b"IEND", b"")
-    )
+    return b"\x89PNG\r\n\x1a\n" + chunk(b"IHDR", ihdr) + chunk(b"IDAT", zlib.compress(raw)) + chunk(b"IEND", b"")
 
 
 def triangle_png(size: int, bg_r: int, bg_g: int, bg_b: int, fg_r: int, fg_g: int, fg_b: int) -> bytes:

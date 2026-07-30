@@ -128,8 +128,7 @@ async def test_items_pagination(client: AsyncClient, db: aiosqlite.Connection) -
 async def test_items_returns_media_array_from_media_json(client: AsyncClient, db: aiosqlite.Connection) -> None:
     await _insert_feed(db)
     media_json = (
-        '[{"url": "http://example.com/a.jpg", "type": "image"},'
-        ' {"url": "http://example.com/b.gif", "type": "gif"}]'
+        '[{"url": "http://example.com/a.jpg", "type": "image"}, {"url": "http://example.com/b.gif", "type": "gif"}]'
     )
     await db.execute(
         """INSERT INTO items(id, feed_id, guid, title, media_url, media_type, media_json, pub_date)
@@ -347,9 +346,7 @@ async def test_proxy_404_marks_item_unavailable(
     # Single-media post: all (1) URLs are dead -> item should be gone.
     async with db.execute("SELECT id FROM items WHERE id = ?", (item_id,)) as cur:
         assert await cur.fetchone() is None
-    async with db.execute(
-        "SELECT guid FROM unavailable_guids WHERE feed_id = ?", (feed_id,)
-    ) as cur:
+    async with db.execute("SELECT guid FROM unavailable_guids WHERE feed_id = ?", (feed_id,)) as cur:
         rows = await cur.fetchall()
     assert [r[0] for r in rows] == ["g1"]
 
