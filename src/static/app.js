@@ -159,12 +159,7 @@
     document.getElementById("feed").addEventListener("pointerdown", (e) => {
       if (e.pointerType === "touch") return;
       dragStart = { x: e.clientX, y: e.clientY };
-      const onMove = (ev) => {
-        // Read-only: just track the delta. No preventDefault — native scroll
-        // and snap keep working; clicks on video controls stay clicks.
-      };
       const onUp = (ev) => {
-        window.removeEventListener("pointermove", onMove);
         window.removeEventListener("pointerup", onUp);
         window.removeEventListener("pointercancel", onUp);
         if (!dragStart) return;
@@ -180,7 +175,6 @@
           else        MRR.feedView.snapToNext();
         }
       };
-      window.addEventListener("pointermove", onMove, { passive: true });
       window.addEventListener("pointerup", onUp, { passive: true });
       window.addEventListener("pointercancel", onUp, { passive: true });
     });
