@@ -76,7 +76,7 @@ async def test_start_scheduler_creates_background_tasks(tmp_path: Path) -> None:
 
     with (
         patch("src.scheduler.httpx.AsyncClient", return_value=MagicMock(aclose=AsyncMock())),
-        patch("src.scheduler.opml_sync", new=AsyncMock()),
+        patch("src.scheduler.sync_feeds", new=AsyncMock()),
         patch("src.scheduler.refresh_all_feeds", new=AsyncMock()),
     ):
         await sched_mod.start_scheduler(conn)

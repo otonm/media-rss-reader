@@ -35,11 +35,11 @@ async def local_xml_sync(db: aiosqlite.Connection, feeds_dir: str) -> None:
     hard-delete on the next call to sync_feeds(), not here.
     """
     folder = Path(feeds_dir)
-    if not folder.is_dir():
+    if not folder.is_dir():  # noqa: ASYNC240
         logger.warning(f"FEEDS_DIR does not exist or is not a directory: {feeds_dir}")
         return
 
-    xml_files = sorted(folder.glob("*.xml"))
+    xml_files = sorted(folder.glob("*.xml"))  # noqa: ASYNC240
     logger.debug(f"Local XML sync found {len(xml_files)} file(s) in {feeds_dir}")
 
     for path in xml_files:
@@ -63,9 +63,7 @@ async def local_xml_sync(db: aiosqlite.Connection, feeds_dir: str) -> None:
             (feed_id, filename, title, site_link),
         )
 
-        async with db.execute(
-            "SELECT guid FROM unavailable_guids WHERE feed_id = ?", (feed_id,)
-        ) as cur:
+        async with db.execute("SELECT guid FROM unavailable_guids WHERE feed_id = ?", (feed_id,)) as cur:
             dead_guids = {row["guid"] for row in await cur.fetchall()}
 
         inserted = 0
@@ -297,8 +295,8 @@ async def sync_feeds(
 
     folder_urls: set[str] = set()
     folder_dir = Path(feeds_dir)
-    if folder_dir.is_dir():
-        folder_urls = {p.name for p in folder_dir.glob("*.xml")}
+    if folder_dir.is_dir():  # noqa: ASYNC240
+        folder_urls = {p.name for p in folder_dir.glob("*.xml")}  # noqa: ASYNC240
 
     opml_urls: set[str] = set()
     if opml_path:
