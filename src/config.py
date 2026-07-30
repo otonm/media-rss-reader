@@ -14,6 +14,7 @@ from dataclasses import dataclass, fields
 class Settings:
     # --- Paths ---
     opml_path: str = "/data/feeds.opml"
+    feeds_dir: str = "/feeds-output"
     db_path: str = "/data/db/reader.db"
 
     # --- Feed refresh schedule ---
