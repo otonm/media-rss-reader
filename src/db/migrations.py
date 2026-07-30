@@ -9,6 +9,8 @@ To add a migration: append one SQL string to MIGRATIONS. Never edit or
 reorder existing entries — doing so would corrupt the version counter.
 """
 
+import sqlite3
+
 import aiosqlite
 
 MIGRATIONS: list[str] = [
@@ -46,6 +48,8 @@ MIGRATIONS: list[str] = [
         "marked_at TIMESTAMP NOT NULL DEFAULT (datetime('now')), "
         "PRIMARY KEY (feed_id, guid))"
     ),
+    # v8: site_link stores <channel><link> from RSS, populated on local-file sync
+    "ALTER TABLE feeds ADD COLUMN site_link TEXT",
 ]
 
 
@@ -60,7 +64,14 @@ async def run_migrations(db: aiosqlite.Connection) -> None:
         return
 
     for i, sql in enumerate(pending, start=current_version + 1):
-        await db.execute(sql)
+        try:
+            await db.execute(sql)
+        except sqlite3.OperationalError as exc:
+            # Gracefully handle ALTER TABLE ADD COLUMN when the column already
+            # exists — this happens when run_migrations is called after
+            # create_schema (which ships the latest schema in CREATE TABLE).
+            if "duplicate column name" not in str(exc):
+                raise
         # Commit version update immediately so a crash mid-migration leaves a
         # consistent state — partially applied migrations are not retried.
         await db.execute(f"PRAGMA user_version = {i}")

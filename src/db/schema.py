@@ -13,6 +13,7 @@ CREATE TABLE IF NOT EXISTS feeds (
     id              TEXT PRIMARY KEY,
     url             TEXT NOT NULL UNIQUE,
     title           TEXT,
+    site_link       TEXT,
     last_fetched_at TIMESTAMP,
     created_at      TIMESTAMP DEFAULT (datetime('now'))
 )
