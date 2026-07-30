@@ -109,3 +109,24 @@ async def test_sync_feeds_idempotent_and_feed_id_is_filename(db: aiosqlite.Conne
     expected = hashlib.sha256(b"feed-one.xml").hexdigest()
     async with db.execute("SELECT id FROM feeds") as cur:
         assert (await cur.fetchone())["id"] == expected
+
+
+_OPML_DUPLICATE = """\
+<?xml version="1.0"?>
+<opml version="2.0"><head/><body>
+  <outline type="rss" text="Grool" xmlUrl="https://reddit-feeds.example.ts.net/feeds/grool.xml"/>
+</body></opml>"""
+
+
+async def test_sync_feeds_folder_supersedes_opml_duplicate(db: aiosqlite.Connection, tmp_path: Path) -> None:
+    """When grool.xml is in both FEEDS_DIR and OPML, only the folder row survives."""
+    (tmp_path / "grool.xml").write_text(_RSS_TWO_ITEMS)
+    opml = tmp_path / "feeds.opml"
+    opml.write_text(_OPML_DUPLICATE)
+
+    async with httpx.AsyncClient() as client:
+        await sync_feeds(db, str(tmp_path), str(opml), client)
+
+    async with db.execute("SELECT url FROM feeds ORDER BY url") as cur:
+        urls = [r["url"] for r in await cur.fetchall()]
+    assert urls == ["grool.xml"]
