@@ -9,11 +9,13 @@ Developer reference for media-rss-reader. Covers system structure, data flows, a
 Three planes interact at runtime:
 
 ```
-┌─────────────────────────────────────────────────────────┐
-│  Browser (Vanilla JS)                                   │
-│  Scroll view / Slideshow view                           │
-│  IntersectionObserver × 3  ·  RAF auto-scroll loop      │
-└───────────────┬─────────────────────────────────────────┘
+┌──────────────────────────────────────────────────────────────┐
+│  Browser (Vanilla JS — 7 modules)                            │
+│  item-store · feed-view · scroll-controller                  │
+│  autoscroll-controller · cache-queue · controls · app        │
+│  IntersectionObserver × 2  ·  scroll-event fallback          │
+│  PWA service worker  ·  gallery (←/→ slide navigation)      │
+└──────────────────┬───────────────────────────────────────────┘
                 │  HTTPS  (X-Forwarded-Proto from proxy)
 ┌───────────────▼─────────────────────────────────────────┐
 │  AuthMiddleware                                         │
@@ -49,7 +51,7 @@ The scheduler holds a **persistent aiosqlite connection** (`app.state.db`) for i
 ```
 src/
 ├── main.py          FastAPI app; lifespan hook; HTML injection
-├── config.py        Pydantic Settings — all config from env vars
+├── config.py        Settings dataclass — all config from env vars
 ├── scheduler.py     APScheduler setup; HTTP client singleton; startup tasks
 │
 ├── auth/
@@ -70,23 +72,36 @@ src/
 │   └── sync.py      Orchestrate OPML sync + per-feed refresh; prune old items
 │
 ├── media/
-│   ├── detector.py  Detect media URL + type from a feedparser entry
-│   ├── cache.py     Filesystem cache: write, read, evict
-│   └── prefetch.py  Background warm tasks: startup warmup + ahead-of-cursor
+│   ├── detector.py      Detect media URL + type; gallery extraction via detect_all_media()
+│   ├── cache.py         Filesystem cache: write, read, evict, stream_write
+│   ├── prefetch.py      Background warm tasks: startup warmup + ahead-of-cursor
+│   └── availability.py  Track dead URLs (upstream 404); drop items whose media is gone
 │
 ├── api/
-│   ├── feeds.py     GET /api/feeds
-│   ├── items.py     GET /api/items, POST /api/items/{id}/seen
-│   ├── media.py     GET /api/media/proxy, POST /api/prefetch/hint, GET /api/status
-│   └── reddit_feeds.py  GET /api/reddit-feeds/status (proxies Reddit Feeds API)
+│   ├── feeds.py        GET /api/feeds
+│   ├── items.py        GET /api/items, GET /api/items/count, POST /api/items/{id}/seen
+│   ├── media.py        GET /api/media/proxy, POST /api/prefetch/hint, GET /api/status
+│   └── reddit_feeds.py GET /api/reddit-feeds/status (proxies Reddit Feeds API)
 │
 └── static/
-    ├── index.html      App shell; <!-- SLIDESHOW_TRANSITION --> injection point
-    ├── login.html      Standalone login form (no SPA dependency)
-    ├── setup.html      First-time TOTP setup with client-side QR rendering
-    ├── qrcode.min.js   Bundled node-qrcode browser build (no CDN)
-    ├── app.js          All UI logic (~540 lines, 14 sections)
-    └── style.css       Layout + theming via CSS custom properties
+    ├── index.html               App shell; <!-- CONFIG_VARS --> injection point
+    ├── login.html               Standalone login form (no SPA dependency)
+    ├── setup.html               First-time TOTP setup with client-side QR rendering
+    ├── qrcode.min.js            Bundled node-qrcode browser build (no CDN)
+    ├── manifest.json            PWA manifest (standalone display, icons)
+    ├── sw.js                    Service worker — caches UI assets on install
+    ├── favicon.svg              SVG favicon
+    ├── icon-192.png             PWA icon 192×192
+    ├── icon-512.png             PWA icon 512×512
+    ├── icon-512-maskable.png    PWA maskable icon 512×512
+    ├── style.css                Layout + theming via CSS custom properties
+    ├── app.js                   Startup, config reading, keymap, module wiring
+    ├── item-store.js            Item list, pagination, seen state
+    ├── feed-view.js             DOM rendering: placeholders, media items, galleries
+    ├── scroll-controller.js     IntersectionObserver + scroll event → currentIndex, seen marking
+    ├── autoscroll-controller.js Per-item dwell timer; image/GIF/video advance
+    ├── cache-queue.js           Priority download queue (single-worker)
+    └── controls.js              FAB menu, mute, autoscroll, show-seen, status modal
 ```
 
 ---
@@ -95,7 +110,7 @@ src/
 
 `main.py` uses FastAPI's `lifespan` context manager. Steps run in order on `docker compose up`:
 
-1. **`_build_html()`** — reads `index.html`, injects a `<style>` block containing CSS variables derived from settings (`--slideshow-transition-ms`, `--image-display-delay-ms`, `--prefetch-ahead`, `--auto-scroll-speed`). The result is cached in `app.state.html` for the lifetime of the process. This avoids a per-request API call from JS to retrieve these values.
+1. **`_build_html()`** — reads `index.html`, replaces `<!-- CONFIG_VARS -->` with a `<style>` block containing CSS variables derived from settings (`--feed-initial-count`, `--image-autoscroll-delay-s`), and replaces `{{VERSION}}` in asset URLs with `int(time.time())` for cache-busting across restarts. The result is cached in `app.state.html` for the lifetime of the process.
 
 2. **`open_db()`** — opens the SQLite file, sets `row_factory = aiosqlite.Row` (so rows behave like dicts), enables `PRAGMA journal_mode=WAL` and `PRAGMA foreign_keys=ON`. Creates parent directories if needed.
 
@@ -105,7 +120,7 @@ src/
 
 5. **`start_scheduler()`** — creates the shared `httpx.AsyncClient`, registers two APScheduler interval jobs, starts the scheduler, then immediately fires both jobs (OPML sync + feed refresh) so the reader is populated on first boot without waiting for the first scheduled interval. Startup errors are caught and logged as warnings — the scheduler will retry on the next interval.
 
-6. **`warm_startup_cache()`** — fired as a background `asyncio.Task` (does not block startup). Queries the most recent `CACHE_MAX_ITEMS` media URLs and downloads them with a semaphore of 10 concurrent fetches and a 100 ms stagger to avoid thundering-herd on the upstream servers.
+6. **`warm_startup_cache()`** — fired as a background `asyncio.Task` (does not block startup). Queries the most recent `CACHE_MAX_ITEMS` media URLs and downloads them with a semaphore of 10 concurrent fetches and a 100 ms stagger to avoid thundering-herd on the upstream servers. Failed downloads call `mark_url_dead_and_maybe_drop` (see [Dead-URL Tracking](#dead-url-tracking-mediaavailabilitypy)).
 
 ---
 
@@ -144,18 +159,20 @@ OPML file
 feedparser.parse(response.text)
    │  for each entry:
    ▼
-detect_media(entry)  ←── detector.py
+detect_all_media(entry)  ←── detector.py
    │
-   ├─ 1. enclosures[]         .url + file extension
-   ├─ 2. media_content[]      .url + file extension
-   ├─ 3. media_thumbnail[]    .url + file extension
-   └─ 4. summary HTML         og:image meta tag + file extension
+   ├─ Tier 1: enclosures[] + media:content[]  (RSS order)
+   ├─ Tier 2: <img src=...> in <description>  (if tier 1 produced ≥1 slide)
+   └─ Tier 3: fallback — media:thumbnail / og:image  (single item)
    │
-   ▼  (url, media_type) or None
+   ▼  [(url, media_type), ...] or []
+store entry: media_json = slides[], media_url = first slide URL
 INSERT OR IGNORE INTO items
 ```
 
-**Media type detection** (`detector.py`): determined by file extension on the URL path (query string stripped). Extensions map to `image`, `gif`, or `video`. URLs with no recognised extension are skipped. The type is stored at ingest time; for `.gif` files, the proxy can confirm via `Content-Type` on first fetch if needed.
+**Gallery detection** (`detector.py:detect_all_media`): builds a slide list from three tiers. Tier 1 collects `<enclosure>` and `<media:content>` entries in RSS order. If tier 1 produced at least one hit, tier 2 also scans `<img src=...>` tags in the entry's `<description>` HTML (after unescaping HTML entities — covers Reddit-style feeds where only the first image is an enclosure). Tier 3 is a single-item fallback using `media:thumbnail` or `og:image` when structured media produced nothing. The full slide list is stored as `media_json`; `media_url` always holds the first slide's URL for backwards compatibility.
+
+**Media type** is determined by file extension on the URL path (query string stripped). Extensions map to `image`, `gif`, or `video`. URLs with no recognised extension are skipped.
 
 **IDs** are SHA-256 hashes:
 - `feed_id = sha256(feed_url)`
@@ -170,11 +187,17 @@ This makes IDs stable and collision-resistant without a sequence counter, and de
 ### Schema
 
 ```sql
-feeds       (id PK, url UNIQUE, title, last_fetched_at, created_at)
-items       (id PK, feed_id FK→feeds CASCADE, guid, title,
-             media_url, media_type, pub_date, fetched_at, seen_at)
-auth_config (key PK, value)   -- stores TOTP secret as ('totp_secret', '<base32>')
+feeds              (id PK, url UNIQUE, title, last_fetched_at, created_at)
+items              (id PK, feed_id FK→feeds CASCADE, guid, title,
+                    media_url, media_type, media_json, pub_date,
+                    fetched_at, seen_at)
+seen_guids         (feed_id, guid PK, seen_at)     -- tombstone for seen state
+dead_urls          (url PK, marked_at)              -- media URLs that returned 404
+unavailable_guids  (feed_id, guid PK, marked_at)    -- guids whose media is all dead
+auth_config        (key PK, value)                  -- stores TOTP secret
 ```
+
+`media_json` is a JSON array of `{url, type}` objects for gallery items (migration v5). Rows without gallery data fall back to the single `media_url`/`media_type` columns. `seen_guids` (migration v2/v3) preserves seen state across item pruning. `dead_urls` (v6) and `unavailable_guids` (v7) track dead media for auto-removal.
 
 Indexes on `items`: `feed_id`, `pub_date DESC`, `seen_at`, `fetched_at`.
 
@@ -195,6 +218,8 @@ API connections are opened and closed per request via the `get_db()` async gener
 
 `migrations.py` holds a flat list of SQL strings (`MIGRATIONS[]`). `PRAGMA user_version` stores the count of applied migrations. On startup, any items from `MIGRATIONS[current_version:]` are applied in sequence, with the version incremented after each one. Adding a migration = appending one string to the list.
 
+Current migrations (v1–v7): `fetched_at` index, `seen_guids` table + backfill, `auth_config` table, `media_json` column, `dead_urls` table, `unavailable_guids` table.
+
 ---
 
 ## Media Subsystem
@@ -203,9 +228,9 @@ API connections are opened and closed per request via the `get_db()` async gener
 
 Files are stored at `{CACHE_DIR}/{sha256(url)}` — no subdirectories, no extension. The sha256 filename makes lookup O(1) and avoids filesystem issues with special characters in URLs.
 
-**Write**: `cache_write(url, data)` — creates parent dirs, writes bytes off the event loop via `asyncio.to_thread`.
+**Write**: `cache_stream_write(url, byte_iterator, content_type)` — streams chunks to a temp file, then atomically renames. Writes content-type metadata alongside via `cache_write_meta`. Avoids buffering the full file in memory.
 
-**Read**: `cache_read(url)` — returns the `Path` if the file exists, else `None`. Synchronous (stat only).
+**Read**: `cache_read(url)` — returns the `Path` if the file exists, else `None`. `cache_read_meta(url)` reads the stored content-type.
 
 **Evict**: `evict()` — called after each feed refresh. Deletes files older than `CACHE_MAX_AGE_HOURS` first, then trims by count from the oldest if still over `CACHE_MAX_ITEMS`. Files are sorted by `mtime` to determine age and eviction order.
 
@@ -217,11 +242,23 @@ Files are stored at `{CACHE_DIR}/{sha256(url)}` — no subdirectories, no extens
 
 ### Streaming Proxy (`api/media.py`)
 
-`GET /api/media/proxy?url=<encoded>`:
+`GET /api/media/proxy?url=<encoded>&item_id=<optional>`:
 1. Check `cache_read(url)` — if hit, return `FileResponse` (zero-copy via sendfile)
-2. On miss: fetch via the shared `httpx.AsyncClient`, write to cache, stream to the browser
+2. On miss: stream from upstream to a temp file via `cache_stream_write` (no in-memory buffer), then serve
+3. On upstream non-success: call `mark_url_dead_and_maybe_drop(url, item_id, db)` to record the failure and potentially drop the item
 
-The full response body is read into memory once (`aread()`) to write to cache, then streamed to the browser. Media is never buffered twice.
+The `item_id` parameter (added in `74e2b9e`) enables dead-URL tracking for gallery slides that aren't the primary `media_url`.
+
+### Dead-URL Tracking (`media/availability.py`)
+
+`mark_url_dead_and_maybe_drop(url, item_id, db)` is called by the proxy and prefetch warmer on every upstream non-success:
+
+1. Records `url` in `dead_urls`
+2. Finds all items containing that URL (by `item_id` if given, and by `media_url` matching)
+3. For each item whose every URL is now in `dead_urls`: `DELETE` the item row and write a tombstone to `unavailable_guids`
+4. On the next `_refresh_feed` run, `unavailable_guids` tombstones block re-insert of the same guid via `INSERT OR IGNORE`
+
+This means a post whose media permanently 404s is silently removed from the feed without manual intervention.
 
 ---
 
@@ -246,7 +283,11 @@ LIMIT ? OFFSET ?
 
 ### `POST /api/items/{id}/seen`
 
-Sets `seen_at = datetime('now')` and returns the timestamp. The browser sets `item.seen_at` on success, which prevents a double-POST on the same item.
+Sets `seen_at = datetime('now')` and writes through to `seen_guids` (so seen state survives pruning). Returns the timestamp. The browser sets `item.seen_at` on success, which prevents a double-POST on the same item.
+
+### `GET /api/items/count`
+
+Returns `{"count": N}` for the current filter (unseen/seen, optional `feed_id`). Used by the WebUI to populate the total counter and detect end-of-feed without a separate count per page.
 
 ### `GET /api/status`
 
@@ -260,71 +301,98 @@ Backend proxy for the [Reddit Feeds](https://github.com/otonm/reddit-feeds) comp
 
 ## Frontend
 
-`app.js` is ~540 lines split into 14 labelled sections. No framework, no build step.
+Seven vanilla JS modules, no framework, no build step. Each module attaches to `window.MRR` and exposes a public API consumed by other modules.
 
-### State Model
+### Module Map
+
+| Module | Lines | Responsibility |
+|--------|-------|---------------|
+| `app.js` | ~179 | Startup, config reading from CSS vars, keymap, module wiring, service worker registration |
+| `item-store.js` | ~114 | Owns the item array; handles paginated fetch + count from API |
+| `feed-view.js` | ~324 | DOM rendering: placeholders, media wraps, gallery slides, seen badges |
+| `scroll-controller.js` | ~107 | IntersectionObservers for currentIndex and seen marking |
+| `autoscroll-controller.js` | ~134 | Per-item dwell timer: auto-advance on image delay, GIF duration, or video `ended` |
+| `cache-queue.js` | ~121 | Single-worker priority download queue; emits `item-loaded` / `item-failed` |
+| `controls.js` | ~221 | FAB menu, autoscroll/mute/show-seen toggles, Reddit Feeds status modal with live polling |
+
+### State Model (in `item-store.js`)
 
 ```js
 items[]          // all items loaded from the API
 currentIndex     // index of the item currently in view
 page             // next API page to request
-loading          // prevents concurrent in-flight fetches
 hasMore          // false when API returns an empty page
-autoScroll       // bool — RAF loop running?
-autoScrollPaused // bool — paused waiting for a video/GIF to finish?
-slideshowMode    // bool — slideshow or scroll view?
 showSeen         // bool — include seen items in the feed?
-fetchGeneration  // incremented on reset to discard stale responses
 ```
 
-### IntersectionObserver Roles
+`currentIndex` is set by `scroll-controller.js` via `setCurrentIndex()`. There is no local `loading` flag — concurrent fetches are gated by `fetching` inside `item-store.js`. Stale responses (from a previous show-seen toggle) are handled by the caller clearing the item list before refetching.
 
-Three observers are created at module load and reused for every item:
+### IntersectionObservers (`scroll-controller.js`)
+
+Two observers, created at init and reused for every item:
 
 | Observer | Threshold | Purpose |
 |----------|-----------|---------|
-| `seenObserver` | 0 | Fires `POST /seen` when an item's bottom edge exits through the top of the viewport (i.e. fully scrolled past) |
-| `viewObserver` | 0.5 | Keeps `currentIndex` in sync during native scroll; triggers pagination when near the end |
-| `mediaObserver` | 0–1 (21 steps) | Plays/pauses videos and GIFs based on visibility; pauses auto-scroll when a media element's top edge reaches the viewport top |
+| `observer` | 0.6 | Tracks most-visible item — updates `currentIndex`, sets visible video, triggers cache rebuild |
+| `seenObserver` | 0 | Binary enter/leave; fires `POST /api/items/{id}/seen` when an item leaves upward |
 
-`seenObserver` is attached only after the media element fires `load` / `loadeddata` — this avoids false positives from zero-height elements before the image dimensions are known.
+A debounced scroll event listener on `#feed` (200 ms) acts as a secondary seen trigger for platforms where IntersectionObserver misses edge cases (desktop scroll on overflow containers). Both mechanisms call `postSeen()` which deduplicates via `item.seen_at`.
 
-### View Modes
+### Gallery Support (`feed-view.js`)
 
-**Scroll mode** (default): items live in `#feed-list` inside `#scroll-view`. Navigation scrolls via `scrollIntoView`. Auto-scroll drives `scrollBy(0, AUTO_SCROLL_SPEED)` on every animation frame.
+Items with multiple slides (detected by `Array.isArray(item.media) && item.media.length > 1`) render as a horizontally scrollable gallery:
 
-**Slideshow mode**: `#scroll-view` is hidden; `#slideshow-view` is shown. Two absolutely-positioned layers (`#slide-a`, `#slide-b`) swap `active` class on each advance, producing a CSS `opacity` crossfade. Duration is `--slideshow-transition-ms` injected at serve time. The active layer name rotates between `"a"` and `"b"` via `activeSlide`.
+- **`buildGallery(wrap, mediaList, firstEl)`**: creates a `.gallery` container with one `.gallery-slide` per media entry, plus a `.gallery-dots` row of indicators. Slide 1 reuses the element already downloaded by the cache queue; remaining slides load directly from the media proxy.
+- **`onGalleryScroll`**: debounced (60 ms) — marks the active slide + dot by `scrollLeft / clientWidth`, pauses offscreen videos, and rebinds autoscroll to the current slide.
+- **`advanceOrNext(wrap)`**: autoscroll step — advances to the next gallery slide if not on the last, otherwise snaps to the next feed item.
+- **`galleryNext()` / `galleryPrev()`**: called from keyboard `←`/`→` — step slides, or snap to next/prev feed item on boundary.
 
-### CSS Variable Injection
+A `.count-badge` in the upper-left corner shows the number of slides (hidden when count ≤ 1). A `.seen-badge` checkmark is added by `tagAsSeen()` when the item has been marked seen.
 
-`main.py:_build_html()` replaces the `<!-- SLIDESHOW_TRANSITION -->` comment in `index.html` with a `<style>` block:
+### Autoscroll (`autoscroll-controller.js`)
 
-```html
-<style>:root{
-  --slideshow-transition-ms:400ms;
-  --image-display-delay-ms:5000ms;
-  --prefetch-ahead:5;
-  --auto-scroll-speed:1.5
-}</style>
-```
+Per-item timer-driven autoscroll (no RAF pixel-scroll loop):
 
-`app.js` reads these at module load via `getComputedStyle(document.documentElement).getPropertyValue(...)`. This avoids a separate API call from JS and ensures the values are available synchronously before any rendering occurs.
+| Media type | Advance trigger |
+|------------|----------------|
+| image | `setTimeout(IMAGE_AUTOSCROLL_DELAY_S)` |
+| gif | `setTimeout(getGifDuration(src))` — computes via GIF byte-scan |
+| video | `addEventListener('ended', ...)` — fires once |
 
-### Auto-Scroll RAF Loop
-
-`rafAutoScroll()` calls `scrollBy(0, AUTO_SCROLL_SPEED)` and schedules itself with `requestAnimationFrame`. The loop is started by `startAutoScroll()` and stopped by `stopAutoScroll()` (which cancels the pending frame). `autoScrollPaused` gates the `scrollBy` call without cancelling the RAF handle, allowing instant resume when the pause condition clears.
+A minimum dwell floor (`IMAGE_AUTOSCROLL_DELAY_S`) prevents too-rapid advances on short GIFs or videos. When the current item changes (scroll controller fires), the timer/video listener is reset for the new item. Videos play with `loop=false` when autoscroll is on.
 
 ### GIF Duration Byte-Scan
 
-`getGifDuration(url)` fetches the GIF bytes and scans for Graphic Control Extension blocks (`0x21 0xF9 0x04`). Each block contains a 2-byte delay in 1/100 s units. The function sums all frame delays to get the total animation duration, clamped to [50 ms, 60 s]. The duration is cached on the item object after the first fetch. Auto-scroll uses this duration to pause for exactly one full GIF cycle before continuing.
+`getGifDuration(url)` fetches the GIF bytes and scans for Graphic Control Extension blocks (`0x21 0xF9 0x04`). Each block contains a 2-byte delay in 1/100 s units. Returns the sum of all frame delays, clamped to [50 ms, 60 s]. Falls back to `imageAutoscrollDelayMs` if the scan fails or the URL isn't a media proxy URL.
+
+### Cache Queue (`cache-queue.js`)
+
+A single-worker priority download queue — downloads one media file at a time. On `rebuild(currentIndex, lookaheadN, items)`, the queue is rebuilt with the current item first, then forward lookahead items, then backward items, then the rest. Already-cached items are skipped. When the worker finishes a download, it emits `item-loaded(id, el)`; `feed-view.js` replaces the corresponding `.placeholder` with a `.media-item`.
+
+The frontend also fires a fire-and-forget `POST /api/prefetch/hint` after each rebuild, which triggers server-side prewarming of the disk cache ahead of the browser-side worker.
+
+### CSS Variable Injection
+
+`main.py:_build_html()` replaces `<!-- CONFIG_VARS -->` in `index.html` with a `<style>` block:
+
+```html
+<style>:root{
+  --feed-initial-count:10;
+  --image-autoscroll-delay-s:2
+}</style>
+```
+
+`app.js:readConfig()` reads these at module load via `getComputedStyle(document.documentElement).getPropertyValue(...)`. This avoids a separate API call and ensures values are available synchronously before any rendering.
+
+Additionally, `{{VERSION}}` in static asset URLs (`style.css?v={{VERSION}}`, `app.js?v={{VERSION}}`, etc.) is replaced with `int(time.time())` at startup, forcing browsers and the service worker cache to re-fetch assets after a restart.
 
 ---
 
 ## Configuration
 
-`config.py` defines a single `Settings` class extending Pydantic's `BaseSettings`. Every field maps directly to an environment variable of the same name (uppercased). No `.env` file parsing at the Python level — that is handled by Docker/the shell. `settings` is a module-level singleton imported wherever config values are needed.
+`config.py` defines a `Settings` dataclass. Every field maps to an environment variable of the same name (uppercased). `_load_settings()` reads `os.environ` at import time and returns a singleton `settings` object. No `.env` file parsing at the Python level — that is handled by Docker/the shell.
 
-Frontend-visible values (`image_display_delay_ms`, `slideshow_transition_ms`, `prefetch_ahead`, `auto_scroll_speed`) travel to the browser as CSS custom properties injected into the HTML at startup — see [CSS Variable Injection](#css-variable-injection) above.
+Frontend-visible values (`feed_initial_count`, `image_autoscroll_delay_s`) travel to the browser as CSS custom properties injected into the HTML at startup — see [CSS Variable Injection](#css-variable-injection) above.
 
 ---
 

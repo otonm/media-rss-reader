@@ -7,15 +7,16 @@ The backend continuously fetches feeds in the background (no browser session req
 ## Features
 
 - **Media-first** — only images, GIFs, and videos are shown; text content is ignored
+- **Gallery support** — items with multiple images display as horizontally scrollable galleries with dot indicators and arrow-key navigation
 - **Scroll mode** — continuous vertical feed with keyboard/swipe navigation and auto-scroll
-- **Slideshow mode** — fullscreen single-item view with CSS crossfade transitions
-- **Dark / light theme** — toggle with `d`, persisted across sessions
-- **Auto-scroll** — continuous pixel-level drift; pauses automatically for videos and GIFs
+- **Auto-scroll** — per-item dwell timer: images advance after a configurable delay, GIFs after one full cycle, videos after play-through
 - **Pre-fetch cache** — upcoming media is downloaded before you reach it, eliminating load stalls
 - **Persistent storage** — feed items survive restarts; seen state tracked per item
 - **OPML-driven** — manage your feed list with any RSS reader's export format
 - **Authentication** — username/password + TOTP (set up on first login), signed 7-day session cookies, IP-based brute-force lockout
 - **Docker-native** — single container, volume-mounted data, no external database service
+- **PWA-ready** — installable as a standalone app; service worker caches the UI for offline-capable loading
+- **Dead-URL self-healing** — 404 media URLs are tracked; items whose media is entirely gone are automatically dropped and not re-inserted on the next feed poll
 - **Reddit Feeds integration** — status modal showing companion service health (feed names, last fetch, item counts)
 
 ## Key Bindings
@@ -24,10 +25,10 @@ The backend continuously fetches feeds in the background (no browser session req
 |---|---|
 | `j` / `↓` | Next item |
 | `k` / `↑` | Previous item |
+| `←` / `→` | Previous / next gallery slide |
 | `a` | Toggle auto-scroll |
-| `s` | Toggle slideshow mode |
 | `m` | Toggle mute |
-| `d` | Toggle dark / light theme |
+| `s` | Toggle show seen items |
 
 On mobile, swipe up/down to navigate. Tap ☰ to open the control menu.
 
@@ -105,9 +106,8 @@ Generate a suitable secret key with `openssl rand -hex 32`.
 | `KEEP_ITEMS` | `1000` | Max items kept in the database |
 | `ITEMS_MAX_AGE_HOURS` | `168` | Delete seen items older than this (hours; 168 = 7 days) |
 | `PREFETCH_AHEAD` | `5` | Items to pre-fetch ahead of current scroll position |
-| `IMAGE_DISPLAY_DELAY_MS` | `5000` | Dwell time per image/GIF in auto-scroll / slideshow (ms) |
-| `SLIDESHOW_TRANSITION_MS` | `400` | CSS crossfade duration between slideshow items (ms) |
-| `AUTO_SCROLL_SPEED` | `1.5` | Pixels scrolled per animation frame (~90 px/s at 60 fps) |
+| `FEED_INITIAL_COUNT` | `10` | Items per API page and initial load batch |
+| `IMAGE_AUTOSCROLL_DELAY_S` | `2` | Dwell time per image in auto-scroll (seconds); also the minimum dwell for GIFs and videos |
 | `PORT` | `8080` | Port the server listens on inside the container (host port is set by the `-p` flag in Docker / Compose) |
 | `LOG_LEVEL` | `info` | Uvicorn log level: `debug` \| `info` \| `warning` \| `error` |
 | `REDDIT_FEEDS_API_URL` | `http://127.0.0.1:9090` | URL of the Reddit Feeds status API (for the status modal) |
@@ -161,8 +161,8 @@ services:
       - AUTH_PASSWORD=changeme
       - AUTH_SECRET_KEY=replace-with-a-random-32-char-secret
       # - LOG_LEVEL=debug
-      # - IMAGE_DISPLAY_DELAY_MS=5000
-      # - AUTO_SCROLL_SPEED=1.5
+      # - FEED_INITIAL_COUNT=10
+      # - IMAGE_AUTOSCROLL_DELAY_S=2
     restart: unless-stopped
     healthcheck:
       test: ["CMD-SHELL", "wget -q --spider http://127.0.0.1:8080/health || exit 1"]

@@ -4,10 +4,12 @@
 # Added by code-review-graph
 .code-review-graph/
 .mcp.json
+.opencode.json
 
 # Claude
 .claude/
 CLAUDE.md
+AGENTS.md
 TODO.md
 docs/
 
