@@ -5,17 +5,103 @@ refresh_all_feeds() — fetch new items for every known feed, then prune
 prune_items()       — enforce KEEP_ITEMS and ITEMS_MAX_AGE_HOURS limits
 """
 
+import asyncio
+import json
 import logging
+from pathlib import Path
 
 import aiosqlite
+import feedparser
 import httpx
 
 from src.config import settings
-from src.feeds.fetcher import _feed_id, fetch_feed
+from src.feeds.fetcher import _feed_id, _item_id, fetch_feed
 from src.feeds.opml import parse_opml
 from src.media.cache import evict
+from src.media.detector import detect_all_media
 
 logger = logging.getLogger(__name__)
+
+
+async def local_xml_sync(db: aiosqlite.Connection, feeds_dir: str) -> None:
+    """Scan `feeds_dir` for *.xml, parse each file, insert feeds + items.
+
+    One row per XML file: feed_id = sha256(filename), url = filename,
+    title = feed.channel.title (falls back to filename), site_link =
+    feed.channel.link (NULL when missing). Items are inserted with the
+    existing _item_id scheme so deduplication still works.
+
+    Missing or unreadable files are logged and skipped — they trigger a
+    hard-delete on the next call to sync_feeds(), not here.
+    """
+    folder = Path(feeds_dir)
+    if not folder.is_dir():
+        logger.warning(f"FEEDS_DIR does not exist or is not a directory: {feeds_dir}")
+        return
+
+    xml_files = sorted(folder.glob("*.xml"))
+    logger.debug(f"Local XML sync found {len(xml_files)} file(s) in {feeds_dir}")
+
+    for path in xml_files:
+        filename = path.name
+        try:
+            text = path.read_text(encoding="utf-8")
+            feed = await asyncio.to_thread(feedparser.parse, text)
+        except Exception as exc:
+            logger.warning(f"Skipping unreadable feed file {path}: {exc}")
+            continue
+
+        feed_id = _feed_id(filename)
+        title = feed.channel.get("title") if hasattr(feed, "channel") else None
+        site_link = feed.channel.get("link") if hasattr(feed, "channel") else None
+        if not title:
+            title = filename
+
+        await db.execute(
+            """INSERT INTO feeds (id, url, title, site_link) VALUES (?, ?, ?, ?)
+               ON CONFLICT(id) DO UPDATE SET url=excluded.url, title=excluded.title, site_link=excluded.site_link""",
+            (feed_id, filename, title, site_link),
+        )
+
+        async with db.execute(
+            "SELECT guid FROM unavailable_guids WHERE feed_id = ?", (feed_id,)
+        ) as cur:
+            dead_guids = {row["guid"] for row in await cur.fetchall()}
+
+        inserted = 0
+        for entry in feed.entries:
+            results = detect_all_media(entry)
+            if not results:
+                continue
+            media_url, media_type = results[0]
+            guid = entry.get("id") or entry.get("link") or media_url
+            if guid in dead_guids:
+                continue
+            item = {
+                "id": _item_id(feed_id, guid),
+                "feed_id": feed_id,
+                "guid": guid,
+                "title": entry.get("title"),
+                "media_url": media_url,
+                "media_type": media_type,
+                "media_json": json.dumps([{"url": u, "type": t} for u, t in results]),
+                "pub_date": entry.get("published") or entry.get("updated"),
+            }
+            cursor = await db.execute(
+                """INSERT OR IGNORE INTO items
+                   (id, feed_id, guid, title, media_url, media_type, media_json, pub_date)
+                   VALUES (:id, :feed_id, :guid, :title, :media_url, :media_type, :media_json, :pub_date)""",
+                item,
+            )
+            inserted += cursor.rowcount
+        logger.debug(f"Local XML sync {filename}: {inserted} new item(s)")
+
+        await db.execute(
+            "UPDATE feeds SET last_fetched_at = datetime('now') WHERE id = ?",
+            (feed_id,),
+        )
+
+    await db.commit()
 
 
 async def opml_sync(db: aiosqlite.Connection, opml_path: str, client: httpx.AsyncClient) -> None:
