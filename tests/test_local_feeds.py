@@ -60,7 +60,8 @@ _OPML_RSS = """\
 
 
 async def test_sync_feeds_union_folder_and_opml(
-    db: aiosqlite.Connection, tmp_path: Path,
+    db: aiosqlite.Connection,
+    tmp_path: Path,
 ) -> None:
     (tmp_path / "feed-one.xml").write_text(_RSS_TWO_ITEMS)
     opml = tmp_path / "feeds.opml"
