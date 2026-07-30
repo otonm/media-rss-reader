@@ -26,6 +26,9 @@
     cached: new Set(),  // IDs that have finished loading successfully
   };
 
+  // ponytail: debug trace for media cache queue. Strip when no longer needed.
+  function dbg(...args) { console.debug("[cache-queue]", ...args); }
+
   const listeners = { "item-loaded": [], "item-failed": [] };
 
   function on(event, cb) {
@@ -47,6 +50,8 @@
     behind.forEach((it) => { if (!state.cached.has(it.id)) newQueue.push(it.id); });
     items.slice(currentIndex + 1 + lookaheadN).forEach((it) => newQueue.push(it.id));
     state.queue = newQueue.filter((id) => !state.cached.has(id) && id !== state.loadingId);
+    dbg("rebuild current=" + currentIndex + " lookahead=" + lookaheadN
+        + " queueLen=" + state.queue.length + " cached=" + state.cached.size);
   }
 
   async function processNext() {
@@ -55,11 +60,14 @@
       state.loadingId = id;
       try {
         const item = MRR.itemStore.getItems().find((i) => i.id === id);
-        if (!item) { state.loadingId = null; continue; }
+        if (!item) { dbg("download skip", id, "not in store"); state.loadingId = null; continue; }
+        dbg("download start", id, item && item.media_url);
         const el = await downloadOne(item);
         state.cached.add(id);
+        dbg("download ok", id);
         emit("item-loaded", id, el);
       } catch (err) {
+        dbg("download failed", id, err && err.message);
         emit("item-failed", id);
       } finally {
         state.loadingId = null;

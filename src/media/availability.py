@@ -18,9 +18,7 @@ import aiosqlite
 logger = logging.getLogger(__name__)
 
 
-async def _candidate_items(
-    db: aiosqlite.Connection, url: str, item_id: str | None
-) -> list[aiosqlite.Row]:
+async def _candidate_items(db: aiosqlite.Connection, url: str, item_id: str | None) -> list[aiosqlite.Row]:
     """Return item rows that may contain `url`, deduplicated by item id.
 
     Searches two ways and merges the results:
@@ -35,16 +33,14 @@ async def _candidate_items(
 
     if item_id is not None:
         async with db.execute(
-            "SELECT id, feed_id, guid, media_url, media_json "
-            "FROM items WHERE id = ?",
+            "SELECT id, feed_id, guid, media_url, media_json FROM items WHERE id = ?",
             (item_id,),
         ) as cur:
             for row in await cur.fetchall():
                 seen[row["id"]] = row
 
     async with db.execute(
-        "SELECT id, feed_id, guid, media_url, media_json "
-        "FROM items WHERE media_url = ?",
+        "SELECT id, feed_id, guid, media_url, media_json FROM items WHERE media_url = ?",
         (url,),
     ) as cur:
         for row in await cur.fetchall():
@@ -66,22 +62,17 @@ async def _all_dead(db: aiosqlite.Connection, urls: list[str]) -> bool:
     if not urls:
         return False
     placeholders = ",".join("?" * len(urls))
-    async with db.execute(
-        f"SELECT url FROM dead_urls WHERE url IN ({placeholders})", urls
-    ) as cur:
+    async with db.execute(f"SELECT url FROM dead_urls WHERE url IN ({placeholders})", urls) as cur:
         dead = {row["url"] for row in await cur.fetchall()}
     return dead.issuperset(urls)
 
 
-async def mark_url_dead_and_maybe_drop(
-    url: str, item_id: str | None, db: aiosqlite.Connection
-) -> list[str]:
+async def mark_url_dead_and_maybe_drop(url: str, item_id: str | None, db: aiosqlite.Connection) -> list[str]:
     """Record `url` as dead. For every item that contains it, if every URL
     of that item is now dead, DELETE the row and tombstone it. Returns the
     IDs of items dropped by this call."""
-    await db.execute(
-        "INSERT OR IGNORE INTO dead_urls (url) VALUES (?)", (url,)
-    )
+    logger.debug(f"mark_url_dead_and_maybe_drop: recording dead url={url} item_id={item_id}")
+    await db.execute("INSERT OR IGNORE INTO dead_urls (url) VALUES (?)", (url,))
 
     candidates = await _candidate_items(db, url, item_id)
     if not candidates:
@@ -95,8 +86,7 @@ async def mark_url_dead_and_maybe_drop(
             continue
         await db.execute("DELETE FROM items WHERE id = ?", (row["id"],))
         await db.execute(
-            "INSERT OR IGNORE INTO unavailable_guids (feed_id, guid, marked_at) "
-            "VALUES (?, ?, datetime('now'))",
+            "INSERT OR IGNORE INTO unavailable_guids (feed_id, guid, marked_at) VALUES (?, ?, datetime('now'))",
             (row["feed_id"], row["guid"]),
         )
         dropped.append(row["id"])
@@ -108,5 +98,6 @@ async def mark_url_dead_and_maybe_drop(
             len(urls),
         )
 
+    logger.debug(f"mark_url_dead_and_maybe_drop dropped {len(dropped)} item(s)")
     await db.commit()
     return dropped

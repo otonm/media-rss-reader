@@ -59,6 +59,7 @@ async def cache_stream_write(
                 fh.write(chunk)
         await asyncio.to_thread(tmp.rename, path)
         await asyncio.to_thread(_write_meta, meta, content_type)
+        logger.debug(f"cache_stream_write: cached {url} (type={content_type})")
     except Exception:
         tmp.unlink(missing_ok=True)
         meta.unlink(missing_ok=True)

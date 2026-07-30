@@ -14,6 +14,9 @@
 
   const MRR = (window.MRR = window.MRR || {});
 
+  // ponytail: debug trace for app startup. Strip when no longer needed.
+  function dbg(...args) { console.debug("[app]", ...args); }
+
   function readConfig() {
     const root = document.documentElement;
     const cs = getComputedStyle(root);
@@ -63,6 +66,7 @@
   // feed. Called once on startup and again whenever the user toggles
   // the show-seen preference.
   function reloadFeed() {
+    dbg("reloadFeed start showSeen=" + MRR.itemStore.showSeen);
     clearFeed();
     resetItemStore();
     Promise.resolve()
@@ -77,7 +81,7 @@
         // Reset scroll to the top of the feed.
         document.getElementById("feed").scrollTop = 0;
       })
-      .catch((err) => console.error("feed load failed", err));
+      .catch((err) => { dbg("reloadFeed failed", err); console.error("feed load failed", err); });
   }
 
   function setShowSeen(on) {
@@ -88,6 +92,7 @@
   }
 
   function init() {
+    dbg("init start");
     readConfig();
     MRR.itemStore.setShowSeen(readShowSeenPref());
     MRR.scrollController.init();

@@ -15,9 +15,12 @@ Media type is determined by file extension only at ingest time. GIF vs image
 is distinguished by extension; the proxy can confirm via Content-Type later.
 """
 
+import logging
 from html import unescape
 from html.parser import HTMLParser
 from pathlib import PurePosixPath
+
+logger = logging.getLogger(__name__)
 
 # Supported extensions per media type. Query strings are stripped before matching.
 _IMAGE_EXTS = {".jpg", ".jpeg", ".png", ".webp", ".avif", ".svg"}
@@ -114,6 +117,7 @@ def detect_media(entry: dict) -> tuple[str, str] | None:
             url = item.get("url", "")
             media_type = detect_type(url)
             if url and media_type:
+                logger.debug(f"detect_media found {media_type} via {key}: {url}")
                 return url, media_type
 
     summary = entry.get("summary", "")
@@ -122,8 +126,10 @@ def detect_media(entry: dict) -> tuple[str, str] | None:
         if og_url:
             media_type = detect_type(og_url)
             if media_type:
+                logger.debug(f"detect_media found {media_type} via og:image: {og_url}")
                 return og_url, media_type
 
+    logger.debug("detect_media found nothing for entry")
     return None
 
 
@@ -146,6 +152,7 @@ def detect_all_media(entry: dict) -> list[tuple[str, str]]:
     seen_urls: set[str] = set()
 
     for key in ("enclosures", "media_content"):
+        logger.debug(f"detect_all_media scanning {key}")
         for item in entry.get(key, []):
             url = item.get("url", "")
             media_type = detect_type(url)
@@ -154,12 +161,17 @@ def detect_all_media(entry: dict) -> list[tuple[str, str]]:
                 found.append((url, media_type))
 
     if found:
-        for url in _extract_img_srcs(entry.get("summary", "")):
+        img_srcs = _extract_img_srcs(entry.get("summary", ""))
+        logger.debug(f"detect_all_media tier1 ({len(found)} slides), tier2 {len(img_srcs)} <img> src(s)")
+        for url in img_srcs:
             media_type = detect_type(url)
             if media_type and url not in seen_urls:
                 seen_urls.add(url)
                 found.append((url, media_type))
         return found
 
+    logger.debug("detect_all_media tier1 empty, falling back to detect_media")
     single = detect_media(entry)
+    if single:
+        logger.debug("detect_all_media fallback: 1 slide")
     return [single] if single else []

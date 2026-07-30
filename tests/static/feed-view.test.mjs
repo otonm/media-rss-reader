@@ -564,7 +564,7 @@ test("onItemLoaded for a multi-slide gallery does NOT throw", () => {
   // Wrap must be in the feed with a gallery of three slides.
   const wrap = feed.children.find((c) => c.dataset.id === "abc");
   assert.ok(wrap, "wrap must replace the placeholder");
-  const slides = wrap.querySelectorAll(".gallery-slide");
+  const slides = wrap.querySelector(".gallery").children;
   assert.equal(slides.length, 3, "gallery must have one slide per media entry");
   // The non-first slide's <img> must carry the proxy URL with item_id.
   const nonFirst = slides[1].children[0];

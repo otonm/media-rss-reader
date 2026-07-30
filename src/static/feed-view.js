@@ -36,6 +36,9 @@
     autoscrollBound: false,
   };
 
+  // ponytail: debug trace for feed render pipeline. Strip when no longer needed.
+  function dbg(...args) { console.debug("[feed-view]", ...args); }
+
   function createPlaceholder(item) {
     const wrap = document.createElement("div");
     wrap.className = "placeholder";
@@ -82,6 +85,8 @@
     wrap.className = "media-item";
     wrap.dataset.id = item.id;
     wrap.dataset.mediaType = item.media_type;
+    dbg("createMediaWrap", item.id, "type=" + item.media_type,
+        "slides=" + (Array.isArray(item.media) ? item.media.length : 1));
     const count = Array.isArray(item.media) ? item.media.length : 1;
     const countBadge = document.createElement("span");
     countBadge.className = "count-badge";
@@ -112,6 +117,7 @@
       const slide = document.createElement("div");
       slide.className = "gallery-slide" + (i === 0 ? " active" : "");
       slide.dataset.mediaType = m.type;
+      dbg("buildGallery slide", i, m.type, m.url);
       let el;
       if (i === 0) {
         el = firstEl;
@@ -239,6 +245,7 @@
   }
 
   function onItemLoaded(id, el) {
+    dbg("onItemLoaded", id, el.tagName);
     const placeholder = state.feed.querySelector(`.placeholder[data-id="${id}"]`);
     if (!placeholder) return; // placeholder already removed (e.g. scrolled past)
     const item = MRR.itemStore.getItems().find((i) => i.id === id);

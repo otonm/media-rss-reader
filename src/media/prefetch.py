@@ -42,7 +42,7 @@ async def _warm(item_id: str, url: str, client: httpx.AsyncClient, db: aiosqlite
                 except Exception as exc:  # pragma: no cover
                     logger.warning("mark_url_dead_and_maybe_drop failed for %s: %s", url, exc)
     except Exception as exc:  # pragma: no cover
-        logger.debug("prefetch failed for %s: %s", url, exc)
+        logger.debug(f"prefetch failed for {url}: {exc}")
 
 
 async def warm_startup_cache(db: aiosqlite.Connection, client: httpx.AsyncClient) -> None:
@@ -58,6 +58,7 @@ async def warm_startup_cache(db: aiosqlite.Connection, client: httpx.AsyncClient
             (settings.cache_max_items,),
         ) as cur:
             rows = await cur.fetchall()
+        logger.debug(f"warm_startup_cache: {len(rows)} item(s) to pre-warm")
     except Exception as exc:
         logger.warning("warm_startup_cache: DB query failed, skipping cache warm: %s", exc)
         return
@@ -89,5 +90,6 @@ async def prefetch_ahead(item_id: str, db: aiosqlite.Connection, client: httpx.A
         (item_id, settings.prefetch_ahead),
     ) as cur:
         rows = await cur.fetchall()
+    logger.debug(f"prefetch_ahead for {item_id}: {len(rows)} item(s)")
     for row in rows:
         asyncio.create_task(_warm(row["id"], row["media_url"], client, db))

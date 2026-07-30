@@ -42,9 +42,11 @@ def get_last_opml_sync() -> datetime.datetime | None:
 
 
 async def _opml_sync_loop(db: aiosqlite.Connection, client: httpx.AsyncClient) -> None:
+    logger.debug(f"OPML sync loop started (interval={settings.opml_sync_interval}s)")
     while _state.running:
         await asyncio.sleep(settings.opml_sync_interval)
         try:
+            logger.debug("OPML sync cycle starting")
             await opml_sync(db, settings.opml_path, client)
             _state.last_opml_sync = datetime.datetime.now(datetime.UTC)
         except Exception as exc:
@@ -52,9 +54,11 @@ async def _opml_sync_loop(db: aiosqlite.Connection, client: httpx.AsyncClient) -
 
 
 async def _refresh_loop(db: aiosqlite.Connection, client: httpx.AsyncClient) -> None:
+    logger.debug(f"Feed refresh loop started (interval={settings.feed_refresh_interval}s)")
     while _state.running:
         await asyncio.sleep(settings.feed_refresh_interval)
         try:
+            logger.debug("Feed refresh cycle starting")
             await refresh_all_feeds(db, client)
         except Exception as exc:
             logger.warning("Feed refresh failed (will retry on schedule): %s", exc)
@@ -62,6 +66,7 @@ async def _refresh_loop(db: aiosqlite.Connection, client: httpx.AsyncClient) -> 
 
 async def _startup_sync(db: aiosqlite.Connection) -> None:
     """Run the initial OPML sync, feed refresh, and cache warmup as a background task."""
+    logger.debug("Startup sync beginning")
     try:
         await opml_sync(db, settings.opml_path, _state.client)
         _state.last_opml_sync = datetime.datetime.now(datetime.UTC)

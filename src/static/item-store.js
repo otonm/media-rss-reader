@@ -16,6 +16,9 @@
 
   const MRR = (window.MRR = window.MRR || {});
 
+  // ponytail: debug trace for /api/items calls. Strip when no longer needed.
+  function dbg(...args) { console.debug("[item-store]", ...args); }
+
   const state = {
     items: [],
     currentIndex: 0,
@@ -39,6 +42,8 @@
     try {
       const cfg = MRR.config;
       const url = `/api/items?unseen=${unseenParam()}&page=${state.page}&size=${cfg.feedInitialCount}`;
+      dbg("fetchPage unseen=" + unseenParam() + " page=" + state.page
+          + " size=" + cfg.feedInitialCount);
       const resp = await fetch(url);
       if (!resp.ok) return;
       const newItems = await resp.json();
@@ -47,6 +52,8 @@
         return;
       }
       state.items = state.items.concat(newItems);
+      dbg("fetchPage got " + newItems.length + " items, total=" + state.items.length
+          + " hasMore=" + state.hasMore);
       state.page += 1;
     } finally {
       state.fetching = false;
@@ -58,6 +65,7 @@
     if (!resp.ok) return 0;
     const data = await resp.json();
     state.total = data.count;
+    dbg("fetchCount unseen=" + unseenParam() + " -> " + state.total);
     return state.total;
   }
 

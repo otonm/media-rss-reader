@@ -67,21 +67,15 @@ async def _refresh_feed(
     """
     items = await fetch_feed(url, client)
 
-    async with db.execute(
-        "SELECT guid FROM unavailable_guids WHERE feed_id = ?", (feed_id,)
-    ) as cur:
+    async with db.execute("SELECT guid FROM unavailable_guids WHERE feed_id = ?", (feed_id,)) as cur:
         dead_guids = {row["guid"] for row in await cur.fetchall()}
 
-    logger.debug(
-        "Feed %s has %d tombstoned guid(s) to skip", url, len(dead_guids)
-    )
+    logger.debug(f"Feed {url} has {len(dead_guids)} tombstoned guid(s) to skip")
 
     inserted = 0
     for item in items:
         if item["guid"] in dead_guids:
-            logger.debug(
-                "Skipping tombstoned item guid=%s in feed %s", item["guid"], url
-            )
+            logger.debug(f"Skipping tombstoned item guid={item['guid']} in feed {url}")
             continue
         logger.debug(f"Storing item {item['title']} with media URL {item['media_url']} and ID {item['id']}")
         cursor = await db.execute(
@@ -110,10 +104,7 @@ async def _refresh_feed(
     )
     async with db.execute("SELECT changes()") as cur:
         restored = (await cur.fetchone())[0]
-    logger.debug(
-        "Feed %s: restored seen_at on %d item(s)",
-        url, restored,
-    )
+    logger.debug(f"Feed {url}: restored seen_at on {restored} item(s)")
     await db.execute(
         "UPDATE feeds SET last_fetched_at = datetime('now') WHERE id = ?",
         (feed_id,),
@@ -185,10 +176,7 @@ async def prune_items(db: aiosqlite.Connection) -> None:
     await db.commit()
     async with db.execute("SELECT COUNT(*) FROM items") as cur:
         row = await cur.fetchone()
-    logger.debug(
-        "Prune complete: kept %d items (target ≤ %d)",
-        row[0], settings.keep_items,
-    )
+    logger.debug(f"Prune complete: kept {row[0]} items (target ≤ {settings.keep_items})")
 
 
 async def refresh_all_feeds(db: aiosqlite.Connection, client: httpx.AsyncClient) -> None:
