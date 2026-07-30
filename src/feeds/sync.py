@@ -310,6 +310,8 @@ async def sync_feeds(
             opml_feeds = []
         for feed in opml_feeds:
             url = feed["url"]
+            if Path(url).name in folder_urls:
+                continue
             opml_urls.add(url)
             fid = _feed_id(url)
             await db.execute(
