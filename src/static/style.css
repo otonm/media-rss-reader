@@ -158,6 +158,7 @@ html, body {
   scroll-snap-type: x mandatory;
   scrollbar-width: none;
   overscroll-behavior: contain;
+  touch-action: pan-x;
 }
 
 .gallery::-webkit-scrollbar { display: none; }
