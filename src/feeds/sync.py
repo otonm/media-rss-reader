@@ -279,3 +279,52 @@ async def refresh_all_feeds(db: aiosqlite.Connection, client: httpx.AsyncClient)
     # keep_items and cache size limits are reliably enforced.
     await prune_items(db)
     await evict()
+
+
+async def sync_feeds(
+    db: aiosqlite.Connection,
+    feeds_dir: str,
+    opml_path: str,
+    client: httpx.AsyncClient,
+) -> None:
+    """Reconcile the feeds table against the union of FEEDS_DIR + OPML.
+
+    Pass ``opml_path=""`` to skip the OPML pass (folder only). Always runs
+    a hard-delete at the end: any feed row whose url is not in the union
+    is removed (CASCADE drops items).
+    """
+    await local_xml_sync(db, feeds_dir)
+
+    folder_urls: set[str] = set()
+    folder_dir = Path(feeds_dir)
+    if folder_dir.is_dir():
+        folder_urls = {p.name for p in folder_dir.glob("*.xml")}
+
+    opml_urls: set[str] = set()
+    if opml_path:
+        try:
+            opml_feeds = parse_opml(opml_path)
+        except FileNotFoundError:
+            logger.debug(f"OPML file not present at {opml_path}; skipping OPML pass")
+            opml_feeds = []
+        except Exception as exc:
+            logger.warning(f"OPML parse failed for {opml_path}: {exc}")
+            opml_feeds = []
+        for feed in opml_feeds:
+            url = feed["url"]
+            opml_urls.add(url)
+            fid = _feed_id(url)
+            await db.execute(
+                "INSERT OR IGNORE INTO feeds (id, url, title) VALUES (?, ?, ?)",
+                (fid, url, feed["title"]),
+            )
+
+    union = folder_urls | opml_urls
+
+    if union:
+        placeholders = ",".join("?" * len(union))
+        await db.execute(f"DELETE FROM feeds WHERE url NOT IN ({placeholders})", list(union))
+    else:
+        await db.execute("DELETE FROM feeds")
+
+    await db.commit()
