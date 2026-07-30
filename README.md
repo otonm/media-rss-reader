@@ -97,6 +97,7 @@ Generate a suitable secret key with `openssl rand -hex 32`.
 | `AUTH_LOCKOUT_ATTEMPTS` | `5` | Failed login attempts before IP lockout |
 | `AUTH_LOCKOUT_MINUTES` | `15` | Lockout duration in minutes |
 | `OPML_PATH` | `/data/feeds.opml` | Path to the OPML file inside the container |
+| `FEEDS_DIR` | `/feeds-output` | Directory scanned for `*.xml` RSS feeds (takes precedence over OPML) |
 | `DB_PATH` | `/data/db/reader.db` | SQLite database path inside the container |
 | `CACHE_DIR` | `/cache` | Directory for cached media files |
 | `OPML_SYNC_INTERVAL` | `3600` | Seconds between OPML re-reads |
