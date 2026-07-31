@@ -29,8 +29,6 @@ _index_path = _static_dir / "index.html"
 
 
 def _build_html() -> str:
-    if not _index_path.exists():
-        return ""
     style = (
         f"<style>:root{{"
         f"--feed-initial-count:{settings.feed_initial_count};"
@@ -65,8 +63,7 @@ app.include_router(items.router, prefix="/api")
 app.include_router(media.router, prefix="/api")
 app.include_router(reddit_feeds.router, prefix="/api")
 
-if _static_dir.exists():
-    app.mount("/static", StaticFiles(directory=str(_static_dir)), name="static")
+app.mount("/static", StaticFiles(directory=str(_static_dir)), name="static")
 
 
 @app.get("/health")

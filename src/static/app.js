@@ -6,16 +6,12 @@
 // and kicks off the initial feed load.
 //
 // Public API (exposed on MRR.app):
-//   reloadFeed()              — refetch with the current showSeen setting
 //   setShowSeen(on)           — toggle the seen-filter and refetch
 // ---------------------------------------------------------------------------
 (function () {
   "use strict";
 
   const MRR = (window.MRR = window.MRR || {});
-
-  // ponytail: debug trace for app startup. Strip when no longer needed.
-  function dbg(...args) { console.debug("[app]", ...args); }
 
   function readConfig() {
     const root = document.documentElement;
@@ -47,31 +43,17 @@
     }
   }
 
-  function clearFeed() {
-    const feed = document.getElementById("feed");
-    while (feed.firstChild) feed.removeChild(feed.firstChild);
-    // Drop the IntersectionObserver registrations for the old wraps.
-    // scrollController doesn't expose unObserve; re-creating the
-    // observers on init() will leave stale references but the feed is
-    // empty, so it doesn't matter for correctness.
-  }
-
-  function resetItemStore() {
-    // Reset the in-memory state of the store so the next fetchPage starts
-    // from page 0. The store exposes resetForReload() for exactly this.
-    MRR.itemStore.resetForReload();
-  }
-
   // Refetch with the current showSeen filter, replacing the rendered
   // feed. Called once on startup and again whenever the user toggles
   // the show-seen preference.
+  //
+  // The old wraps' IntersectionObserver registrations are left dangling:
+  // scrollController exposes no unobserve, but the feed is empty so it
+  // doesn't matter for correctness.
   function reloadFeed() {
-    dbg("reloadFeed start showSeen=" + MRR.itemStore.showSeen);
-    clearFeed();
-    resetItemStore();
-    Promise.resolve()
-      .then(() => MRR.itemStore.fetchCount())
-      .then(() => MRR.itemStore.fetchPage())
+    document.getElementById("feed").replaceChildren();
+    MRR.itemStore.resetForReload();
+    MRR.itemStore.fetchPage()
       .then(() => {
         const items = MRR.itemStore.getItems();
         if (items.length === 0) return;
@@ -81,7 +63,7 @@
         // Reset scroll to the top of the feed.
         document.getElementById("feed").scrollTop = 0;
       })
-      .catch((err) => { dbg("reloadFeed failed", err); console.error("feed load failed", err); });
+      .catch((err) => console.error("feed load failed", err));
   }
 
   function setShowSeen(on) {
@@ -92,7 +74,6 @@
   }
 
   function init() {
-    dbg("init start");
     readConfig();
     MRR.itemStore.setShowSeen(readShowSeenPref());
     MRR.scrollController.init();
@@ -208,7 +189,7 @@
     }
   }
 
-  MRR.app = { reloadFeed, setShowSeen };
+  MRR.app = { setShowSeen };
 
   if (document.readyState === "loading") {
     document.addEventListener("DOMContentLoaded", init);

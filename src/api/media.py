@@ -51,7 +51,10 @@ async def proxy_media(
         async with client.stream("GET", url, follow_redirects=True, timeout=30) as response:
             if not response.is_success:
                 await response.aread()
-                await _mark_dead(url, item_id, db)
+                try:
+                    await mark_url_dead_and_maybe_drop(url, item_id, db)
+                except Exception as exc:  # pragma: no cover
+                    logger.warning(f"mark_url_dead_and_maybe_drop failed for {url}: {exc}")
                 raise HTTPException(status_code=502, detail="upstream error")
             content_type = response.headers.get("content-type", "application/octet-stream")
             path = await cache_stream_write(url, response.aiter_bytes(65536), content_type)
@@ -61,21 +64,6 @@ async def proxy_media(
         raise HTTPException(status_code=502, detail="upstream fetch failed") from exc
 
     return FileResponse(str(path), media_type=content_type)
-
-
-async def _mark_dead(url: str, item_id: str | None, db: aiosqlite.Connection | None) -> None:
-    """Best-effort: mark url as dead via the availability helper.
-
-    db is injected via the FastAPI dependency and may be None if the proxy is
-    called from a context where the dependency didn't fire (defensive -- should
-    not happen in production). Failures are logged and swallowed.
-    """
-    if db is None:
-        return
-    try:
-        await mark_url_dead_and_maybe_drop(url, item_id, db)
-    except Exception as exc:  # pragma: no cover
-        logger.warning("mark_url_dead_and_maybe_drop failed for %s: %s", url, exc)
 
 
 @router.post("/prefetch/hint")

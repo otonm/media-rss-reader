@@ -1,13 +1,12 @@
 // ---------------------------------------------------------------------------
 // itemStore
 //
-// Owns the list of items. Pulls metadata from /api/items (paginated) and
-// /api/items/count. Exposes a small event-emitter API:
+// Owns the list of items. Pulls metadata from /api/items (paginated).
+// Exposes a small API:
 //   on('items-appended', cb)
 //   on('currentindex-changed', cb)
-//   getItems(), getCurrentIndex(), getTotal(), hasMoreItems(), getItemAt(idx),
-//   findIndexById(id), setCurrentIndex(idx),
-//   fetchPage(), fetchCount()
+//   getItems(), getCurrentIndex(), hasMoreItems(), getItemAt(idx),
+//   findIndexById(id), setCurrentIndex(idx), fetchPage()
 //
 // No build step. Module attaches to window.MRR.itemStore.
 // ---------------------------------------------------------------------------
@@ -16,13 +15,9 @@
 
   const MRR = (window.MRR = window.MRR || {});
 
-  // ponytail: debug trace for /api/items calls. Strip when no longer needed.
-  function dbg(...args) { console.debug("[item-store]", ...args); }
-
   const state = {
     items: [],
     currentIndex: 0,
-    total: 0,
     page: 0,
     hasMore: true,
     fetching: false,
@@ -42,8 +37,6 @@
     try {
       const cfg = MRR.config;
       const url = `/api/items?unseen=${unseenParam()}&page=${state.page}&size=${cfg.feedInitialCount}`;
-      dbg("fetchPage unseen=" + unseenParam() + " page=" + state.page
-          + " size=" + cfg.feedInitialCount);
       const resp = await fetch(url);
       if (!resp.ok) return;
       const newItems = await resp.json();
@@ -52,21 +45,10 @@
         return;
       }
       state.items = state.items.concat(newItems);
-      dbg("fetchPage got " + newItems.length + " items, total=" + state.items.length
-          + " hasMore=" + state.hasMore);
       state.page += 1;
     } finally {
       state.fetching = false;
     }
-  }
-
-  async function fetchCount() {
-    const resp = await fetch(`/api/items/count?unseen=${unseenParam()}`);
-    if (!resp.ok) return 0;
-    const data = await resp.json();
-    state.total = data.count;
-    dbg("fetchCount unseen=" + unseenParam() + " -> " + state.total);
-    return state.total;
   }
 
   function getItems() { return state.items; }
@@ -100,7 +82,6 @@
   function resetForReload() {
     state.items = [];
     state.currentIndex = 0;
-    state.total = 0;
     state.page = 0;
     state.hasMore = true;
     state.fetching = false;
@@ -117,6 +98,5 @@
     markSeen,
     resetForReload,
     fetchPage,
-    fetchCount,
   };
 })();

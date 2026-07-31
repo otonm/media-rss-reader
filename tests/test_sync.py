@@ -9,7 +9,7 @@ import httpx
 import pytest
 import respx
 
-from src.feeds.sync import opml_sync, prune_items, refresh_all_feeds
+from src.feeds.sync import prune_items, refresh_all_feeds, sync_feeds
 
 _OPML = """\
 <?xml version="1.0"?>
@@ -27,44 +27,13 @@ _RSS = """\
 </channel></rss>"""
 
 
-async def test_opml_sync_inserts_new_feeds(db: aiosqlite.Connection, tmp_path: Path) -> None:
-    f = tmp_path / "feeds.opml"
-    f.write_text(_OPML)
-    async with httpx.AsyncClient() as client:
-        await opml_sync(db, str(f), client)
-    async with db.execute("SELECT COUNT(*) FROM feeds") as cur:
-        assert (await cur.fetchone())[0] == 1
-
-
-async def test_opml_sync_is_idempotent(db: aiosqlite.Connection, tmp_path: Path) -> None:
-    f = tmp_path / "feeds.opml"
-    f.write_text(_OPML)
-    async with httpx.AsyncClient() as client:
-        await opml_sync(db, str(f), client)
-        await opml_sync(db, str(f), client)
-    async with db.execute("SELECT COUNT(*) FROM feeds") as cur:
-        assert (await cur.fetchone())[0] == 1
-
-
-async def test_opml_sync_removes_deleted_feeds(db: aiosqlite.Connection, tmp_path: Path) -> None:
-    f = tmp_path / "feeds.opml"
-    f.write_text(_OPML)
-    async with httpx.AsyncClient() as client:
-        await opml_sync(db, str(f), client)
-    f.write_text('<?xml version="1.0"?><opml version="2.0"><head/><body/></opml>')
-    async with httpx.AsyncClient() as client:
-        await opml_sync(db, str(f), client)
-    async with db.execute("SELECT COUNT(*) FROM feeds") as cur:
-        assert (await cur.fetchone())[0] == 0
-
-
 async def test_refresh_all_feeds_inserts_items(db: aiosqlite.Connection, tmp_path: Path) -> None:
     f = tmp_path / "feeds.opml"
     f.write_text(_OPML)
     with respx.mock:
         respx.get("https://example.com/feed.xml").mock(return_value=httpx.Response(200, text=_RSS))
         async with httpx.AsyncClient() as client:
-            await opml_sync(db, str(f), client)
+            await sync_feeds(db, str(tmp_path), str(f), client)
             await refresh_all_feeds(db, client)
     async with db.execute("SELECT COUNT(*) FROM items") as cur:
         assert (await cur.fetchone())[0] == 1
@@ -76,7 +45,7 @@ async def test_refresh_all_feeds_deduplicates(db: aiosqlite.Connection, tmp_path
     with respx.mock:
         respx.get("https://example.com/feed.xml").mock(return_value=httpx.Response(200, text=_RSS))
         async with httpx.AsyncClient() as client:
-            await opml_sync(db, str(f), client)
+            await sync_feeds(db, str(tmp_path), str(f), client)
             await refresh_all_feeds(db, client)
         respx.get("https://example.com/feed.xml").mock(return_value=httpx.Response(200, text=_RSS))
         async with httpx.AsyncClient() as client:
@@ -102,7 +71,7 @@ async def test_refresh_all_feeds_stores_media_json(db: aiosqlite.Connection, tmp
     with respx.mock:
         respx.get("https://example.com/feed.xml").mock(return_value=httpx.Response(200, text=_GALLERY_RSS))
         async with httpx.AsyncClient() as client:
-            await opml_sync(db, str(f), client)
+            await sync_feeds(db, str(tmp_path), str(f), client)
             await refresh_all_feeds(db, client)
     async with db.execute("SELECT media_url, media_type, media_json FROM items") as cur:
         row = await cur.fetchone()

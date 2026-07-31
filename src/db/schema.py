@@ -1,7 +1,12 @@
-"""Initial database schema.
+"""Initial database schema: the two base tables and their indexes.
 
 All statements use IF NOT EXISTS so this module is safe to call on every
 startup without checking whether the schema already exists.
+
+Everything added later (seen_guids, dead_urls, unavailable_guids, the
+media_json and site_link columns) lives in migrations.py and only there —
+run_migrations() runs right after create_schema() on every startup, so a
+fresh database ends up with the full schema either way.
 """
 
 import logging
@@ -41,41 +46,6 @@ CREATE TABLE IF NOT EXISTS items (
 )
 """
 
-# seen_guids is a lightweight tombstone: it records every (feed_id, guid) that
-# the user has ever marked seen, so that if pruning removes an item row and the
-# feed re-publishes the same guid, _refresh_feed can restore seen_at on insert.
-# ON DELETE CASCADE keeps it tidy when a feed is removed from the OPML.
-_CREATE_SEEN_GUIDS = """
-CREATE TABLE IF NOT EXISTS seen_guids (
-    feed_id TEXT NOT NULL REFERENCES feeds(id) ON DELETE CASCADE,
-    guid    TEXT NOT NULL,
-    seen_at TIMESTAMP NOT NULL,
-    PRIMARY KEY (feed_id, guid)
-)
-"""
-
-# dead_urls records every media URL we've ever seen return 404. Used to
-# answer "are all URLs of this item dead?" without re-fetching anything.
-# Grows monotonically; not GC'd.
-_CREATE_DEAD_URLS = """
-CREATE TABLE IF NOT EXISTS dead_urls (
-    url       TEXT PRIMARY KEY,
-    marked_at TIMESTAMP NOT NULL DEFAULT (datetime('now'))
-)
-"""
-
-# unavailable_guids tombstones (feed_id, guid) pairs whose item row has
-# been deleted because every media URL was dead. _refresh_feed reads
-# this to skip re-insert on the next feed poll. Cascade on feed delete.
-_CREATE_UNAVAILABLE_GUIDS = """
-CREATE TABLE IF NOT EXISTS unavailable_guids (
-    feed_id  TEXT NOT NULL REFERENCES feeds(id) ON DELETE CASCADE,
-    guid     TEXT NOT NULL,
-    marked_at TIMESTAMP NOT NULL DEFAULT (datetime('now')),
-    PRIMARY KEY (feed_id, guid)
-)
-"""
-
 # Indexes to support the common query patterns: filter by feed, sort by date,
 # filter unseen, and prune by fetched_at.
 _CREATE_INDEXES = [
@@ -90,9 +60,6 @@ async def create_schema(db: aiosqlite.Connection) -> None:
     logger.debug("create_schema creating tables and indexes")
     await db.execute(_CREATE_FEEDS)
     await db.execute(_CREATE_ITEMS)
-    await db.execute(_CREATE_SEEN_GUIDS)
-    await db.execute(_CREATE_DEAD_URLS)
-    await db.execute(_CREATE_UNAVAILABLE_GUIDS)
     for sql in _CREATE_INDEXES:
         await db.execute(sql)
     await db.commit()

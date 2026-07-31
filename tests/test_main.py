@@ -37,16 +37,6 @@ async def test_index_html_served(tmp_path: Path) -> None:
     assert "--feed-initial-count" in resp.text
 
 
-async def test_build_html_missing_file() -> None:
-    """_build_html returns empty string when index.html does not exist."""
-    import src.main as main_mod
-
-    with patch.object(main_mod, "_index_path", Path("/nonexistent/index.html")):
-        result = main_mod._build_html()
-
-    assert result == ""
-
-
 async def test_build_html_real_index() -> None:
     """_build_html works with the real index.html if it exists."""
     import src.main as main_mod

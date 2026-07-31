@@ -28,6 +28,34 @@ def _item_id(feed_id: str, guid: str) -> str:
     return hashlib.sha256((feed_id + guid).encode()).hexdigest()
 
 
+def entry_to_item(feed_id: str, entry: dict) -> dict | None:
+    """Convert one parsed feed entry into an items-table row dict.
+
+    Returns None when the entry carries no media with a recognisable
+    extension, which is the caller's signal to skip it.
+    """
+    results = detect_all_media(entry)
+    if not results:
+        logger.debug(f"No media detected in entry {entry.get('title')}")
+        return None
+
+    media_url, media_type = results[0]
+    logger.debug(f"Detected {len(results)} slide(s) in entry {entry.get('title')}: {media_url} ({media_type})")
+
+    # Use entry.id as the canonical GUID; fall back to link, then media URL.
+    guid = entry.get("id") or entry.get("link") or media_url
+    return {
+        "id": _item_id(feed_id, guid),
+        "feed_id": feed_id,
+        "guid": guid,
+        "title": entry.get("title"),
+        "media_url": media_url,
+        "media_type": media_type,
+        "media_json": json.dumps([{"url": u, "type": t} for u, t in results]),
+        "pub_date": entry.get("published") or entry.get("updated"),
+    }
+
+
 async def fetch_feed(url: str, client: httpx.AsyncClient) -> list[dict]:
     """Fetch and parse one RSS feed; return media items as a list of dicts.
 
@@ -40,34 +68,5 @@ async def fetch_feed(url: str, client: httpx.AsyncClient) -> list[dict]:
     feed = await asyncio.to_thread(feedparser.parse, response.text)
     feed_id = _feed_id(url)
 
-    items = []
-    for entry in feed.entries:
-        results = detect_all_media(entry)
-        if not results:
-            logger.debug(f"No media detected in entry {entry.get('title')}")
-            continue
-
-        media_url, media_type = results[0]
-        logger.debug(f"Detected media in entry {entry.get('title')}: {media_url} ({media_type})")
-        logger.debug(
-            "Built media_json for %s: %d slide(s) [first=%s]",
-            entry.get("title"),
-            len(results),
-            media_url,
-        )
-
-        # Use entry.id as the canonical GUID; fall back to link, then media URL.
-        guid = entry.get("id") or entry.get("link") or media_url
-        items.append(
-            {
-                "id": _item_id(feed_id, guid),
-                "feed_id": feed_id,
-                "guid": guid,
-                "title": entry.get("title"),
-                "media_url": media_url,
-                "media_type": media_type,
-                "media_json": json.dumps([{"url": u, "type": t} for u, t in results]),
-                "pub_date": entry.get("published") or entry.get("updated"),
-            }
-        )
-    return items
+    items = [entry_to_item(feed_id, entry) for entry in feed.entries]
+    return [item for item in items if item is not None]

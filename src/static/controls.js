@@ -98,7 +98,7 @@
     const table = document.createElement("table");
     table.className = "status-table";
     const thead = document.createElement("thead");
-    thead.appendChild(rowFrom(["Feed", "Status", "Last Fetch", "Last Count", "Total"], "th"));
+    thead.appendChild(headerRow(["Feed", "Status", "Last Fetch", "Last Count", "Total"]));
     table.appendChild(thead);
     const tbody = document.createElement("tbody");
     rows.forEach((r) => tbody.appendChild(r));
@@ -118,12 +118,12 @@
     return td;
   }
 
-  function rowFrom(cells, tag) {
+  function headerRow(cells) {
     const tr = document.createElement("tr");
     cells.forEach((t) => {
-      const el = document.createElement(tag);
-      el.textContent = t;
-      tr.appendChild(el);
+      const th = document.createElement("th");
+      th.textContent = t;
+      tr.appendChild(th);
     });
     return tr;
   }
@@ -217,5 +217,5 @@
     setShowSeen(stored);
   }
 
-  MRR.controls = { init, setMuted, setAutoscroll, setShowSeen };
+  MRR.controls = { init };
 })();

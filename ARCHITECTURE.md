@@ -37,7 +37,7 @@ Three planes interact at runtime:
             ▲
 ┌───────────┴─────────────────────────────────────────────┐
 │  APScheduler  (AsyncIO, in-process)                     │
-│  opml_sync  every OPML_SYNC_INTERVAL s                  │
+│  sync_feeds  every OPML_SYNC_INTERVAL s                 │
 │  refresh_all_feeds  every FEED_REFRESH_INTERVAL s       │
 └─────────────────────────────────────────────────────────┘
 ```
@@ -79,7 +79,7 @@ src/
 │
 ├── api/
 │   ├── feeds.py        GET /api/feeds
-│   ├── items.py        GET /api/items, GET /api/items/count, POST /api/items/{id}/seen
+│   ├── items.py        GET /api/items, POST /api/items/{id}/seen
 │   ├── media.py        GET /api/media/proxy, POST /api/prefetch/hint, GET /api/status
 │   └── reddit_feeds.py GET /api/reddit-feeds/status (proxies Reddit Feeds API)
 │
@@ -128,7 +128,7 @@ src/
 
 `scheduler.py` owns a `_State` singleton holding the `AsyncIOScheduler` instance and the shared `httpx.AsyncClient`. Both are created in `start_scheduler()` and torn down in `stop_scheduler()`.
 
-**Job 1 — `opml_sync`** (every `OPML_SYNC_INTERVAL` seconds, default 1 h):
+**Job 1 — `sync_feeds`** (every `OPML_SYNC_INTERVAL` seconds, default 1 h):
 - Parse the OPML file with `listparser`
 - `INSERT OR IGNORE` new feeds into the `feeds` table
 - `DELETE FROM feeds WHERE id NOT IN (...)` — removes feeds no longer in the file; `ON DELETE CASCADE` drops their items automatically
@@ -284,10 +284,6 @@ LIMIT ? OFFSET ?
 ### `POST /api/items/{id}/seen`
 
 Sets `seen_at = datetime('now')` and writes through to `seen_guids` (so seen state survives pruning). Returns the timestamp. The browser sets `item.seen_at` on success, which prevents a double-POST on the same item.
-
-### `GET /api/items/count`
-
-Returns `{"count": N}` for the current filter (unseen/seen, optional `feed_id`). Used by the WebUI to populate the total counter and detect end-of-feed without a separate count per page.
 
 ### `GET /api/status`
 
