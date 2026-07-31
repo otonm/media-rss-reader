@@ -157,7 +157,7 @@ html, body {
   overflow-y: hidden;
   scroll-snap-type: x mandatory;
   scrollbar-width: none;
-  overscroll-behavior: contain;
+  overscroll-behavior-x: contain; /* allow vertical chaining to #feed; contain horizontal only */
   touch-action: pan-x;
 }
 
