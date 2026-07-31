@@ -14,7 +14,7 @@ Three planes interact at runtime:
 │  item-store · feed-view · scroll-controller                  │
 │  autoscroll-controller · cache-queue · controls · app        │
 │  IntersectionObserver × 2  ·  scroll-event fallback          │
-│  PWA service worker  ·  gallery (←/→ slide navigation)      │
+│  PWA service worker  ·  gallery (←/→ slide navigation)       │
 └──────────────────┬───────────────────────────────────────────┘
                 │  HTTPS  (X-Forwarded-Proto from proxy)
 ┌───────────────▼─────────────────────────────────────────┐
@@ -23,12 +23,12 @@ Three planes interact at runtime:
 │  pass-through: /health  /login  /setup  /static/*       │
 └───────────────┬─────────────────────────────────────────┘
                 │
-┌───────────────▼─────────────────────────────────────────┐
-│  FastAPI  (Uvicorn, async)                              │
-│  /health  /login  /setup  /logout                       │
-│  /api/feeds  /api/items  /api/media/proxy               │
-│  /api/prefetch/hint  /api/status  /api/reddit-feeds/status │
-└───────────┬─────────────────────┬───────────────────────┘
+┌───────────────▼─────────────────────────────────────────────┐
+│  FastAPI  (Uvicorn, async)                                  │
+│  /health  /login  /setup  /logout                           │
+│  /api/feeds  /api/items  /api/media/proxy                   │
+│  /api/prefetch/hint  /api/status  /api/reddit-feeds/status  │
+└───────────┬─────────────────────┬───────────────────────────┘
             │  aiosqlite          │  filesystem
 ┌───────────▼──────────┐  ┌───────▼──────────────────────┐
 │  SQLite (WAL mode)   │  │  /cache  (sha256-named files)│
