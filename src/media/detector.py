@@ -45,39 +45,31 @@ def detect_type(url: str) -> str | None:
     return None
 
 
-class _OGParser(HTMLParser):
-    """Minimal HTML parser that extracts the og:image meta content attribute."""
+class _MediaParser(HTMLParser):
+    """Collects both media signals in one pass: the og:image meta content,
+    and the src of every <img> tag in document order.
+    """
 
     def __init__(self) -> None:
         super().__init__()
         self.og_image: str | None = None
+        self.srcs: list[str] = []
 
     def handle_starttag(self, tag: str, attrs: list[tuple[str, str | None]]) -> None:
-        if tag == "meta":
-            attr_dict = dict(attrs)
-            if attr_dict.get("property") == "og:image":
-                self.og_image = attr_dict.get("content")
+        attr_dict = dict(attrs)
+        if tag == "meta" and attr_dict.get("property") == "og:image":
+            self.og_image = attr_dict.get("content")
+        elif tag == "img":
+            url = attr_dict.get("src")
+            if url:
+                self.srcs.append(url)
 
 
 def _extract_og_image(html: str) -> str | None:
     """Return the og:image URL from an HTML snippet, or None if absent."""
-    parser = _OGParser()
+    parser = _MediaParser()
     parser.feed(html)
     return parser.og_image
-
-
-class _ImgSrcParser(HTMLParser):
-    """Collects src attributes of every <img> tag, in document order."""
-
-    def __init__(self) -> None:
-        super().__init__()
-        self.srcs: list[str] = []
-
-    def handle_starttag(self, tag: str, attrs: list[tuple[str, str | None]]) -> None:
-        if tag == "img":
-            url = dict(attrs).get("src")
-            if url:
-                self.srcs.append(url)
 
 
 def _extract_img_srcs(html: str) -> list[str]:
@@ -90,15 +82,9 @@ def _extract_img_srcs(html: str) -> list[str]:
     """
     if not html:
         return []
-    parser = _ImgSrcParser()
+    parser = _MediaParser()
     parser.feed(unescape(html))
-    seen: set[str] = set()
-    out: list[str] = []
-    for url in parser.srcs:
-        if url not in seen:
-            seen.add(url)
-            out.append(url)
-    return out
+    return list(dict.fromkeys(parser.srcs))
 
 
 def detect_media(entry: dict) -> tuple[str, str] | None:

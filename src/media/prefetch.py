@@ -3,8 +3,7 @@
 Two entry points:
 
 warm_startup_cache() — called once at startup; warms the cache with the most
-    recent CACHE_MAX_ITEMS items. Uses a semaphore of 10 and a 100 ms stagger
-    to avoid a burst of concurrent requests against upstream servers.
+    recent CACHE_MAX_ITEMS items, capped at 10 concurrent requests.
 
 prefetch_ahead() — called from the /api/prefetch/hint endpoint; warms the
     next PREFETCH_AHEAD items older than the given item's pub_date. Intended
@@ -49,8 +48,8 @@ async def warm_startup_cache(db: aiosqlite.Connection, client: httpx.AsyncClient
     """Pre-warm the cache with the most recently published items.
 
     Runs as an asyncio background task (fire-and-forget from the lifespan hook).
-    A semaphore of 10 and a 100 ms stagger between task creation prevents a
-    thundering-herd of concurrent HTTP requests at container start.
+    The semaphore caps in-flight requests at 10, so upstream never sees a
+    thundering herd however many items are queued.
     """
     try:
         async with db.execute(
@@ -71,8 +70,6 @@ async def warm_startup_cache(db: aiosqlite.Connection, client: httpx.AsyncClient
 
     for row in rows:
         asyncio.create_task(_bounded_warm(row["id"], row["media_url"]))
-        # Small sleep between task creation to spread the initial burst.
-        await asyncio.sleep(0.1)
 
 
 async def prefetch_ahead(item_id: str, db: aiosqlite.Connection, client: httpx.AsyncClient) -> None:

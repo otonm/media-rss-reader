@@ -6,9 +6,8 @@
 // 'item-failed' on completion. No concurrent downloads.
 //
 // Public API:
-//   start(), stop()
+//   start(), reset()
 //   rebuild(currentIndex, lookaheadN, items)
-//   isCached(id)
 //   on('item-loaded', (id, el) => ...)
 //   on('item-failed', (id) => ...)
 //
@@ -25,9 +24,6 @@
     running: false,
     cached: new Set(),  // IDs that have finished loading successfully
   };
-
-  // ponytail: debug trace for media cache queue. Strip when no longer needed.
-  function dbg(...args) { console.debug("[cache-queue]", ...args); }
 
   const listeners = { "item-loaded": [], "item-failed": [] };
 
@@ -50,8 +46,6 @@
     behind.forEach((it) => { if (!state.cached.has(it.id)) newQueue.push(it.id); });
     items.slice(currentIndex + 1 + lookaheadN).forEach((it) => newQueue.push(it.id));
     state.queue = newQueue.filter((id) => !state.cached.has(id) && id !== state.loadingId);
-    dbg("rebuild current=" + currentIndex + " lookahead=" + lookaheadN
-        + " queueLen=" + state.queue.length + " cached=" + state.cached.size);
   }
 
   async function processNext() {
@@ -60,14 +54,11 @@
       state.loadingId = id;
       try {
         const item = MRR.itemStore.getItems().find((i) => i.id === id);
-        if (!item) { dbg("download skip", id, "not in store"); state.loadingId = null; continue; }
-        dbg("download start", id, item && item.media_url);
+        if (!item) { state.loadingId = null; continue; }
         const el = await downloadOne(item);
         state.cached.add(id);
-        dbg("download ok", id);
         emit("item-loaded", id, el);
       } catch (err) {
-        dbg("download failed", id, err && err.message);
         emit("item-failed", id);
       } finally {
         state.loadingId = null;
@@ -96,13 +87,9 @@
     state.running = true;
     processNext();
   }
-  function stop() {
-    state.running = false;
-  }
   // Clear the queue and the cached-id set so a future rebuild() starts
-  // fresh. Does not stop the running worker — call stop() first if you
-  // need that. Used by the app when the user toggles the seen-filter
-  // and the feed is refetched.
+  // fresh. Does not stop the running worker. Used by the app when the
+  // user toggles the seen-filter and the feed is refetched.
   function reset() {
     state.queue = [];
     state.loadingId = null;
@@ -123,7 +110,6 @@
       }).catch(() => {});
     }
   }
-  function isCached(id) { return state.cached.has(id); }
 
-  MRR.cacheQueue = { on, start, stop, reset, rebuild, isCached };
+  MRR.cacheQueue = { on, start, reset, rebuild };
 })();

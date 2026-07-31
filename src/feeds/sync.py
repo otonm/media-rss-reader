@@ -1,12 +1,11 @@
 """Feed synchronisation: OPML sync and per-feed item refresh.
 
-opml_sync()         — reconcile the feeds table against the OPML file
+sync_feeds()        — reconcile the feeds table against FEEDS_DIR + OPML
 refresh_all_feeds() — fetch new items for every known feed, then prune
 prune_items()       — enforce KEEP_ITEMS and ITEMS_MAX_AGE_HOURS limits
 """
 
 import asyncio
-import json
 import logging
 from pathlib import Path
 
@@ -15,12 +14,15 @@ import feedparser
 import httpx
 
 from src.config import settings
-from src.feeds.fetcher import _feed_id, _item_id, fetch_feed
+from src.feeds.fetcher import _feed_id, entry_to_item, fetch_feed
 from src.feeds.opml import parse_opml
 from src.media.cache import evict
-from src.media.detector import detect_all_media
 
 logger = logging.getLogger(__name__)
+
+_INSERT_ITEM = """INSERT OR IGNORE INTO items
+   (id, feed_id, guid, title, media_url, media_type, media_json, pub_date)
+   VALUES (:id, :feed_id, :guid, :title, :media_url, :media_type, :media_json, :pub_date)"""
 
 
 async def local_xml_sync(db: aiosqlite.Connection, feeds_dir: str) -> None:
@@ -68,29 +70,10 @@ async def local_xml_sync(db: aiosqlite.Connection, feeds_dir: str) -> None:
 
         inserted = 0
         for entry in feed.entries:
-            results = detect_all_media(entry)
-            if not results:
+            item = entry_to_item(feed_id, entry)
+            if item is None or item["guid"] in dead_guids:
                 continue
-            media_url, media_type = results[0]
-            guid = entry.get("id") or entry.get("link") or media_url
-            if guid in dead_guids:
-                continue
-            item = {
-                "id": _item_id(feed_id, guid),
-                "feed_id": feed_id,
-                "guid": guid,
-                "title": entry.get("title"),
-                "media_url": media_url,
-                "media_type": media_type,
-                "media_json": json.dumps([{"url": u, "type": t} for u, t in results]),
-                "pub_date": entry.get("published") or entry.get("updated"),
-            }
-            cursor = await db.execute(
-                """INSERT OR IGNORE INTO items
-                   (id, feed_id, guid, title, media_url, media_type, media_json, pub_date)
-                   VALUES (:id, :feed_id, :guid, :title, :media_url, :media_type, :media_json, :pub_date)""",
-                item,
-            )
+            cursor = await db.execute(_INSERT_ITEM, item)
             inserted += cursor.rowcount
         logger.debug(f"Local XML sync {filename}: {inserted} new item(s)")
 
@@ -98,40 +81,6 @@ async def local_xml_sync(db: aiosqlite.Connection, feeds_dir: str) -> None:
             "UPDATE feeds SET last_fetched_at = datetime('now') WHERE id = ?",
             (feed_id,),
         )
-
-    await db.commit()
-
-
-async def opml_sync(db: aiosqlite.Connection, opml_path: str, client: httpx.AsyncClient) -> None:
-    """Reconcile the feeds table with the current OPML file.
-
-    New feeds are inserted; feeds no longer in the file are deleted.
-    Deletion cascades automatically to the items table via the FK constraint.
-    The HTTP client is accepted as a parameter but not used here — it is
-    forwarded to allow callers to trigger an immediate fetch after sync if needed.
-    """
-    feeds = parse_opml(opml_path)
-    logger.debug(f"Syncing {len(feeds)} feeds from OPML file {opml_path}")
-
-    feed_ids = []
-    for feed in feeds:
-        fid = _feed_id(feed["url"])
-        feed_ids.append(fid)
-        logger.debug(f"Storing feed {feed['title']} with URL {feed['url']} and ID {fid}")
-
-        # INSERT OR IGNORE preserves existing rows (title, last_fetched_at, etc.)
-        await db.execute(
-            "INSERT OR IGNORE INTO feeds (id, url, title) VALUES (?, ?, ?)",
-            (fid, feed["url"], feed["title"]),
-        )
-
-    # Delete feeds whose IDs are not in the current OPML set.
-    if feed_ids:
-        placeholders = ",".join("?" * len(feed_ids))
-        await db.execute(f"DELETE FROM feeds WHERE id NOT IN ({placeholders})", feed_ids)
-    else:
-        # OPML is empty — remove everything.
-        await db.execute("DELETE FROM feeds")
 
     await db.commit()
 
@@ -162,12 +111,7 @@ async def _refresh_feed(
             logger.debug(f"Skipping tombstoned item guid={item['guid']} in feed {url}")
             continue
         logger.debug(f"Storing item {item['title']} with media URL {item['media_url']} and ID {item['id']}")
-        cursor = await db.execute(
-            """INSERT OR IGNORE INTO items
-               (id, feed_id, guid, title, media_url, media_type, media_json, pub_date)
-               VALUES (:id, :feed_id, :guid, :title, :media_url, :media_type, :media_json, :pub_date)""",
-            item,
-        )
+        cursor = await db.execute(_INSERT_ITEM, item)
         inserted += cursor.rowcount
     if items:
         logger.debug(f"Feed {url}: {inserted} new, {len(items) - inserted} already in DB")

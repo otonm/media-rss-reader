@@ -7,7 +7,7 @@ acceptable for a single-process deployment.
 
 import logging
 import time
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 
 logger = logging.getLogger(__name__)
 
@@ -15,7 +15,7 @@ logger = logging.getLogger(__name__)
 @dataclass
 class _Entry:
     failures: int = 0
-    locked_until: float = field(default=0.0)
+    locked_until: float = 0.0
 
 
 class LockoutTracker:
