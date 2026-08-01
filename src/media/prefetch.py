@@ -17,16 +17,22 @@ import aiosqlite
 import httpx
 
 from src.config import settings
+from src.db.connection import open_db
 from src.media.availability import mark_url_dead_and_maybe_drop
 from src.media.cache import cache_read, cache_stream_write
 
 logger = logging.getLogger(__name__)
 
 
-async def _warm(item_id: str, url: str, client: httpx.AsyncClient, db: aiosqlite.Connection) -> None:
+async def _warm(item_id: str, url: str, client: httpx.AsyncClient) -> None:
     """Fetch and cache one URL if it is not already cached. On upstream
     non-success, mark the URL dead via the availability helper so a fully-dead
-    post can be dropped. Silent on errors."""
+    post can be dropped. Silent on errors.
+
+    Opens its own connection for the dead-URL write instead of taking one as an
+    argument: this runs as a fire-and-forget task that outlives its caller, so a
+    borrowed connection would already be closed by the time we got here.
+    """
     if cache_read(url) is not None:
         return  # already cached — nothing to do
     try:
@@ -37,7 +43,11 @@ async def _warm(item_id: str, url: str, client: httpx.AsyncClient, db: aiosqlite
             else:
                 await response.aread()
                 try:
-                    await mark_url_dead_and_maybe_drop(url, item_id, db)
+                    db = await open_db()
+                    try:
+                        await mark_url_dead_and_maybe_drop(url, item_id, db)
+                    finally:
+                        await db.close()
                 except Exception as exc:  # pragma: no cover
                     logger.warning("mark_url_dead_and_maybe_drop failed for %s: %s", url, exc)
     except Exception as exc:  # pragma: no cover
@@ -66,7 +76,7 @@ async def warm_startup_cache(db: aiosqlite.Connection, client: httpx.AsyncClient
 
     async def _bounded_warm(item_id: str, url: str) -> None:
         async with sem:
-            await _warm(item_id, url, client, db)
+            await _warm(item_id, url, client)
 
     for row in rows:
         asyncio.create_task(_bounded_warm(row["id"], row["media_url"]))
@@ -89,4 +99,4 @@ async def prefetch_ahead(item_id: str, db: aiosqlite.Connection, client: httpx.A
         rows = await cur.fetchall()
     logger.debug(f"prefetch_ahead for {item_id}: {len(rows)} item(s)")
     for row in rows:
-        asyncio.create_task(_warm(row["id"], row["media_url"], client, db))
+        asyncio.create_task(_warm(row["id"], row["media_url"], client))

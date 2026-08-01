@@ -53,6 +53,9 @@ MIGRATIONS: list[str] = [
     ),
     # v8: site_link stores <channel><link> from RSS, populated on local-file sync
     "ALTER TABLE feeds ADD COLUMN site_link TEXT",
+    # v9: index on media_url — _candidate_items looks up items by media_url inside a
+    # write transaction; without this it is a full table scan holding the writer lock
+    "CREATE INDEX IF NOT EXISTS idx_items_media_url ON items(media_url)",
 ]
 
 
