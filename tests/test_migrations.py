@@ -31,6 +31,19 @@ async def test_migration_applies() -> None:
         await conn.close()
 
 
+async def test_media_url_lookup_uses_index() -> None:
+    """The availability helper looks items up by media_url inside a write
+    transaction — without an index that is a full scan holding the writer lock."""
+    conn = await open_db(":memory:")
+    await create_schema(conn)
+    await mig_mod.run_migrations(conn)
+
+    async with conn.execute("EXPLAIN QUERY PLAN SELECT id FROM items WHERE media_url = ?", ("x",)) as cur:
+        plan = " ".join(str(row["detail"]) for row in await cur.fetchall())
+    assert "idx_items_media_url" in plan, plan
+    await conn.close()
+
+
 async def test_multiple_migrations_apply_in_order() -> None:
     """Test that multiple pending migrations are applied sequentially."""
     conn = await open_db(":memory:")

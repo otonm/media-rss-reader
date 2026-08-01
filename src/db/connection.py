@@ -24,7 +24,10 @@ async def open_db(path: str | None = None) -> aiosqlite.Connection:
     path_str = path or settings.db_path
     logger.debug(f"open_db opening {path_str}")
     Path(path_str).parent.mkdir(parents=True, exist_ok=True)
-    db = await aiosqlite.connect(path_str)
+    # timeout is SQLite's busy timeout: how long a writer waits for the lock
+    # before raising "database is locked". The 5s default is too tight when a
+    # whole feed 404s at once and every request wants the writer lock.
+    db = await aiosqlite.connect(path_str, timeout=30)
     # Row objects behave like dicts — access columns by name throughout the codebase.
     db.row_factory = aiosqlite.Row
     # WAL allows concurrent readers while the scheduler is writing.

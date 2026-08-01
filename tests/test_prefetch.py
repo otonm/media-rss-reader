@@ -20,7 +20,7 @@ async def test_warm_on_cache_miss(tmp_path: Path, monkeypatch: pytest.MonkeyPatc
             return_value=httpx.Response(200, content=b"imgbytes", headers={"content-type": "image/jpeg"})
         )
         async with httpx.AsyncClient() as client:
-            await _warm("item1", url, client, None)
+            await _warm("item1", url, client)
 
     path = cache_mod.cache_read(url)
     assert path is not None
@@ -41,7 +41,7 @@ async def test_warm_skips_if_cached(tmp_path: Path, monkeypatch: pytest.MonkeyPa
     with respx.mock:
         # If _warm makes any request, respx will raise NoMatchFound
         async with httpx.AsyncClient() as client:
-            await _warm("item1", url, client, None)  # should not make a request
+            await _warm("item1", url, client)  # should not make a request
 
     # Cache is still intact
     path = cache_mod.cache_read(url)
@@ -50,24 +50,35 @@ async def test_warm_skips_if_cached(tmp_path: Path, monkeypatch: pytest.MonkeyPa
 
 
 async def test_warm_non_success_response(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    """_warm does not cache on non-2xx responses."""
+    """_warm does not cache on non-2xx responses, and records the URL as dead.
+
+    _warm runs as a fire-and-forget task that outlives its caller, so it must open
+    its own connection rather than borrow one — a borrowed request-scoped connection
+    is already closed by then ("no active connection").
+    """
+    from src.db import connection as conn_mod
     from src.db.connection import open_db
     from src.db.migrations import run_migrations
     from src.db.schema import create_schema
 
     monkeypatch.setattr(cache_mod.settings, "cache_dir", str(tmp_path))
+    # _warm opens its own connection from settings.db_path — point it at a file DB
+    # so the marking is visible from this test's connection.
+    monkeypatch.setattr(conn_mod.settings, "db_path", str(tmp_path / "test.db"))
     url = "http://example.com/missing.jpg"
 
-    conn = await open_db(":memory:")
+    conn = await open_db()
     await create_schema(conn)
     await run_migrations(conn)
 
     with respx.mock:
         respx.get(url).mock(return_value=httpx.Response(404))
         async with httpx.AsyncClient() as client:
-            await _warm("item1", url, client, conn)
+            await _warm("item1", url, client)
 
     assert cache_mod.cache_read(url) is None
+    async with conn.execute("SELECT url FROM dead_urls") as cur:
+        assert [row["url"] for row in await cur.fetchall()] == [url]
     await conn.close()
 
 
