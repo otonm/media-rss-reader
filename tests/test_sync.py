@@ -8,6 +8,7 @@ import aiosqlite
 import httpx
 import pytest
 import respx
+from httpx import AsyncClient as HttpxAsyncClient
 
 from src.feeds.sync import prune_items, refresh_all_feeds, sync_feeds
 
@@ -254,6 +255,40 @@ async def test_refresh_deduplicates_same_media_across_feeds(db: aiosqlite.Connec
     # Feed A is refreshed first, so its item is the one that survives.
     assert rows[0]["guid"] == "a-1"
     assert rows[0]["media_key"] == "https://cdn.example.com/shared.jpg"
+
+
+async def test_seen_blocks_cross_feed_reinsert(
+    db: aiosqlite.Connection, client: HttpxAsyncClient, tmp_path: Path
+) -> None:
+    """Once a picture is seen, the copy another feed carries must not resurrect it.
+
+    The cross-feed guard only rejects an incoming item while a row with the
+    same media_key still exists. Prune that row and feed B's copy — a different
+    (feed_id, guid) — was free to insert itself as brand-new unseen.
+    """
+    f = tmp_path / "feeds.opml"
+    f.write_text(_TWO_FEED_OPML)
+    with respx.mock:
+        respx.get("https://a.example.com/feed.xml").mock(return_value=httpx.Response(200, text=_RSS_FEED_A))
+        respx.get("https://b.example.com/feed.xml").mock(return_value=httpx.Response(200, text=_RSS_FEED_B))
+        async with httpx.AsyncClient() as hc:
+            await sync_feeds(db, str(tmp_path), str(f), hc)
+            await refresh_all_feeds(db, hc)
+
+        async with db.execute("SELECT id, guid FROM items") as cur:
+            rows = await cur.fetchall()
+        assert [r["guid"] for r in rows] == ["a-1"]
+        assert (await client.post(f"/api/items/{rows[0]['id']}/seen")).status_code == 200
+
+        # State after prune_items evicted the seen row.
+        await db.execute("DELETE FROM items")
+        await db.commit()
+
+        async with httpx.AsyncClient() as hc:
+            await refresh_all_feeds(db, hc)
+
+    async with db.execute("SELECT guid FROM items") as cur:
+        assert [r["guid"] for r in await cur.fetchall()] == []
 
 
 async def test_refresh_keeps_distinct_media_from_two_feeds(db: aiosqlite.Connection, tmp_path: Path) -> None:

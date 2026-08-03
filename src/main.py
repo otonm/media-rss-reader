@@ -15,7 +15,7 @@ from src.auth import routes as auth_routes
 from src.auth.middleware import AuthMiddleware
 from src.config import settings
 from src.db.connection import open_db
-from src.db.migrations import run_migrations
+from src.db.migrations import backfill_seen_media, run_migrations
 from src.db.schema import create_schema
 from src.scheduler import start_scheduler, stop_scheduler
 
@@ -48,6 +48,7 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None]:
     db = await open_db(settings.db_path)
     await create_schema(db)
     await run_migrations(db)
+    await backfill_seen_media(db)
     app.state.db = db
     await start_scheduler(db)
     yield

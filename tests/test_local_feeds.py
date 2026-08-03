@@ -1,10 +1,12 @@
 import hashlib
 from pathlib import Path
+from unittest.mock import patch
 
 import aiosqlite
 import httpx
+from httpx import AsyncClient as HttpxAsyncClient
 
-from src.feeds.sync import local_xml_sync
+from src.feeds.sync import local_xml_sync, prune_items
 
 # sync_feeds imported below to keep existing tests importable before Task 6
 
@@ -98,6 +100,56 @@ async def test_sync_feeds_hard_deletes_missing_folder_file(db: aiosqlite.Connect
     async with db.execute("SELECT COUNT(*) FROM items") as cur:
         items_after = (await cur.fetchone())[0]
     assert items_after == 2
+
+
+async def test_sync_feeds_empty_union_keeps_feeds(db: aiosqlite.Connection, tmp_path: Path) -> None:
+    """An empty FEEDS_DIR is a mount/timing problem, not "delete everything".
+
+    The companion service restarting, or a volume that is not ready when the
+    container starts, used to cascade the whole database away.
+    """
+    feeds_dir = tmp_path / "feeds"
+    feeds_dir.mkdir()
+    (feeds_dir / "keepme.xml").write_text(_RSS_TWO_ITEMS)
+    async with httpx.AsyncClient() as client:
+        await sync_feeds(db, str(feeds_dir), "", client)
+
+    (feeds_dir / "keepme.xml").unlink()
+    async with httpx.AsyncClient() as client:
+        await sync_feeds(db, str(feeds_dir), "", client)
+
+    async with db.execute("SELECT url FROM feeds") as cur:
+        assert [r["url"] for r in await cur.fetchall()] == ["keepme.xml"]
+    async with db.execute("SELECT COUNT(*) FROM items") as cur:
+        assert (await cur.fetchone())[0] == 2
+
+
+async def test_seen_survives_prune_and_local_resync(
+    db: aiosqlite.Connection, client: HttpxAsyncClient, tmp_path: Path
+) -> None:
+    """The reported bug: a seen local-feed item comes back unmarked.
+
+    prune_items evicts seen rows first, then the next local_xml_sync re-inserts
+    them straight out of the XML file that still lists them.
+    """
+    (tmp_path / "feed-one.xml").write_text(_RSS_TWO_ITEMS)
+    await local_xml_sync(db, str(tmp_path))
+
+    async with db.execute("SELECT id FROM items WHERE guid = 'g1'") as cur:
+        item_id = (await cur.fetchone())["id"]
+    assert (await client.post(f"/api/items/{item_id}/seen")).status_code == 200
+
+    with patch("src.feeds.sync.settings") as mock_settings:
+        mock_settings.items_max_age_hours = 9999
+        mock_settings.keep_items = 1
+        await prune_items(db)
+    async with db.execute("SELECT guid FROM items") as cur:
+        assert [r["guid"] for r in await cur.fetchall()] == ["g2"]
+
+    # The XML file still lists g1. It must not come back.
+    await local_xml_sync(db, str(tmp_path))
+    async with db.execute("SELECT guid FROM items ORDER BY guid") as cur:
+        assert [r["guid"] for r in await cur.fetchall()] == ["g2"]
 
 
 async def test_sync_feeds_idempotent_and_feed_id_is_filename(db: aiosqlite.Connection, tmp_path: Path) -> None:

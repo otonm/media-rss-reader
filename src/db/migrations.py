@@ -14,6 +14,8 @@ import sqlite3
 
 import aiosqlite
 
+from src.media.normalize import media_key
+
 logger = logging.getLogger(__name__)
 
 MIGRATIONS: list[str] = [
@@ -73,6 +75,12 @@ MIGRATIONS: list[str] = [
     ),
     # v13: index on sha256 — probed for every freshly downloaded media file
     "CREATE INDEX IF NOT EXISTS idx_media_hashes_sha256 ON media_hashes(sha256)",
+    # v14: seen_media — the durable seen record, keyed on the normalised media
+    # URL so a picture stays seen across feeds and across re-inserts. It
+    # deliberately has NO foreign key to feeds: seen_guids was cascaded away
+    # whenever sync_feeds removed a feed row. NOT NULL is explicit because
+    # SQLite allows NULL in a TEXT PRIMARY KEY.
+    ("CREATE TABLE IF NOT EXISTS seen_media (media_key TEXT PRIMARY KEY NOT NULL, seen_at TIMESTAMP NOT NULL)"),
 ]
 
 
@@ -104,3 +112,33 @@ async def run_migrations(db: aiosqlite.Connection) -> None:
         await db.execute(f"PRAGMA user_version = {i}")
         await db.commit()
         logger.debug(f"run_migrations applied step {i}, user_version now {i}")
+
+
+async def backfill_seen_media(db: aiosqlite.Connection) -> None:
+    """Populate seen_media from the pre-v14 seen records, then clean up.
+
+    Cannot be a plain SQL migration: media_key() is Python. Both sources are
+    read — items.seen_at covers rows still marked seen, and the seen_guids
+    join recovers rows that were pruned and re-inserted unseen (which is
+    exactly the state that made seen posts reappear).
+
+    Idempotent, so it is safe to run on every startup; the DELETE doubles as a
+    safety net for anything the insert guard in sync.py somehow lets through.
+    """
+    rows: list[aiosqlite.Row] = []
+    async with db.execute("SELECT media_url, seen_at FROM items WHERE seen_at IS NOT NULL") as cur:
+        rows.extend(await cur.fetchall())
+    async with db.execute(
+        """SELECT i.media_url AS media_url, sg.seen_at AS seen_at
+           FROM seen_guids sg
+           JOIN items i ON i.feed_id = sg.feed_id AND i.guid = sg.guid"""
+    ) as cur:
+        rows.extend(await cur.fetchall())
+
+    await db.executemany(
+        "INSERT OR IGNORE INTO seen_media (media_key, seen_at) VALUES (?, ?)",
+        [(media_key(row["media_url"]), row["seen_at"]) for row in rows],
+    )
+    await db.execute("DELETE FROM items WHERE seen_at IS NULL AND media_key IN (SELECT media_key FROM seen_media)")
+    await db.commit()
+    logger.debug(f"backfill_seen_media reconciled {len(rows)} pre-v14 seen record(s)")

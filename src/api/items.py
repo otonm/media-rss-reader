@@ -8,6 +8,7 @@ import aiosqlite
 from fastapi import APIRouter, Depends, HTTPException
 
 from src.db.connection import get_db
+from src.media.normalize import media_key
 
 logger = logging.getLogger(__name__)
 router = APIRouter()
@@ -35,7 +36,7 @@ def _row_to_item(row: aiosqlite.Row) -> dict[str, Any]:
 async def list_items(
     unseen: bool = False,
     feed_id: str | None = None,
-    page: int = 0,
+    offset: int = 0,
     size: int = 50,
     db: _DbDep = None,  # type: ignore[assignment]
 ) -> list[dict[str, Any]]:
@@ -46,6 +47,11 @@ async def list_items(
     feeds evenly: all feeds contribute their oldest unseen item before any
     feed contributes its second item, preventing one prolific feed from
     dominating the top of the page.
+
+    `offset` is a raw row offset, not a page number, because with unseen=true
+    the result set shrinks as the client marks items seen. The client sends
+    how many matching items it already holds; a page number would multiply by
+    a size that no longer describes what came before.
     """
     conditions: list[str] = []
     params: list[Any] = []
@@ -57,7 +63,7 @@ async def list_items(
         params.append(feed_id)
 
     where_clause = ("WHERE " + " AND ".join(conditions)) if conditions else ""
-    params.extend([size, page * size])
+    params.extend([size, offset])
 
     query = f"""
         WITH ranked AS (
@@ -71,7 +77,7 @@ async def list_items(
         ORDER BY rn ASC, feed_id ASC
         LIMIT ? OFFSET ?
     """
-    logger.debug(f"list_items unseen={unseen} feed_id={feed_id} page={page} size={size}")
+    logger.debug(f"list_items unseen={unseen} feed_id={feed_id} offset={offset} size={size}")
     async with db.execute(query, params) as cur:
         rows = await cur.fetchall()
     logger.debug(f"list_items returned {len(rows)} item(s)")
@@ -85,28 +91,34 @@ async def mark_seen(
 ) -> dict[str, str]:
     """Mark an item as seen and return the timestamp.
 
-    The browser stores the returned seen_at value on the item object to
-    prevent a second POST for the same item during the session.
+    Writes through to seen_media, which is what actually keeps the item out
+    of the feed: items.seen_at dies with the row when prune_items evicts it,
+    and the feed still lists the entry, so the next sync would re-insert it
+    unseen. seen_media is keyed on the normalised media URL, so the same
+    picture stays seen no matter which feed carries it.
+
+    The browser marks the item locally before firing this request, so the
+    response is only used to confirm the item existed.
     """
     logger.debug(f"mark_seen item_id={item_id}")
+    async with db.execute("SELECT media_url FROM items WHERE id = ?", (item_id,)) as cur:
+        row = await cur.fetchone()
+    if row is None:
+        logger.debug(f"mark_seen item_id={item_id} not found")
+        raise HTTPException(status_code=404, detail="Not found")
+
     await db.execute(
         "UPDATE items SET seen_at = datetime('now') WHERE id = ?",
         (item_id,),
     )
-    # Write through to seen_guids so seen state survives pruning.
     await db.execute(
-        """INSERT OR REPLACE INTO seen_guids (feed_id, guid, seen_at)
-           SELECT feed_id, guid, datetime('now') FROM items WHERE id = ?""",
-        (item_id,),
+        "INSERT OR REPLACE INTO seen_media (media_key, seen_at) VALUES (?, datetime('now'))",
+        (media_key(row["media_url"]),),
     )
     await db.commit()
 
     async with db.execute("SELECT seen_at FROM items WHERE id = ?", (item_id,)) as cur:
-        row = await cur.fetchone()
+        seen_row = await cur.fetchone()
 
-    if row is None or row[0] is None:
-        logger.debug(f"mark_seen item_id={item_id} not found after update")
-        raise HTTPException(status_code=404, detail="Not found")
-
-    logger.debug(f"mark_seen item_id={item_id} seen_at={row[0]}")
-    return {"seen_at": row[0]}
+    logger.debug(f"mark_seen item_id={item_id} seen_at={seen_row[0]}")
+    return {"seen_at": seen_row[0]}

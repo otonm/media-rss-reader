@@ -131,7 +131,7 @@ src/
 **Job 1 — `sync_feeds`** (every `OPML_SYNC_INTERVAL` seconds, default 1 h):
 - Parse the OPML file with `listparser`
 - `INSERT OR IGNORE` new feeds into the `feeds` table
-- `DELETE FROM feeds WHERE id NOT IN (...)` — removes feeds no longer in the file; `ON DELETE CASCADE` drops their items automatically
+- `DELETE FROM feeds WHERE url NOT IN (...)` — removes feeds no longer in the file; `ON DELETE CASCADE` drops their items automatically. Skipped when the union of FEEDS_DIR and OPML is **empty**: that means the sources are unreadable (missing mount, companion service mid-restart) rather than genuinely empty, and the cascade would take every item and tombstone with it
 - Does **not** fetch feed content — that is Job 2's responsibility
 
 **Job 2 — `refresh_all_feeds`** (every `FEED_REFRESH_INTERVAL` seconds, default 15 min):
@@ -180,6 +180,15 @@ INSERT OR IGNORE INTO items
 
 This makes IDs stable and collision-resistant without a sequence counter, and deduplication (`INSERT OR IGNORE` on the `(feed_id, guid)` unique constraint) is handled entirely by SQLite.
 
+**The insert statement** (`_INSERT_ITEM` in `sync.py`) carries two extra guards, both keyed on `media_key`:
+
+| Guard | Rejects |
+|---|---|
+| `NOT EXISTS (... FROM items ...)` | a picture already stored under any feed — stops one image appearing once per feed carrying it |
+| `NOT EXISTS (... FROM seen_media ...)` | a picture the user already saw — stops a pruned item being re-inserted from a feed that still lists it |
+
+Both the HTTP path (`_refresh_feed`) and the local-file path (`local_xml_sync`) share this one statement. That matters: the guard it replaced lived only in `_refresh_feed`, and since `refresh_all_feeds` skips non-HTTP feed urls, FEEDS_DIR feeds never reached it and their seen posts came back on every sync.
+
 ---
 
 ## Database
@@ -191,13 +200,16 @@ feeds              (id PK, url UNIQUE, title, last_fetched_at, created_at)
 items              (id PK, feed_id FK→feeds CASCADE, guid, title,
                     media_url, media_type, media_json, pub_date,
                     fetched_at, seen_at)
-seen_guids         (feed_id, guid PK, seen_at)     -- tombstone for seen state
+seen_guids         (feed_id, guid PK, seen_at)     -- legacy seen tombstone (read-only)
+seen_media         (media_key PK, seen_at)          -- durable seen record, no FK
 dead_urls          (url PK, marked_at)              -- media URLs that returned 404
 unavailable_guids  (feed_id, guid PK, marked_at)    -- guids whose media is all dead
 auth_config        (key PK, value)                  -- stores TOTP secret
 ```
 
-`media_json` is a JSON array of `{url, type}` objects for gallery items (migration v5). Rows without gallery data fall back to the single `media_url`/`media_type` columns. `seen_guids` (migration v2/v3) preserves seen state across item pruning. `dead_urls` (v6) and `unavailable_guids` (v7) track dead media for auto-removal.
+`media_json` is a JSON array of `{url, type}` objects for gallery items (migration v5). Rows without gallery data fall back to the single `media_url`/`media_type` columns. `dead_urls` (v6) and `unavailable_guids` (v7) track dead media for auto-removal.
+
+`seen_media` (v14) is what keeps a seen post from coming back. `items.seen_at` dies with the row, and `prune_items` deletes seen rows first, so the next sync would re-insert the item straight out of a feed that still lists it. Keying on `media_key` rather than `(feed_id, guid)` means a cross-posted picture stays seen no matter which feed carries it, and it deliberately has **no foreign key to `feeds`** — its predecessor `seen_guids` was cascaded away whenever `sync_feeds` dropped a feed row. `seen_guids` (v2/v3) is still read once at startup by `backfill_seen_media()` to migrate its history; nothing writes it any more.
 
 Indexes on `items`: `feed_id`, `pub_date DESC`, `seen_at`, `fetched_at`.
 
@@ -218,7 +230,9 @@ API connections are opened and closed per request via the `get_db()` async gener
 
 `migrations.py` holds a flat list of SQL strings (`MIGRATIONS[]`). `PRAGMA user_version` stores the count of applied migrations. On startup, any items from `MIGRATIONS[current_version:]` are applied in sequence, with the version incremented after each one. Adding a migration = appending one string to the list.
 
-Current migrations (v1–v7): `fetched_at` index, `seen_guids` table + backfill, `auth_config` table, `media_json` column, `dead_urls` table, `unavailable_guids` table.
+Current migrations (v1–v14): `fetched_at` index, `seen_guids` table + backfill, `auth_config` table, `media_json` column, `dead_urls` table, `unavailable_guids` table, `site_link` column, `media_url`/`media_key` indexes, `media_key` column, `media_hashes` table + index, `seen_media` table.
+
+`backfill_seen_media()` runs after the list, on every startup. It is not a plain SQL migration because it needs `media_key()`, which is Python. It is idempotent: it tops up `seen_media` from `items.seen_at` and from the `seen_guids` join, then deletes any unseen row whose picture is already recorded as seen.
 
 ---
 
@@ -281,9 +295,13 @@ LIMIT ? OFFSET ?
 
 `rn=1` contains the oldest unseen item from each feed, `rn=2` the second-oldest from each, and so on. Ordering by `rn` then `feed_id` interleaves feeds evenly rather than draining one feed at a time.
 
+`offset` is a raw row offset, not a page number. With `unseen=true` the result set shrinks as the client marks items seen, so `page * size` over-shoots and silently skips items. The client sends how many matching items it already holds (`item-store.js: nextOffset()`).
+
 ### `POST /api/items/{id}/seen`
 
-Sets `seen_at = datetime('now')` and writes through to `seen_guids` (so seen state survives pruning). Returns the timestamp. The browser sets `item.seen_at` on success, which prevents a double-POST on the same item.
+Sets `seen_at = datetime('now')` and writes through to `seen_media`, keyed on the normalised media URL. Returns the timestamp.
+
+The browser marks the item locally *before* firing the request and sends it with `navigator.sendBeacon`, not `fetch`: the browser cancels in-flight fetches when the tab closes, which used to lose the marks made in the last moments of a session. Beacons are queued and delivered regardless, and there is no response to wait for. `item.seen_at` still prevents a double-POST on the same item.
 
 ### `GET /api/status`
 

@@ -18,7 +18,6 @@
   const state = {
     items: [],
     currentIndex: 0,
-    page: 0,
     hasMore: true,
     fetching: false,
     showSeen: false,
@@ -31,12 +30,21 @@
     return state.showSeen ? "false" : "true";
   }
 
+  // How many items we hold that the server's current result set still
+  // contains. Page numbers were wrong here: with unseen=true the result set
+  // shrinks as we mark items seen, so page*size skipped that many items and
+  // they only resurfaced on the next reload.
+  function nextOffset() {
+    if (state.showSeen) return state.items.length;
+    return state.items.filter((i) => !i.seen_at).length;
+  }
+
   async function fetchPage() {
     if (state.fetching || !state.hasMore) return;
     state.fetching = true;
     try {
       const cfg = MRR.config;
-      const url = `/api/items?unseen=${unseenParam()}&page=${state.page}&size=${cfg.feedInitialCount}`;
+      const url = `/api/items?unseen=${unseenParam()}&offset=${nextOffset()}&size=${cfg.feedInitialCount}`;
       const resp = await fetch(url);
       if (!resp.ok) return;
       const newItems = await resp.json();
@@ -44,8 +52,11 @@
         state.hasMore = false;
         return;
       }
-      state.items = state.items.concat(newItems);
-      state.page += 1;
+      // Guard the append: a new feed appearing shifts the interleave and can
+      // hand back an item we already hold, which would give findIndexById two
+      // candidates and desync currentIndex from the DOM.
+      const known = new Set(state.items.map((i) => i.id));
+      state.items = state.items.concat(newItems.filter((i) => !known.has(i.id)));
     } finally {
       state.fetching = false;
     }
@@ -76,13 +87,11 @@
   }
 
   // Called by app.reloadFeed() when the show-seen toggle is flipped or
-  // any other reason to refetch from page 0. Clears the in-memory list
-  // and resets the page counter; the next fetchPage will start from
-  // page 0 with the current showSeen setting.
+  // any other reason to refetch from the start. Clearing the item list is
+  // enough to reset the offset, which is derived from it.
   function resetForReload() {
     state.items = [];
     state.currentIndex = 0;
-    state.page = 0;
     state.hasMore = true;
     state.fetching = false;
   }

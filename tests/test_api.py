@@ -112,17 +112,39 @@ async def test_items_feed_filter(client: AsyncClient, db: aiosqlite.Connection) 
     assert data[0]["id"] == "itemA"
 
 
-async def test_items_pagination(client: AsyncClient, db: aiosqlite.Connection) -> None:
+async def test_items_offset(client: AsyncClient, db: aiosqlite.Connection) -> None:
     await _insert_feed(db)
     await _insert_item(db, "item1", "feed1")
     await _insert_item(db, "item2", "feed1")
     await _insert_item(db, "item3", "feed1")
-    resp_page0 = await client.get("/api/items", params={"page": 0, "size": 2})
-    assert resp_page0.status_code == 200
-    assert len(resp_page0.json()) == 2
-    resp_page1 = await client.get("/api/items", params={"page": 1, "size": 2})
-    assert resp_page1.status_code == 200
-    assert len(resp_page1.json()) == 1
+    resp_head = await client.get("/api/items", params={"offset": 0, "size": 2})
+    assert resp_head.status_code == 200
+    assert [i["id"] for i in resp_head.json()] == ["item1", "item2"]
+    resp_rest = await client.get("/api/items", params={"offset": 2, "size": 2})
+    assert resp_rest.status_code == 200
+    assert [i["id"] for i in resp_rest.json()] == ["item3"]
+
+
+async def test_items_unseen_offset_counts_only_remaining(client: AsyncClient, db: aiosqlite.Connection) -> None:
+    """The client's offset is how many *unseen* items it already holds.
+
+    Page numbers used to be wrong here: marking items seen shrinks the
+    unseen result set, so OFFSET page*size silently skipped items.
+    """
+    await _insert_feed(db)
+    for n in range(1, 5):
+        await _insert_item(db, f"item{n}", "feed1")
+
+    first = await client.get("/api/items", params={"unseen": "true", "offset": 0, "size": 2})
+    assert [i["id"] for i in first.json()] == ["item1", "item2"]
+
+    # The client marks both seen; it now holds zero unseen items, so it asks
+    # again from offset 0 and must get the next two, not item3 onwards skipped.
+    await client.post("/api/items/item1/seen")
+    await client.post("/api/items/item2/seen")
+
+    second = await client.get("/api/items", params={"unseen": "true", "offset": 0, "size": 2})
+    assert [i["id"] for i in second.json()] == ["item3", "item4"]
 
 
 async def test_items_returns_media_array_from_media_json(client: AsyncClient, db: aiosqlite.Connection) -> None:
@@ -174,6 +196,25 @@ async def test_mark_seen(client: AsyncClient, db: aiosqlite.Connection) -> None:
         row = await cur.fetchone()
     assert row is not None
     assert row[0] is not None
+
+
+async def test_mark_seen_writes_seen_media(client: AsyncClient, db: aiosqlite.Connection) -> None:
+    """seen_media is the durable record — it must outlive the items row."""
+    await _insert_feed(db)
+    await _insert_item(db, "item1", "feed1", seen_at=None)
+    assert (await client.post("/api/items/item1/seen")).status_code == 200
+
+    async with db.execute("SELECT media_key, seen_at FROM seen_media") as cur:
+        rows = await cur.fetchall()
+    assert len(rows) == 1
+    assert rows[0]["media_key"] == "http://example.com/img.jpg"
+    assert rows[0]["seen_at"] is not None
+
+    # Deleting the item (as prune_items does) must not take the record with it.
+    await db.execute("DELETE FROM items WHERE id = 'item1'")
+    await db.commit()
+    async with db.execute("SELECT COUNT(*) FROM seen_media") as cur:
+        assert (await cur.fetchone())[0] == 1
 
 
 async def test_mark_seen_not_found(client: AsyncClient) -> None:
@@ -564,7 +605,7 @@ async def test_items_interleaved_across_feeds(client: AsyncClient, db: aiosqlite
     await insert_item("b2", fb, "g2", pub_offset_days=1)
     await db.commit()
 
-    resp = await client.get("/api/items?page=0&size=10")
+    resp = await client.get("/api/items?offset=0&size=10")
     assert resp.status_code == 200
     ids = [item["id"] for item in resp.json()]
 

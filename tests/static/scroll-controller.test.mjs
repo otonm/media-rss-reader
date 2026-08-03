@@ -44,13 +44,12 @@ function setupScrollHarness({ items = [{ id: "id42", seen_at: null }] } = {}) {
   ctx.setTimeout = (fn) => { ++timerId; fn(); return timerId; };
   ctx.clearTimeout = () => {};
 
-  const fetchCalls = [];
-  ctx.fetch = (url, opts) => {
-    fetchCalls.push({ url, opts });
-    return Promise.resolve({
-      ok: true,
-      json: async () => ({ seen_at: "2026-06-11T12:00:00" }),
-    });
+  const beaconCalls = [];
+  ctx.navigator = {
+    sendBeacon: (url) => {
+      beaconCalls.push({ url });
+      return true;
+    },
   };
 
   const markSeenCalls = [];
@@ -74,7 +73,7 @@ function setupScrollHarness({ items = [{ id: "id42", seen_at: null }] } = {}) {
   ctx.window.MRR.scrollController.init();
 
   return {
-    ctx, feed, feedEls, markSeenCalls, fetchCalls, items,
+    ctx, feed, feedEls, markSeenCalls, beaconCalls, items,
     getMainCb: () => callbacks[0],
     getSeenCb: () => callbacks[1],
     fireScroll: () => { if (scrollHandler) scrollHandler(); },
@@ -110,13 +109,12 @@ function setupIOHarness({ items = [{ id: "id42", seen_at: null }] } = {}) {
   ctx.setTimeout = () => 1;
   ctx.clearTimeout = () => {};
 
-  const fetchCalls = [];
-  ctx.fetch = (url, opts) => {
-    fetchCalls.push({ url, opts });
-    return Promise.resolve({
-      ok: true,
-      json: async () => ({ seen_at: "2026-06-11T12:00:00" }),
-    });
+  const beaconCalls = [];
+  ctx.navigator = {
+    sendBeacon: (url) => {
+      beaconCalls.push({ url });
+      return true;
+    },
   };
 
   const markSeenCalls = [];
@@ -140,7 +138,7 @@ function setupIOHarness({ items = [{ id: "id42", seen_at: null }] } = {}) {
   ctx.window.MRR.scrollController.init();
 
   return {
-    ctx, markSeenCalls, fetchCalls, items,
+    ctx, markSeenCalls, beaconCalls, items,
     getSeenCb: () => callbacks[1],
   };
 }
@@ -150,7 +148,7 @@ function setupIOHarness({ items = [{ id: "id42", seen_at: null }] } = {}) {
 // --------------------------------------------------------------------
 
 test("scroll: items above viewport trigger seen POST", async () => {
-  const { feedEls, fetchCalls, markSeenCalls, fireScroll, ctx } = setupScrollHarness({
+  const { feedEls, beaconCalls, markSeenCalls, fireScroll, ctx } = setupScrollHarness({
     items: [
       { id: "id1", seen_at: null },
       { id: "id2", seen_at: null },
@@ -162,46 +160,47 @@ test("scroll: items above viewport trigger seen POST", async () => {
   fireScroll();
   await new Promise((r) => setImmediate(r));
 
-  assert.equal(fetchCalls.length, 1);
-  assert.equal(fetchCalls[0].url, "/api/items/id1/seen");
+  assert.equal(beaconCalls.length, 1);
+  assert.equal(beaconCalls[0].url, "/api/items/id1/seen");
+  // Marked locally before the beacon leaves, so the timestamp is client-side.
   assert.ok(
-    markSeenCalls.some((c) => c.who === "store" && c.id === "id1" && c.ts === "2026-06-11T12:00:00"),
+    markSeenCalls.some((c) => c.who === "store" && c.id === "id1" && typeof c.ts === "string"),
   );
   assert.ok(markSeenCalls.some((c) => c.who === "feed" && c.id === "id1"));
 });
 
 test("scroll: no items above viewport = no POST", async () => {
-  const { feedEls, fetchCalls, fireScroll, ctx } = setupScrollHarness({
+  const { feedEls, beaconCalls, fireScroll, ctx } = setupScrollHarness({
     items: [{ id: "id1", seen_at: null }],
   });
   feedEls.push(makeEl(ctx, "id1", "media-item", 100));
   fireScroll();
   await new Promise((r) => setImmediate(r));
-  assert.equal(fetchCalls.length, 0);
+  assert.equal(beaconCalls.length, 0);
 });
 
 test("scroll: 1px tolerance handles sub-pixel bottom", async () => {
-  const { feedEls, fetchCalls, fireScroll, ctx } = setupScrollHarness({
+  const { feedEls, beaconCalls, fireScroll, ctx } = setupScrollHarness({
     items: [{ id: "id1", seen_at: null }],
   });
   feedEls.push(makeEl(ctx, "id1", "media-item", 0.5)); // 0.5 ≤ 0+1 = true
   fireScroll();
   await new Promise((r) => setImmediate(r));
-  assert.equal(fetchCalls.length, 1);
+  assert.equal(beaconCalls.length, 1);
 });
 
 test("scroll: positive bottom beyond tolerance is not marked", async () => {
-  const { feedEls, fetchCalls, fireScroll, ctx } = setupScrollHarness({
+  const { feedEls, beaconCalls, fireScroll, ctx } = setupScrollHarness({
     items: [{ id: "id1", seen_at: null }],
   });
   feedEls.push(makeEl(ctx, "id1", "media-item", 5)); // 5 > 0+1 = false
   fireScroll();
   await new Promise((r) => setImmediate(r));
-  assert.equal(fetchCalls.length, 0);
+  assert.equal(beaconCalls.length, 0);
 });
 
 test("scroll: already seen item deduplicates", async () => {
-  const { feedEls, fetchCalls, fireScroll, ctx } = setupScrollHarness({
+  const { feedEls, beaconCalls, fireScroll, ctx } = setupScrollHarness({
     items: [
       { id: "id1", seen_at: "2026-06-10T00:00:00" },
       { id: "id2", seen_at: null },
@@ -211,8 +210,8 @@ test("scroll: already seen item deduplicates", async () => {
   feedEls.push(makeEl(ctx, "id2", "media-item", -5));
   fireScroll();
   await new Promise((r) => setImmediate(r));
-  assert.equal(fetchCalls.length, 1);
-  assert.equal(fetchCalls[0].url, "/api/items/id2/seen");
+  assert.equal(beaconCalls.length, 1);
+  assert.equal(beaconCalls[0].url, "/api/items/id2/seen");
 });
 
 test("scroll: debounce timer reset on successive scrolls", async () => {
@@ -261,49 +260,75 @@ function ioEntry(ctx, id, mediaType, isIntersecting, bottom) {
 }
 
 test("IO: item leaving viewport upward triggers seen POST", async () => {
-  const { ctx, fetchCalls, markSeenCalls, getSeenCb } = setupIOHarness({
+  const { ctx, beaconCalls, markSeenCalls, getSeenCb } = setupIOHarness({
     items: [{ id: "id1", seen_at: null }],
   });
   getSeenCb()([ioEntry(ctx, "id1", "image", false, -10)]);
   await new Promise((r) => setImmediate(r));
-  assert.equal(fetchCalls.length, 1);
-  assert.equal(fetchCalls[0].url, "/api/items/id1/seen");
+  assert.equal(beaconCalls.length, 1);
+  assert.equal(beaconCalls[0].url, "/api/items/id1/seen");
   assert.ok(markSeenCalls.some((c) => c.who === "store" && c.id === "id1"));
   assert.ok(markSeenCalls.some((c) => c.who === "feed" && c.id === "id1"));
 });
 
 test("IO: item still intersecting does NOT trigger POST", async () => {
-  const { fetchCalls, getSeenCb, ctx } = setupIOHarness({
+  const { beaconCalls, getSeenCb, ctx } = setupIOHarness({
     items: [{ id: "id1", seen_at: null }],
   });
   getSeenCb()([ioEntry(ctx, "id1", "image", true, 200)]);
   await new Promise((r) => setImmediate(r));
-  assert.equal(fetchCalls.length, 0);
+  assert.equal(beaconCalls.length, 0);
 });
 
 test("IO: item below viewport (bottom > 0, not intersecting) does NOT trigger POST", async () => {
-  const { fetchCalls, getSeenCb, ctx } = setupIOHarness({
+  const { beaconCalls, getSeenCb, ctx } = setupIOHarness({
     items: [{ id: "id1", seen_at: null }],
   });
   getSeenCb()([ioEntry(ctx, "id1", "image", false, 50)]);
   await new Promise((r) => setImmediate(r));
-  assert.equal(fetchCalls.length, 0);
+  assert.equal(beaconCalls.length, 0);
 });
 
 test("IO: placeholder (no mediaType) skipped", async () => {
-  const { fetchCalls, getSeenCb, ctx } = setupIOHarness({
+  const { beaconCalls, getSeenCb, ctx } = setupIOHarness({
     items: [{ id: "id1", seen_at: null }],
   });
   getSeenCb()([ioEntry(ctx, "id1", null, false, -10)]); // no mediaType
   await new Promise((r) => setImmediate(r));
-  assert.equal(fetchCalls.length, 0);
+  assert.equal(beaconCalls.length, 0);
 });
 
 test("IO: already seen item deduplicates", async () => {
-  const { fetchCalls, getSeenCb, ctx } = setupIOHarness({
+  const { beaconCalls, getSeenCb, ctx } = setupIOHarness({
     items: [{ id: "id1", seen_at: "2026-06-10T00:00:00" }],
   });
   getSeenCb()([ioEntry(ctx, "id1", "image", false, -10)]);
   await new Promise((r) => setImmediate(r));
-  assert.equal(fetchCalls.length, 0);
+  assert.equal(beaconCalls.length, 0);
+});
+
+// --------------------------------------------------------------------
+// pagehide — the last item of a session
+// --------------------------------------------------------------------
+
+test("pagehide marks the item on screen, which never leaves the viewport", () => {
+  const { ctx, beaconCalls, items } = setupScrollHarness({
+    items: [{ id: "id1", seen_at: null }],
+  });
+  ctx.window.MRR.itemStore.getItemAt = (idx) => items[idx];
+
+  ctx.window.dispatchEvent({ type: "pagehide" });
+
+  assert.deepEqual(beaconCalls.map((c) => c.url), ["/api/items/id1/seen"]);
+});
+
+test("pagehide does not re-mark an item already seen", () => {
+  const { ctx, beaconCalls, items } = setupScrollHarness({
+    items: [{ id: "id1", seen_at: "2026-06-10T00:00:00" }],
+  });
+  ctx.window.MRR.itemStore.getItemAt = (idx) => items[idx];
+
+  ctx.window.dispatchEvent({ type: "pagehide" });
+
+  assert.equal(beaconCalls.length, 0);
 });

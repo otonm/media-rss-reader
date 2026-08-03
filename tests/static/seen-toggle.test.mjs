@@ -58,6 +58,48 @@ test("setShowSeen flips the routing without requiring a re-load of the module", 
   assert.ok(itemsCalls[1].url.includes("unseen=false"));
 });
 
+test("fetchPage offsets by the unseen items it holds, not by a page number", async () => {
+  // With unseen=true the server's result set shrinks as items are marked
+  // seen. A page number multiplied by size therefore over-shoots and skips
+  // items, which then only resurfaced on the next reload.
+  const ctx = setupHarness({ showSeen: false });
+  const store = ctx.window.MRR.itemStore;
+
+  await store.fetchPage();
+  let itemsCalls = ctx.fetchCalls.filter((c) => c.url.startsWith("/api/items?"));
+  assert.ok(itemsCalls[0].url.includes("offset=0"), itemsCalls[0].url);
+
+  // One item held and still unseen → offset 1.
+  await store.fetchPage();
+  itemsCalls = ctx.fetchCalls.filter((c) => c.url.startsWith("/api/items?"));
+  assert.ok(itemsCalls[1].url.includes("offset=1"), itemsCalls[1].url);
+
+  // Mark it seen: it drops out of the server's set, so the offset drops too.
+  store.markSeen("x", "2026-06-11T12:00:00");
+  await store.fetchPage();
+  itemsCalls = ctx.fetchCalls.filter((c) => c.url.startsWith("/api/items?"));
+  assert.ok(itemsCalls[2].url.includes("offset=0"), itemsCalls[2].url);
+});
+
+test("fetchPage offsets by every held item when showSeen is on", async () => {
+  const ctx = setupHarness({ showSeen: true });
+  const store = ctx.window.MRR.itemStore;
+  await store.fetchPage();
+  store.markSeen("x", "2026-06-11T12:00:00");
+  await store.fetchPage();
+  const itemsCalls = ctx.fetchCalls.filter((c) => c.url.startsWith("/api/items?"));
+  assert.ok(itemsCalls[1].url.includes("offset=1"), itemsCalls[1].url);
+});
+
+test("fetchPage does not append an item it already holds", async () => {
+  const ctx = setupHarness({ showSeen: true });
+  const store = ctx.window.MRR.itemStore;
+  await store.fetchPage();
+  await store.fetchPage(); // the stub always returns the same item id
+  assert.equal(store.getItems().length, 1);
+  assert.equal(store.getItems()[0].id, "x");
+});
+
 test("markSeen updates the in-memory item's seen_at so the next render shows the checkmark", () => {
   const ctx = setupHarness({ showSeen: false });
   const store = ctx.window.MRR.itemStore;

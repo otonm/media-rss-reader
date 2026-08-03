@@ -20,14 +20,20 @@ from src.media.cache import evict
 
 logger = logging.getLogger(__name__)
 
-# INSERT ... SELECT ... WHERE NOT EXISTS rather than plain VALUES: the guard
-# rejects an item whose media_key is already present in *any* feed, which is
-# what stops the same picture appearing once per feed that carried it.
+# INSERT ... SELECT ... WHERE NOT EXISTS rather than plain VALUES. Two guards:
+#   items      — rejects a picture already present in *any* feed, which stops
+#                the same image appearing once per feed that carried it.
+#   seen_media — rejects a picture the user has already seen. Without this,
+#                prune_items evicts the seen row and the next sync re-inserts
+#                it straight out of a feed that still lists it, unseen.
+# Both paths (local_xml_sync and _refresh_feed) share this statement, so the
+# guard cannot go missing on one of them the way the old restore UPDATE did.
 # OR IGNORE still covers the (feed_id, guid) UNIQUE constraint for re-polls.
 _INSERT_ITEM = """INSERT OR IGNORE INTO items
    (id, feed_id, guid, title, media_url, media_key, media_type, media_json, pub_date)
    SELECT :id, :feed_id, :guid, :title, :media_url, :media_key, :media_type, :media_json, :pub_date
-   WHERE NOT EXISTS (SELECT 1 FROM items WHERE media_key = :media_key)"""
+   WHERE NOT EXISTS (SELECT 1 FROM items WHERE media_key = :media_key)
+     AND NOT EXISTS (SELECT 1 FROM seen_media WHERE media_key = :media_key)"""
 
 
 async def local_xml_sync(db: aiosqlite.Connection, feeds_dir: str) -> None:
@@ -121,23 +127,6 @@ async def _refresh_feed(
     if items:
         logger.debug(f"Feed {url}: {inserted} new, {len(items) - inserted} already in DB")
 
-    # Restore seen_at for items that were pruned and then re-inserted from the feed.
-    await db.execute(
-        """UPDATE items
-           SET seen_at = (
-               SELECT sg.seen_at FROM seen_guids sg
-               WHERE sg.feed_id = items.feed_id AND sg.guid = items.guid
-           )
-           WHERE feed_id = ? AND seen_at IS NULL
-             AND EXISTS (
-               SELECT 1 FROM seen_guids sg
-               WHERE sg.feed_id = items.feed_id AND sg.guid = items.guid
-           )""",
-        (feed_id,),
-    )
-    async with db.execute("SELECT changes()") as cur:
-        restored = (await cur.fetchone())[0]
-    logger.debug(f"Feed {url}: restored seen_at on {restored} item(s)")
     await db.execute(
         "UPDATE feeds SET last_fetched_at = datetime('now') WHERE id = ?",
         (feed_id,),
@@ -238,9 +227,10 @@ async def sync_feeds(
 ) -> None:
     """Reconcile the feeds table against the union of FEEDS_DIR + OPML.
 
-    Pass ``opml_path=""`` to skip the OPML pass (folder only). Always runs
-    a hard-delete at the end: any feed row whose url is not in the union
-    is removed (CASCADE drops items).
+    Pass ``opml_path=""`` to skip the OPML pass (folder only). Ends with a
+    hard-delete: any feed row whose url is not in the union is removed
+    (CASCADE drops items). The delete is skipped when the union is empty,
+    since that means the sources are unreadable rather than genuinely empty.
     """
     await local_xml_sync(db, feeds_dir)
 
@@ -276,6 +266,9 @@ async def sync_feeds(
         placeholders = ",".join("?" * len(union))
         await db.execute(f"DELETE FROM feeds WHERE url NOT IN ({placeholders})", list(union))
     else:
-        await db.execute("DELETE FROM feeds")
+        # An empty union is almost always a missing mount or a companion
+        # service mid-restart, not an instruction to drop every feed — and the
+        # delete cascades into items and the tombstone tables. Leave it alone.
+        logger.warning(f"No feeds found in {feeds_dir} or {opml_path or '(no OPML)'}; keeping existing feeds")
 
     await db.commit()

@@ -27,9 +27,14 @@ export function createDomContext() {
   const intervals = new Set();
   let nextId = 1;
   const ctx = {
-    // Browser global. `MRR` is the namespace all modules attach to.
-    window: { MRR: {} },
+    // Browser global. `MRR` is the namespace all modules attach to. It is an
+    // event target because scroll-controller listens for `pagehide`; call
+    // `window.dispatchEvent({ type: "pagehide" })` to fire it.
+    window: Object.assign(makeEventTarget(), { MRR: {} }),
     document: makeDocument(),
+    // Default no-op beacon; harnesses that assert on seen-marking replace
+    // this with a recorder, the way they replace `fetch`.
+    navigator: { sendBeacon: () => true },
     setTimeout,
     clearTimeout,
     setInterval: (...args) => {
@@ -98,6 +103,27 @@ export function installGlobals(ctx) {
 export function loadScript(absPath, ctx) {
   const src = readFileSync(absPath, "utf8");
   vm.runInContext(src, ctx, { filename: absPath });
+}
+
+// Minimal EventTarget: same listener-map shape the elements use.
+function makeEventTarget() {
+  return {
+    _listeners: new Map(),
+    addEventListener(name, fn) {
+      const arr = this._listeners.get(name) || [];
+      arr.push(fn);
+      this._listeners.set(name, arr);
+    },
+    removeEventListener(name, fn) {
+      const arr = this._listeners.get(name);
+      if (!arr) return;
+      const idx = arr.indexOf(fn);
+      if (idx >= 0) arr.splice(idx, 1);
+    },
+    dispatchEvent(evt) {
+      for (const fn of (this._listeners.get(evt.type) || []).slice()) fn(evt);
+    },
+  };
 }
 
 // ---------------------------------------------------------------------------

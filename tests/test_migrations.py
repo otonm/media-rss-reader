@@ -1,3 +1,5 @@
+import aiosqlite
+
 import src.db.migrations as mig_mod
 from src.db.connection import open_db
 from src.db.schema import create_schema
@@ -65,3 +67,38 @@ async def test_multiple_migrations_apply_in_order() -> None:
     finally:
         mig_mod.MIGRATIONS[:] = original
         await conn.close()
+
+
+async def test_backfill_seen_media_from_items(db: aiosqlite.Connection) -> None:
+    """Rows still marked seen become seen_media records, with the URL normalised."""
+    await db.execute("INSERT INTO feeds (id, url) VALUES ('f1', 'http://f1.com')")
+    await db.execute(
+        """INSERT INTO items (id, feed_id, guid, media_url, media_type, seen_at)
+           VALUES ('i1', 'f1', 'g1', 'http://cdn.example.com/a.jpg?w=640', 'image', datetime('now'))"""
+    )
+    await db.commit()
+
+    await mig_mod.backfill_seen_media(db)
+
+    async with db.execute("SELECT media_key FROM seen_media") as cur:
+        assert [r["media_key"] for r in await cur.fetchall()] == ["http://cdn.example.com/a.jpg"]
+
+
+async def test_backfill_seen_media_recovers_and_drops_resurrected_rows(db: aiosqlite.Connection) -> None:
+    """The state the bug left behind: a seen_guids tombstone whose item came
+    back with seen_at NULL. The record is recovered and the row removed."""
+    await db.execute("INSERT INTO feeds (id, url) VALUES ('f1', 'http://f1.com')")
+    await db.execute(
+        """INSERT INTO items (id, feed_id, guid, media_url, media_key, media_type, seen_at)
+           VALUES ('i1', 'f1', 'g1', 'http://cdn.example.com/a.jpg',
+                   'http://cdn.example.com/a.jpg', 'image', NULL)"""
+    )
+    await db.execute("INSERT INTO seen_guids (feed_id, guid, seen_at) VALUES ('f1', 'g1', datetime('now'))")
+    await db.commit()
+
+    await mig_mod.backfill_seen_media(db)
+
+    async with db.execute("SELECT media_key FROM seen_media") as cur:
+        assert [r["media_key"] for r in await cur.fetchall()] == ["http://cdn.example.com/a.jpg"]
+    async with db.execute("SELECT COUNT(*) FROM items") as cur:
+        assert (await cur.fetchone())[0] == 0
