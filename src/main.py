@@ -40,7 +40,15 @@ def _build_html() -> str:
     # caches serve stale assets across deploys. Content hash if bytes must
     # survive restarts.
     v = str(int(time.time()))
-    return _index_path.read_text().replace("<!-- CONFIG_VARS -->", style).replace("{{VERSION}}", v)
+    html = _index_path.read_text().replace("<!-- CONFIG_VARS -->", style).replace("{{VERSION}}", v)
+    logger.debug(f"_build_html: injected {style} (asset version {v})")
+    if settings.ui_debug:
+        logger.info("UI_DEBUG=1 — the browser overlay is enabled")
+    # The injected block must land after the stylesheet link or style.css's
+    # :root defaults win the cascade and every env-supplied value is ignored.
+    if "style.css" in html and html.index("style.css") > html.index("--ui-debug"):
+        logger.error("index.html injects CSS variables BEFORE style.css — env config will be ignored")
+    return html
 
 
 @asynccontextmanager

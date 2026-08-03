@@ -46,3 +46,33 @@ async def test_build_html_real_index() -> None:
     assert "--feed-initial-count" in result
     assert "--ui-debug" in result
     assert "<style>" in result
+
+
+async def test_injected_config_wins_over_stylesheet_defaults() -> None:
+    """The injected <style> must come after style.css, or the env is ignored.
+
+    Both set the same custom properties on :root with identical specificity,
+    so the later declaration wins. With the injection first, style.css's
+    defaults silently overrode UI_DEBUG, FEED_INITIAL_COUNT and
+    IMAGE_AUTOSCROLL_DELAY_S -- the values were served, then immediately
+    reset, and readConfig() only ever saw the defaults.
+    """
+    import src.main as main_mod
+
+    result = main_mod._build_html()
+    assert result.index("style.css") < result.index("--ui-debug"), (
+        "injected CSS variables must appear after the style.css link"
+    )
+
+
+async def test_env_values_reach_the_injected_css(monkeypatch: object) -> None:
+    """A non-default setting must actually show up in the served HTML."""
+    import src.main as main_mod
+    from src.config import settings
+
+    monkeypatch.setattr(settings, "ui_debug", 1)  # type: ignore[attr-defined]
+    monkeypatch.setattr(settings, "feed_initial_count", 42)  # type: ignore[attr-defined]
+
+    result = main_mod._build_html()
+    assert "--ui-debug:1;" in result
+    assert "--feed-initial-count:42;" in result

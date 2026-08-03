@@ -59,6 +59,10 @@ def download_claim(url: str) -> Iterator[bool]:
     """
     first = url not in _inflight
     _inflight[url] = _inflight.get(url, 0) + 1
+    if first:
+        logger.debug(f"download_claim: claimed {url} ({len(_inflight)} URL(s) in flight)")
+    else:
+        logger.debug(f"download_claim: {url} already claimed by {_inflight[url] - 1} other downloader(s)")
     try:
         yield first
     finally:
@@ -67,6 +71,7 @@ def download_claim(url: str) -> Iterator[bool]:
             _inflight[url] = remaining
         else:
             del _inflight[url]
+            logger.debug(f"download_claim: released {url} ({len(_inflight)} URL(s) still in flight)")
 
 
 async def cache_stream_tee(
@@ -99,19 +104,26 @@ async def cache_stream_tee(
     path.parent.mkdir(parents=True, exist_ok=True)
     fd, tmp_name = tempfile.mkstemp(dir=path.parent, suffix=".tmp")
     tmp = Path(tmp_name)
+    written = 0
+    logger.debug(f"cache_stream_tee: start {url} -> {tmp.name} (type={content_type})")
     try:
         with os.fdopen(fd, "wb") as fh:
             async for chunk in chunks:
                 fh.write(chunk)
+                written += len(chunk)
                 yield chunk
         # mkstemp creates 0600; the cache volume is routinely shared with other
         # readers, and the previous plain open() produced umask-default perms.
         await asyncio.to_thread(tmp.chmod, 0o644)
         await asyncio.to_thread(_write_meta, _meta_path(url), content_type)
         await asyncio.to_thread(tmp.replace, path)
-        logger.debug(f"cache_stream_tee: cached {url} (type={content_type})")
-    except BaseException:
+        logger.debug(f"cache_stream_tee: cached {url} ({written} bytes, type={content_type}) as {path.name}")
+    except BaseException as exc:
         tmp.unlink(missing_ok=True)  # noqa: ASYNC240 — one metadata op on an error path
+        logger.debug(
+            f"cache_stream_tee: discarded partial {url} after {written} bytes "
+            f"({type(exc).__name__}); temp file {tmp.name} removed"
+        )
         raise
 
 
@@ -155,10 +167,13 @@ def _evict_sync(cache_dir: Path, max_age_secs: float, max_items: int) -> None:
     the writer that owns it.
     """
     if not cache_dir.exists():
+        logger.debug(f"_evict_sync: cache dir {cache_dir} does not exist, nothing to do")
         return
     now = time.time()
     files = sorted(cache_dir.iterdir(), key=lambda p: p.stat().st_mtime)
+    inflight = sum(1 for f in files if f.suffix == ".tmp")
     surviving: list[Path] = []
+    by_age = 0
     for f in files:
         if f.suffix in (".meta", ".tmp"):
             continue
@@ -166,13 +181,20 @@ def _evict_sync(cache_dir: Path, max_age_secs: float, max_items: int) -> None:
             logger.debug(f"Evicting cache file {f} due to age")
             f.unlink(missing_ok=True)
             f.with_suffix(".meta").unlink(missing_ok=True)
+            by_age += 1
         else:
             surviving.append(f)
+    by_count = 0
     while len(surviving) > max_items:
         logger.debug(f"Evicting cache file {surviving[0]} due to count limit")
         head = surviving.pop(0)
         head.unlink(missing_ok=True)
         head.with_suffix(".meta").unlink(missing_ok=True)
+        by_count += 1
+    logger.debug(
+        f"_evict_sync: {len(surviving)} entries remain (limit {max_items}); "
+        f"evicted {by_age} by age, {by_count} by count; skipped {inflight} in-flight .tmp"
+    )
 
 
 async def evict() -> None:

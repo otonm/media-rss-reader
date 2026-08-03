@@ -30,6 +30,7 @@ async def _warm(item_id: str, url: str, client: httpx.AsyncClient) -> None:
     shared with the proxy, so both paths cannot drift apart.
     """
     if cache_read(url) is not None:
+        logger.debug(f"_warm: {url} already on disk, skipping")
         return  # already cached — nothing to do
     await fetch_to_cache(url, item_id, client)
 

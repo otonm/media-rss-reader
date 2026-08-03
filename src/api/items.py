@@ -87,8 +87,13 @@ async def list_items(
     logger.debug(f"list_items unseen={unseen} feed_id={feed_id} offset={offset} size={size}")
     async with db.execute(query, params) as cur:
         rows = await cur.fetchall()
-    logger.debug(f"list_items returned {len(rows)} item(s)")
-    return [_row_to_item(row) for row in rows]
+    items = [_row_to_item(row) for row in rows]
+    # The cached count is the number the browser can paint instantly; a low
+    # ratio here is why a scroll feels slow, and it is what the UI_DEBUG
+    # overlay's HIT/MISS line reflects.
+    cached_count = sum(1 for i in items if i["cached"])
+    logger.debug(f"list_items returned {len(items)} item(s), {cached_count} already cached on disk")
+    return items
 
 
 @router.post("/items/{item_id}/seen")

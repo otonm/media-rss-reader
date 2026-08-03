@@ -45,14 +45,19 @@ async def proxy_media(
     """
     path = cache_read(url)
     if path is not None:
-        return FileResponse(str(path), media_type=cache_read_meta(url))
+        media_type = cache_read_meta(url)
+        logger.debug(f"proxy_media: HIT {url} -> {path.name} (type={media_type})")
+        return FileResponse(str(path), media_type=media_type)
 
+    logger.debug(f"proxy_media: MISS {url} (item_id={item_id}), streaming from upstream")
     client = get_http_client()
     try:
         response = await open_upstream(url, item_id, client)
     except UpstreamError as exc:
+        logger.debug(f"proxy_media: 502 for {url} — {exc}")
         raise HTTPException(status_code=502, detail="upstream error") from exc
     except Exception as exc:
+        logger.warning(f"proxy_media: upstream fetch failed for {url}: {type(exc).__name__}: {exc}")
         raise HTTPException(status_code=502, detail="upstream fetch failed") from exc
 
     content_type = response.headers.get("content-type", "application/octet-stream")

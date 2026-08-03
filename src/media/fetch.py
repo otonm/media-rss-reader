@@ -51,6 +51,7 @@ async def open_upstream(url: str, item_id: str | None, client: httpx.AsyncClient
     dropped) before raising — that is what stops a 404'd post coming back on
     the next sync.
     """
+    logger.debug(f"open_upstream: GET {url} (item_id={item_id}, timeout={UPSTREAM_TIMEOUT_S}s)")
     response = await client.send(
         client.build_request("GET", url, timeout=UPSTREAM_TIMEOUT_S),
         stream=True,
@@ -65,6 +66,11 @@ async def open_upstream(url: str, item_id: str | None, client: httpx.AsyncClient
             lambda db: mark_url_dead_and_maybe_drop(url, item_id, db),
         )
         raise UpstreamError(f"upstream returned {status} for {url}")
+    logger.debug(
+        f"open_upstream: {url} -> {response.status_code} "
+        f"type={response.headers.get('content-type', '?')} "
+        f"length={response.headers.get('content-length', 'unknown')}"
+    )
     return response
 
 
@@ -80,6 +86,8 @@ async def tee_to_cache(url: str, response: httpx.Response) -> AsyncIterator[byte
     """
     content_type = response.headers.get("content-type", "application/octet-stream")
     digest = hashlib.sha256()
+    sent = 0
+    complete = False
     # Held for the whole transfer so the prefetcher leaves this URL alone while
     # a client is already pulling it.
     with download_claim(url):
@@ -92,9 +100,18 @@ async def tee_to_cache(url: str, response: httpx.Response) -> AsyncIterator[byte
             async with aclosing(cached):
                 async for chunk in cached:
                     digest.update(chunk)
+                    sent += len(chunk)
                     yield chunk
+            complete = True
         finally:
             await response.aclose()
+            if complete:
+                logger.debug(f"tee_to_cache: streamed {sent} bytes of {url} to client and cache")
+            else:
+                logger.debug(
+                    f"tee_to_cache: client stopped reading {url} after {sent} bytes; "
+                    "nothing cached, the prefetcher will warm it later"
+                )
 
     await run_with_own_db(
         f"record_media_hash for {url}",
@@ -114,8 +131,10 @@ async def fetch_to_cache(url: str, item_id: str, client: httpx.AsyncClient) -> N
             logger.debug(f"fetch_to_cache: {url} already in flight, skipping")
             return
     try:
+        logger.debug(f"fetch_to_cache: warming {url} (item_id={item_id})")
         response = await open_upstream(url, item_id, client)
         async for _ in tee_to_cache(url, response):
             pass
+        logger.debug(f"fetch_to_cache: warmed {url}")
     except Exception as exc:
-        logger.debug(f"fetch_to_cache failed for {url}: {exc}")
+        logger.debug(f"fetch_to_cache failed for {url}: {type(exc).__name__}: {exc}")
