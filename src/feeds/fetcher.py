@@ -14,6 +14,7 @@ import feedparser
 import httpx
 
 from src.media.detector import detect_all_media
+from src.media.normalize import media_key
 
 logger = logging.getLogger(__name__)
 
@@ -50,6 +51,7 @@ def entry_to_item(feed_id: str, entry: dict) -> dict | None:
         "guid": guid,
         "title": entry.get("title"),
         "media_url": media_url,
+        "media_key": media_key(media_url),
         "media_type": media_type,
         "media_json": json.dumps([{"url": u, "type": t} for u, t in results]),
         "pub_date": entry.get("published") or entry.get("updated"),

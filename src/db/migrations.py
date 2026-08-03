@@ -56,6 +56,23 @@ MIGRATIONS: list[str] = [
     # v9: index on media_url — _candidate_items looks up items by media_url inside a
     # write transaction; without this it is a full table scan holding the writer lock
     "CREATE INDEX IF NOT EXISTS idx_items_media_url ON items(media_url)",
+    # v10: media_key holds the normalised media URL — the cross-feed dedup key.
+    # Not backfilled: existing rows keep NULL, which never matches the insert
+    # guard, and they age out within ITEMS_MAX_AGE_HOURS anyway.
+    "ALTER TABLE items ADD COLUMN media_key TEXT",
+    # v11: index on media_key — the insert guard probes it for every incoming item
+    "CREATE INDEX IF NOT EXISTS idx_items_media_key ON items(media_key)",
+    # v12: media_hashes — content digests of downloaded media, keyed by URL.
+    # phash is NULL unless DEDUP_SIMILARITY is enabled.
+    (
+        "CREATE TABLE IF NOT EXISTS media_hashes ("
+        "url TEXT PRIMARY KEY, "
+        "sha256 TEXT NOT NULL, "
+        "phash TEXT, "
+        "hashed_at TIMESTAMP NOT NULL DEFAULT (datetime('now')))"
+    ),
+    # v13: index on sha256 — probed for every freshly downloaded media file
+    "CREATE INDEX IF NOT EXISTS idx_media_hashes_sha256 ON media_hashes(sha256)",
 ]
 
 

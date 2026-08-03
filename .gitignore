@@ -36,3 +36,4 @@ venv/
 feeds.opml
 
 examples/
+deduplicators/

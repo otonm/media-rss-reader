@@ -206,3 +206,67 @@ async def test_refresh_skips_unavailable_guids(db: aiosqlite.Connection, tmp_pat
     async with db.execute("SELECT guid FROM unavailable_guids WHERE feed_id = ?", (feed_id,)) as cur:
         rows = await cur.fetchall()
     assert [r[0] for r in rows] == ["g1"]
+
+
+_TWO_FEED_OPML = """\
+<?xml version="1.0"?>
+<opml version="2.0"><head/><body>
+  <outline type="rss" text="A" xmlUrl="https://a.example.com/feed.xml"/>
+  <outline type="rss" text="B" xmlUrl="https://b.example.com/feed.xml"/>
+</body></opml>"""
+
+# Same picture, two feeds, different guids, and the second feed hands us the
+# URL with an extra sizing query string — the shape that produced visible
+# duplicates before media_key existed.
+_RSS_FEED_A = """\
+<?xml version="1.0"?>
+<rss version="2.0"><channel><title>A</title>
+  <item>
+    <guid>a-1</guid>
+    <enclosure url="https://cdn.example.com/shared.jpg" type="image/jpeg" length="0"/>
+  </item>
+</channel></rss>"""
+
+_RSS_FEED_B = """\
+<?xml version="1.0"?>
+<rss version="2.0"><channel><title>B</title>
+  <item>
+    <guid>b-1</guid>
+    <enclosure url="https://cdn.example.com/shared.jpg?width=640&amp;s=abc" type="image/jpeg" length="0"/>
+  </item>
+</channel></rss>"""
+
+
+async def test_refresh_deduplicates_same_media_across_feeds(db: aiosqlite.Connection, tmp_path: Path) -> None:
+    """The same picture carried by two different feeds is stored once."""
+    f = tmp_path / "feeds.opml"
+    f.write_text(_TWO_FEED_OPML)
+    with respx.mock:
+        respx.get("https://a.example.com/feed.xml").mock(return_value=httpx.Response(200, text=_RSS_FEED_A))
+        respx.get("https://b.example.com/feed.xml").mock(return_value=httpx.Response(200, text=_RSS_FEED_B))
+        async with httpx.AsyncClient() as client:
+            await sync_feeds(db, str(tmp_path), str(f), client)
+            await refresh_all_feeds(db, client)
+
+    async with db.execute("SELECT guid, media_key FROM items") as cur:
+        rows = await cur.fetchall()
+    assert len(rows) == 1
+    # Feed A is refreshed first, so its item is the one that survives.
+    assert rows[0]["guid"] == "a-1"
+    assert rows[0]["media_key"] == "https://cdn.example.com/shared.jpg"
+
+
+async def test_refresh_keeps_distinct_media_from_two_feeds(db: aiosqlite.Connection, tmp_path: Path) -> None:
+    """The guard must not collapse genuinely different images."""
+    f = tmp_path / "feeds.opml"
+    f.write_text(_TWO_FEED_OPML)
+    rss_b = _RSS_FEED_B.replace("shared.jpg", "different.jpg")
+    with respx.mock:
+        respx.get("https://a.example.com/feed.xml").mock(return_value=httpx.Response(200, text=_RSS_FEED_A))
+        respx.get("https://b.example.com/feed.xml").mock(return_value=httpx.Response(200, text=rss_b))
+        async with httpx.AsyncClient() as client:
+            await sync_feeds(db, str(tmp_path), str(f), client)
+            await refresh_all_feeds(db, client)
+
+    async with db.execute("SELECT COUNT(*) FROM items") as cur:
+        assert (await cur.fetchone())[0] == 2

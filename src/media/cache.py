@@ -41,21 +41,28 @@ def _write_meta(meta_path: Path, content_type: str) -> None:
 
 async def cache_stream_write(
     url: str, chunks: AsyncIterable[bytes], content_type: str = "application/octet-stream"
-) -> Path:
+) -> tuple[Path, str]:
     """Stream an async byte iterator to the cache file without buffering in memory.
 
     Writes to a .tmp sibling first, then renames atomically so a partial
     download never leaves a corrupt cache entry. The Content-Type sidecar
     is written only after the data file is in place, so a partial download
     leaves no sidecar that would mislead the proxy.
+
+    Returns (path, sha256) — this is the single chokepoint every media byte
+    passes through, so the content digest is accumulated here for free and
+    used by src.media.dedup to collapse the same picture arriving under two
+    different URLs.
     """
     path = _cache_path(url)
     meta = _meta_path(url)
     path.parent.mkdir(parents=True, exist_ok=True)
     tmp = path.with_suffix(".tmp")
+    digest = hashlib.sha256()
     try:
         with tmp.open("wb") as fh:
             async for chunk in chunks:
+                digest.update(chunk)
                 fh.write(chunk)
         await asyncio.to_thread(tmp.rename, path)
         await asyncio.to_thread(_write_meta, meta, content_type)
@@ -64,7 +71,7 @@ async def cache_stream_write(
         tmp.unlink(missing_ok=True)
         meta.unlink(missing_ok=True)
         raise
-    return path
+    return path, digest.hexdigest()
 
 
 def cache_read(url: str) -> Path | None:

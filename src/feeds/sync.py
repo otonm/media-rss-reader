@@ -20,9 +20,14 @@ from src.media.cache import evict
 
 logger = logging.getLogger(__name__)
 
+# INSERT ... SELECT ... WHERE NOT EXISTS rather than plain VALUES: the guard
+# rejects an item whose media_key is already present in *any* feed, which is
+# what stops the same picture appearing once per feed that carried it.
+# OR IGNORE still covers the (feed_id, guid) UNIQUE constraint for re-polls.
 _INSERT_ITEM = """INSERT OR IGNORE INTO items
-   (id, feed_id, guid, title, media_url, media_type, media_json, pub_date)
-   VALUES (:id, :feed_id, :guid, :title, :media_url, :media_type, :media_json, :pub_date)"""
+   (id, feed_id, guid, title, media_url, media_key, media_type, media_json, pub_date)
+   SELECT :id, :feed_id, :guid, :title, :media_url, :media_key, :media_type, :media_json, :pub_date
+   WHERE NOT EXISTS (SELECT 1 FROM items WHERE media_key = :media_key)"""
 
 
 async def local_xml_sync(db: aiosqlite.Connection, feeds_dir: str) -> None:

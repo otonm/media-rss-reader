@@ -79,7 +79,10 @@ async def test_sync_feeds_hard_deletes_missing_folder_file(db: aiosqlite.Connect
     feeds_dir = tmp_path / "feeds"
     feeds_dir.mkdir()
     (feeds_dir / "keepme.xml").write_text(_RSS_TWO_ITEMS)
-    (feeds_dir / "gone.xml").write_text(_RSS_TWO_ITEMS)
+    # Distinct media URLs: with two feeds carrying the *same* picture, the
+    # cross-feed dedup guard would store it once and this test would be
+    # measuring deduplication rather than the CASCADE it means to check.
+    (feeds_dir / "gone.xml").write_text(_RSS_TWO_ITEMS.replace("cdn.example.com/", "cdn.example.com/gone-"))
     await local_xml_sync(db, str(feeds_dir))
 
     async with db.execute("SELECT COUNT(*) FROM feeds") as cur:

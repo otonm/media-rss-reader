@@ -14,6 +14,7 @@ from src.config import settings
 from src.db.connection import get_db
 from src.media.availability import mark_url_dead_and_maybe_drop
 from src.media.cache import cache_read, cache_read_meta, cache_stream_write
+from src.media.dedup import record_media_hash
 from src.media.prefetch import prefetch_ahead
 from src.scheduler import get_http_client, get_last_opml_sync
 
@@ -57,11 +58,18 @@ async def proxy_media(
                     logger.warning(f"mark_url_dead_and_maybe_drop failed for {url}: {exc}")
                 raise HTTPException(status_code=502, detail="upstream error")
             content_type = response.headers.get("content-type", "application/octet-stream")
-            path = await cache_stream_write(url, response.aiter_bytes(65536), content_type)
+            path, digest = await cache_stream_write(url, response.aiter_bytes(65536), content_type)
     except HTTPException:
         raise
     except Exception as exc:
         raise HTTPException(status_code=502, detail="upstream fetch failed") from exc
+
+    # Record the content hash so a duplicate arriving under a different URL can
+    # be collapsed. Swallowed on error: the user asked for bytes, and we have them.
+    try:
+        await record_media_hash(url, digest, db)
+    except Exception as exc:  # pragma: no cover
+        logger.warning(f"record_media_hash failed for {url}: {exc}")
 
     return FileResponse(str(path), media_type=content_type)
 
