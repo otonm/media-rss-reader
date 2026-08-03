@@ -14,15 +14,25 @@ still over the limit.
 """
 
 import asyncio
+import contextlib
 import hashlib
 import logging
+import os
+import tempfile
 import time
-from collections.abc import AsyncIterable
+from collections.abc import AsyncIterable, AsyncIterator, Iterator
 from pathlib import Path
 
 from src.config import settings
 
 logger = logging.getLogger(__name__)
+
+# URLs currently being downloaded, by number of concurrent downloaders. The
+# browser's proxy GET for an item routinely overlaps the background _warm task
+# for the same URL, and prefetch_ahead re-queues overlapping windows on every
+# scroll event, so the same URL would otherwise be pulled from the origin
+# several times at once.
+_inflight: dict[str, int] = {}
 
 
 def _cache_path(url: str) -> Path:
@@ -39,39 +49,85 @@ def _write_meta(meta_path: Path, content_type: str) -> None:
     meta_path.write_text(content_type, encoding="ascii")
 
 
+@contextlib.contextmanager
+def download_claim(url: str) -> Iterator[bool]:
+    """Mark `url` as being downloaded for the duration of the block.
+
+    Yields True to the first caller in, False while another download of the
+    same URL is still running. Background prefetch skips a False claim; the
+    proxy proceeds regardless, because a user is waiting for those bytes.
+    """
+    first = url not in _inflight
+    _inflight[url] = _inflight.get(url, 0) + 1
+    try:
+        yield first
+    finally:
+        remaining = _inflight[url] - 1
+        if remaining:
+            _inflight[url] = remaining
+        else:
+            del _inflight[url]
+
+
+async def cache_stream_tee(
+    url: str, chunks: AsyncIterable[bytes], content_type: str = "application/octet-stream"
+) -> AsyncIterator[bytes]:
+    """Write an async byte iterator to the cache file, yielding each chunk onward.
+
+    This is the primitive: the proxy needs the same bytes going to the browser
+    and to disk in one pass, so the write loop yields rather than returning at
+    the end. Nothing is buffered in memory beyond one chunk.
+
+    Writes to a private temp file first, then renames atomically so a partial
+    download never leaves a corrupt cache entry. The temp name is unique per
+    writer: two writers racing on the same URL each fill their own file and
+    both rename onto the same destination, which is atomic and last-one-wins.
+    A shared temp name would instead let the second writer's open() truncate
+    the first's in-flight file, and leave the loser deleting the winner's
+    sidecar on its way out.
+
+    The sidecar is written *before* the data rename, so a file visible to
+    cache_read always has its Content-Type. Without it the proxy falls back to
+    text/plain (the cache filename is a bare sha256 with no extension, so
+    mimetypes cannot guess), which no browser will decode as video.
+
+    Cleanup catches BaseException, not Exception: a browser that scrolls past
+    mid-download cancels the consumer, which throws GeneratorExit in here, and
+    that partial file still has to go.
+    """
+    path = _cache_path(url)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    fd, tmp_name = tempfile.mkstemp(dir=path.parent, suffix=".tmp")
+    tmp = Path(tmp_name)
+    try:
+        with os.fdopen(fd, "wb") as fh:
+            async for chunk in chunks:
+                fh.write(chunk)
+                yield chunk
+        # mkstemp creates 0600; the cache volume is routinely shared with other
+        # readers, and the previous plain open() produced umask-default perms.
+        await asyncio.to_thread(tmp.chmod, 0o644)
+        await asyncio.to_thread(_write_meta, _meta_path(url), content_type)
+        await asyncio.to_thread(tmp.replace, path)
+        logger.debug(f"cache_stream_tee: cached {url} (type={content_type})")
+    except BaseException:
+        tmp.unlink(missing_ok=True)  # noqa: ASYNC240 — one metadata op on an error path
+        raise
+
+
 async def cache_stream_write(
     url: str, chunks: AsyncIterable[bytes], content_type: str = "application/octet-stream"
 ) -> tuple[Path, str]:
-    """Stream an async byte iterator to the cache file without buffering in memory.
+    """Drain cache_stream_tee into the cache for callers that don't want the bytes.
 
-    Writes to a .tmp sibling first, then renames atomically so a partial
-    download never leaves a corrupt cache entry. The Content-Type sidecar
-    is written only after the data file is in place, so a partial download
-    leaves no sidecar that would mislead the proxy.
-
-    Returns (path, sha256) — this is the single chokepoint every media byte
-    passes through, so the content digest is accumulated here for free and
-    used by src.media.dedup to collapse the same picture arriving under two
-    different URLs.
+    Returns (path, sha256) — every media byte passes through here, so the
+    content digest is accumulated for free and used by src.media.dedup to
+    collapse the same picture arriving under two different URLs.
     """
-    path = _cache_path(url)
-    meta = _meta_path(url)
-    path.parent.mkdir(parents=True, exist_ok=True)
-    tmp = path.with_suffix(".tmp")
     digest = hashlib.sha256()
-    try:
-        with tmp.open("wb") as fh:
-            async for chunk in chunks:
-                digest.update(chunk)
-                fh.write(chunk)
-        await asyncio.to_thread(tmp.rename, path)
-        await asyncio.to_thread(_write_meta, meta, content_type)
-        logger.debug(f"cache_stream_write: cached {url} (type={content_type})")
-    except Exception:
-        tmp.unlink(missing_ok=True)
-        meta.unlink(missing_ok=True)
-        raise
-    return path, digest.hexdigest()
+    async for chunk in cache_stream_tee(url, chunks, content_type):
+        digest.update(chunk)
+    return _cache_path(url), digest.hexdigest()
 
 
 def cache_read(url: str) -> Path | None:
@@ -94,7 +150,9 @@ def _evict_sync(cache_dir: Path, max_age_secs: float, max_items: int) -> None:
     Each data file and its .meta sidecar share the same mtime (written
     together), so evicting one takes the other along. Counting is by data
     file only; .meta entries are skipped so the count matches what the
-    proxy would actually serve.
+    proxy would actually serve. .tmp entries are skipped too — they are
+    in-flight downloads, not cache entries, and unlinking one would break
+    the writer that owns it.
     """
     if not cache_dir.exists():
         return
@@ -102,7 +160,7 @@ def _evict_sync(cache_dir: Path, max_age_secs: float, max_items: int) -> None:
     files = sorted(cache_dir.iterdir(), key=lambda p: p.stat().st_mtime)
     surviving: list[Path] = []
     for f in files:
-        if f.suffix == ".meta":
+        if f.suffix in (".meta", ".tmp"):
             continue
         if now - f.stat().st_mtime > max_age_secs:
             logger.debug(f"Evicting cache file {f} due to age")

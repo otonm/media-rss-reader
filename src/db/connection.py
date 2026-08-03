@@ -2,10 +2,11 @@
 
 open_db() is used by the scheduler (persistent connection held for the process lifetime).
 get_db() is a FastAPI dependency that opens and closes a connection per request.
+run_with_own_db() is for work that outlives the request that started it.
 """
 
 import logging
-from collections.abc import AsyncIterator
+from collections.abc import AsyncIterator, Awaitable, Callable
 from pathlib import Path
 
 import aiosqlite
@@ -46,3 +47,24 @@ async def get_db() -> AsyncIterator[aiosqlite.Connection]:
     finally:
         logger.debug("get_db closing request-scoped connection")
         await db.close()
+
+
+async def run_with_own_db(
+    label: str,
+    write: Callable[[aiosqlite.Connection], Awaitable[object]],
+) -> None:
+    """Run one DB write on a fresh connection, logging and swallowing failures.
+
+    For work that outlives the request that started it: fire-and-forget warm
+    tasks, and streaming-response bodies, which run after the route function
+    has returned and its request-scoped connection has already been closed.
+    Borrowing that connection raises "no active connection" instead.
+    """
+    try:
+        db = await open_db()
+        try:
+            await write(db)
+        finally:
+            await db.close()
+    except Exception as exc:  # pragma: no cover
+        logger.warning(f"{label} failed: {exc}")

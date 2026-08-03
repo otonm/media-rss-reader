@@ -8,6 +8,7 @@ import aiosqlite
 from fastapi import APIRouter, Depends, HTTPException
 
 from src.db.connection import get_db
+from src.media.cache import cache_read
 from src.media.normalize import media_key
 
 logger = logging.getLogger(__name__)
@@ -22,6 +23,11 @@ def _row_to_item(row: aiosqlite.Row) -> dict[str, Any]:
     Rows predating migration v5 have media_json NULL; they fall back to a
     1-element list built from media_url/media_type so the frontend always
     receives a `media` array.
+
+    `cached` tells the browser which items are already on disk so it can
+    download those first — they decode in milliseconds, while a miss waits on
+    the origin. It costs one stat() per row and is a hint, not a promise: an
+    entry can be evicted, or warmed, moments after the response goes out.
     """
     item = dict(row)
     raw = item.pop("media_json")
@@ -29,6 +35,7 @@ def _row_to_item(row: aiosqlite.Row) -> dict[str, Any]:
         item["media"] = json.loads(raw)
     else:
         item["media"] = [{"url": item["media_url"], "type": item["media_type"]}]
+    item["cached"] = cache_read(item["media_url"]) is not None
     return item
 
 

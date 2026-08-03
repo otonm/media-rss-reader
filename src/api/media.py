@@ -7,14 +7,13 @@ from pathlib import Path
 from typing import Annotated, Any
 
 import aiosqlite
-from fastapi import APIRouter, Depends, HTTPException, Query
-from fastapi.responses import FileResponse
+from fastapi import APIRouter, Depends, HTTPException, Query, Response
+from fastapi.responses import FileResponse, StreamingResponse
 
 from src.config import settings
 from src.db.connection import get_db
-from src.media.availability import mark_url_dead_and_maybe_drop
-from src.media.cache import cache_read, cache_read_meta, cache_stream_write
-from src.media.dedup import record_media_hash
+from src.media.cache import cache_read, cache_read_meta
+from src.media.fetch import UpstreamError, open_upstream, tee_to_cache
 from src.media.prefetch import prefetch_ahead
 from src.scheduler import get_http_client, get_last_opml_sync
 
@@ -29,49 +28,35 @@ _DbDep = Annotated[aiosqlite.Connection, Depends(get_db)]
 async def proxy_media(
     url: str = Query(...),
     item_id: str | None = Query(None),
-    db: _DbDep = None,  # type: ignore[assignment]
-) -> FileResponse:
+) -> Response:
     """Cache-through proxy for media files.
 
-    On a cache hit: serve the file directly via FileResponse (zero-copy sendfile).
-    On a cache miss: stream from upstream to the cache file (no in-memory buffer),
-    then serve the cached file. This keeps memory usage O(chunk_size) regardless
-    of the media file size.
+    On a cache hit: serve the file directly via FileResponse (zero-copy sendfile,
+    and Range-capable, which is what makes a cached video seekable).
 
-    On upstream non-success, mark `url` as dead and (if every URL of `item_id`
-    is now dead) drop the item from the DB. Errors from the helper are logged
-    and swallowed -- they must not mask the 502 the client deserves.
+    On a cache miss: stream from upstream straight to the browser while filling
+    the cache in the same pass. The browser starts painting on the first chunk.
+    Downloading to disk first and only then replying meant a full-screen spinner
+    for the whole upstream transfer, which is the black screen users saw.
+    Memory stays at O(chunk_size) either way.
+
+    On upstream non-success, `url` is marked dead and a fully-dead item is
+    dropped from the DB before the 502 goes out.
     """
     path = cache_read(url)
     if path is not None:
-        media_type = cache_read_meta(url)
-        return FileResponse(str(path), media_type=media_type)
+        return FileResponse(str(path), media_type=cache_read_meta(url))
 
     client = get_http_client()
     try:
-        async with client.stream("GET", url, follow_redirects=True, timeout=30) as response:
-            if not response.is_success:
-                await response.aread()
-                try:
-                    await mark_url_dead_and_maybe_drop(url, item_id, db)
-                except Exception as exc:  # pragma: no cover
-                    logger.warning(f"mark_url_dead_and_maybe_drop failed for {url}: {exc}")
-                raise HTTPException(status_code=502, detail="upstream error")
-            content_type = response.headers.get("content-type", "application/octet-stream")
-            path, digest = await cache_stream_write(url, response.aiter_bytes(65536), content_type)
-    except HTTPException:
-        raise
+        response = await open_upstream(url, item_id, client)
+    except UpstreamError as exc:
+        raise HTTPException(status_code=502, detail="upstream error") from exc
     except Exception as exc:
         raise HTTPException(status_code=502, detail="upstream fetch failed") from exc
 
-    # Record the content hash so a duplicate arriving under a different URL can
-    # be collapsed. Swallowed on error: the user asked for bytes, and we have them.
-    try:
-        await record_media_hash(url, digest, db)
-    except Exception as exc:  # pragma: no cover
-        logger.warning(f"record_media_hash failed for {url}: {exc}")
-
-    return FileResponse(str(path), media_type=content_type)
+    content_type = response.headers.get("content-type", "application/octet-stream")
+    return StreamingResponse(tee_to_cache(url, response), media_type=content_type)
 
 
 @router.post("/prefetch/hint")

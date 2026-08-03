@@ -44,4 +44,5 @@ async def test_build_html_real_index() -> None:
     # Use real paths (index.html exists in src/static/)
     result = main_mod._build_html()
     assert "--feed-initial-count" in result
+    assert "--ui-debug" in result
     assert "<style>" in result

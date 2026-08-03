@@ -92,7 +92,7 @@
       buildGallery(wrap, galleryMedia, el, item.id);
     } else {
       if (item.media_type === "video") wireVideo(el);
-      el.addEventListener("error", () => onItemFailed(item.id));
+      el.addEventListener("error", () => onItemFailed(item.id, "media load failed"));
       wrap.appendChild(el);
     }
     if (item.seen_at) tagAsSeen(wrap);
@@ -117,6 +117,11 @@
         el = firstEl;
       } else {
         el = m.type === "video" ? document.createElement("video") : new Image();
+        // Offscreen slides defer to the browser's own lazy loading. A 20-slide
+        // gallery opening 20 connections at once exhausts the ~6-per-host
+        // budget and starves the cache queue and /api/items behind it.
+        if (m.type === "video") el.preload = "none";
+        else el.loading = "lazy";
         el.src = `/api/media/proxy?url=${encodeURIComponent(m.url)}&item_id=${encodeURIComponent(itemId)}`;
       }
       if (m.type === "video") wireVideo(el);
@@ -175,7 +180,7 @@
     slide.remove();
     if (dots.children[idx]) dots.children[idx].remove();
     if (gallery.children.length === 0) {
-      onItemFailed(wrap.dataset.id);
+      onItemFailed(wrap.dataset.id, "every slide failed to load");
     } else if (gallery.children.length === 1) {
       dots.remove(); // a single remaining slide needs no indicator
       wrap.querySelectorAll(".gallery-nav").forEach((b) => b.remove());
@@ -294,12 +299,39 @@
     }
   }
 
-  function onItemFailed(id) {
+  // An item that could not be downloaded is replaced by a visible error tile
+  // rather than vanishing. Silently removing it is why these failures went
+  // unnoticed for so long: the feed just quietly had fewer items in it.
+  // The item still leaves the store, so it is gone on the next reload.
+  function onItemFailed(id, reason) {
     const el = state.feed.querySelector(`.placeholder[data-id="${id}"], .media-item[data-id="${id}"]`);
     if (!el) return;
-    el.remove();
+    const item = MRR.itemStore.getItems().find((i) => i.id === id);
+    el.replaceWith(createErrorTile(item, id, reason));
     const idx = MRR.itemStore.findIndexById(id);
     if (idx !== -1) MRR.itemStore.getItems().splice(idx, 1);
+  }
+
+  function createErrorTile(item, id, reason) {
+    const wrap = document.createElement("div");
+    wrap.className = "media-item failed";
+    wrap.dataset.id = id;
+    const box = document.createElement("div");
+    box.className = "failed-box";
+    const icon = document.createElement("div");
+    icon.className = "failed-icon";
+    icon.textContent = "⚠";
+    const title = document.createElement("div");
+    title.className = "failed-title";
+    title.textContent = (item && item.title) || "Media unavailable";
+    const detail = document.createElement("div");
+    detail.className = "failed-reason";
+    detail.textContent = reason || "load failed";
+    box.appendChild(icon);
+    box.appendChild(title);
+    box.appendChild(detail);
+    wrap.appendChild(box);
+    return wrap;
   }
 
   // Live checkmark: called by the scroll-controller after a successful

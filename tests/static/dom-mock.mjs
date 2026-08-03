@@ -81,11 +81,41 @@ export function createDomContext() {
         },
         cloneNode() { return new _Image(); },
       });
+      ctx._images.push(this);
     }
   }
   ctx.Image = _Image;
+  // Every Image the code under test constructs, in construction order. Tests
+  // use it to fire load/error on a specific download.
+  ctx._images = [];
   vm.createContext(ctx);
   return ctx;
+}
+
+// Replace setTimeout/clearTimeout with a manually-advanced clock. Needed by
+// anything that arms a deadline: cache-queue's per-download timeout would
+// otherwise hold a real 10s timer open and stall the whole test run.
+export function fakeTimeout(ctx) {
+  const timers = new Map();
+  let nextId = 1;
+  ctx.setTimeout = (fn, ms) => {
+    const id = nextId++;
+    timers.set(id, { fn, ms });
+    return id;
+  };
+  ctx.clearTimeout = (id) => timers.delete(id);
+  return {
+    /** Fire every timer whose delay is <= ms. */
+    advance(ms) {
+      for (const [id, timer] of [...timers]) {
+        if (timer.ms <= ms) {
+          timers.delete(id);
+          timer.fn();
+        }
+      }
+    },
+    pending: () => timers.size,
+  };
 }
 
 // Replace the mock setInterval/clearInterval with the real ones. Use this
@@ -163,7 +193,10 @@ function makeDocument() {
     return out;
   }
 
-  return { createElement, getElementById, register, querySelector, querySelectorAll };
+  // controls.js appends the UI_DEBUG overlay straight to document.body.
+  const body = makeElement("body");
+
+  return { createElement, getElementById, register, querySelector, querySelectorAll, body };
 }
 
 // ---------------------------------------------------------------------------
@@ -212,6 +245,11 @@ function makeElement(tag) {
       child.parentNode = this;
       this.children.push(child);
       return child;
+    },
+    replaceChildren(...nodes) {
+      this.children.forEach((c) => { c.parentNode = null; });
+      nodes.forEach((n) => { n.parentNode = this; });
+      this.children = nodes;
     },
     replaceWith(...nodes) {
       if (this.parentNode) {

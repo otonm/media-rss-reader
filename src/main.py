@@ -33,6 +33,7 @@ def _build_html() -> str:
         f"<style>:root{{"
         f"--feed-initial-count:{settings.feed_initial_count};"
         f"--image-autoscroll-delay-s:{settings.image_autoscroll_delay_s};"
+        f"--ui-debug:{settings.ui_debug};"
         f"}}</style>"
     )
     # ponytail: per-startup token — the constant package version let browser/SW

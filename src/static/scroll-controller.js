@@ -61,6 +61,7 @@
     MRR.feedView.setCurrentMedia(mediaEl && mediaEl.tagName === "VIDEO" ? mediaEl : null);
     MRR.cacheQueue.rebuild(idx, MRR.config.feedInitialCount, MRR.itemStore.getItems());
     MRR.autoscrollController.reset(best.target);
+    MRR.controls?.renderDebug();
   }
 
   // Threshold 0 observer: fires on every binary enter/leave of the viewport.

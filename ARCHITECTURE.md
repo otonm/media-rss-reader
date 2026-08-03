@@ -120,7 +120,7 @@ src/
 
 5. **`start_scheduler()`** — creates the shared `httpx.AsyncClient`, registers two APScheduler interval jobs, starts the scheduler, then immediately fires both jobs (OPML sync + feed refresh) so the reader is populated on first boot without waiting for the first scheduled interval. Startup errors are caught and logged as warnings — the scheduler will retry on the next interval.
 
-6. **`warm_startup_cache()`** — fired as a background `asyncio.Task` (does not block startup). Queries the most recent `CACHE_MAX_ITEMS` media URLs and downloads them with a semaphore of 10 concurrent fetches and a 100 ms stagger to avoid thundering-herd on the upstream servers. Failed downloads call `mark_url_dead_and_maybe_drop` (see [Dead-URL Tracking](#dead-url-tracking-mediaavailabilitypy)).
+6. **`warm_startup_cache()`** — fired as a background `asyncio.Task` (does not block startup). Queries the most recent `CACHE_MAX_ITEMS` media URLs and downloads them with a semaphore of 10 concurrent fetches, to avoid thundering-herd on the upstream servers. Failed downloads call `mark_url_dead_and_maybe_drop` (see [Dead-URL Tracking](#dead-url-tracking-mediaavailabilitypy)).
 
 ---
 
@@ -242,24 +242,41 @@ Current migrations (v1–v14): `fetched_at` index, `seen_guids` table + backfill
 
 Files are stored at `{CACHE_DIR}/{sha256(url)}` — no subdirectories, no extension. The sha256 filename makes lookup O(1) and avoids filesystem issues with special characters in URLs.
 
-**Write**: `cache_stream_write(url, byte_iterator, content_type)` — streams chunks to a temp file, then atomically renames. Writes content-type metadata alongside via `cache_write_meta`. Avoids buffering the full file in memory.
+**Write**: `cache_stream_tee(url, byte_iterator, content_type)` is the primitive — it streams chunks to a temp file *and yields each one onward*, so the proxy can serve the browser and fill the cache in a single pass. `cache_stream_write(...)` simply drains it and returns `(path, sha256)` for callers that only want the file. Neither buffers the full file in memory.
+
+Two details that matter, both fixes for cache entries that failed permanently:
+
+- The temp file name is unique per writer (`tempfile.mkstemp`). Two writers racing on the same URL is the *normal* case — the browser's proxy GET routinely overlaps the background warm for the same item — and with a shared temp name the second writer's `open("wb")` truncated the first's in-flight file, while the loser's failed rename deleted the winner's `.meta` sidecar.
+- The sidecar is written *before* the data rename, so a file visible to `cache_read` always has its content type. Without one the proxy falls back to `text/plain` (the filename is a bare sha256, so `mimetypes` cannot guess), which no browser will decode as video.
+
+`download_claim(url)` is an advisory in-flight registry: the prefetcher skips a URL another download already holds, so the same file is not pulled from the origin several times at once.
 
 **Read**: `cache_read(url)` — returns the `Path` if the file exists, else `None`. `cache_read_meta(url)` reads the stored content-type.
 
-**Evict**: `evict()` — called after each feed refresh. Deletes files older than `CACHE_MAX_AGE_HOURS` first, then trims by count from the oldest if still over `CACHE_MAX_ITEMS`. Files are sorted by `mtime` to determine age and eviction order.
+**Evict**: `evict()` — called after each feed refresh. Deletes files older than `CACHE_MAX_AGE_HOURS` first, then trims by count from the oldest if still over `CACHE_MAX_ITEMS`. Files are sorted by `mtime` to determine age and eviction order. `.meta` and `.tmp` entries are skipped: sidecars are not cache entries in their own right, and a `.tmp` is an in-flight download that must not be counted or unlinked.
+
+### Upstream Fetch (`media/fetch.py`)
+
+Shared by the proxy and the prefetcher so the two cannot drift apart. `open_upstream(url, item_id, client)` returns an unread streaming response, or marks the URL dead and raises `UpstreamError` on a non-success status. `tee_to_cache(url, response)` yields the body onward while `cache_stream_tee` writes it, then records the content digest for dedup. `fetch_to_cache(...)` drains the tee for callers that only want the cache filled.
+
+Every DB write here runs on its own connection via `run_with_own_db`, because a streaming response body executes *after* the route function returned and its request-scoped connection was closed.
+
+An abandoned stream (the user scrolled past) caches nothing: `cache_stream_tee` only publishes a file it finished writing, and `tee_to_cache` wraps it in `contextlib.aclosing` so the temp file is cleaned up immediately rather than whenever the generator is finalised.
 
 ### Prefetch (`media/prefetch.py`)
 
-**Startup warmup** (`warm_startup_cache`): queries the most recent `CACHE_MAX_ITEMS` items by `pub_date` and fires a background task for each, staggered by 100 ms with a semaphore of 10. The stagger avoids a burst of concurrent requests on startup.
+**Startup warmup** (`warm_startup_cache`): queries the most recent `CACHE_MAX_ITEMS` items by `pub_date` and fires a background task for each, with a semaphore of 10 to avoid a thundering herd on the upstream servers.
 
 **Ahead-of-cursor** (`prefetch_ahead`): given a current `item_id`, queries `PREFETCH_AHEAD` items with an earlier `pub_date`. Called from the `/api/prefetch/hint` endpoint, which the browser fires as a fire-and-forget POST whenever it loads a new page of items.
 
 ### Streaming Proxy (`api/media.py`)
 
 `GET /api/media/proxy?url=<encoded>&item_id=<optional>`:
-1. Check `cache_read(url)` — if hit, return `FileResponse` (zero-copy via sendfile)
-2. On miss: stream from upstream to a temp file via `cache_stream_write` (no in-memory buffer), then serve
-3. On upstream non-success: call `mark_url_dead_and_maybe_drop(url, item_id, db)` to record the failure and potentially drop the item
+1. Check `cache_read(url)` — if hit, return `FileResponse` (zero-copy via sendfile, and Range-capable, which is what makes a cached video seekable)
+2. On miss: `open_upstream` + `StreamingResponse(tee_to_cache(...))` — upstream bytes go to the browser and into the cache in the same pass, so the browser starts painting on the first chunk
+3. On upstream non-success: `mark_url_dead_and_maybe_drop(url, item_id, db)` records the failure and potentially drops the item, then the proxy returns 502
+
+Step 2 previously downloaded the whole file to disk and only then replied, which meant the browser saw *nothing* — a full-screen spinner on a black background — for the entire upstream transfer. That was the single largest contributor to the "black screen while loading" symptom. A miss is served as a non-Range `200`, so an uncached video is not seekable until it has been cached; a cache hit is.
 
 The `item_id` parameter (added in `74e2b9e`) enables dead-URL tracking for gallery slides that aren't the primary `media_url`.
 
@@ -381,9 +398,17 @@ A minimum dwell floor (`IMAGE_AUTOSCROLL_DELAY_S`) prevents too-rapid advances o
 
 ### Cache Queue (`cache-queue.js`)
 
-A single-worker priority download queue — downloads one media file at a time. On `rebuild(currentIndex, lookaheadN, items)`, the queue is rebuilt with the current item first, then forward lookahead items, then backward items, then the rest. Already-cached items are skipped. When the worker finishes a download, it emits `item-loaded(id, el)`; `feed-view.js` replaces the corresponding `.placeholder` with a `.media-item`.
+A priority download queue drained by **3 concurrent workers**. On `rebuild(currentIndex, lookaheadN, items)`, the queue is rebuilt with the current item first, then forward lookahead items, then backward items, then the rest. Items already loaded this session are skipped. When a worker finishes a download, it emits `item-loaded(id, el, ms)`; `feed-view.js` replaces the corresponding `.placeholder` with a `.media-item`.
 
-The frontend also fires a fire-and-forget `POST /api/prefetch/hint` after each rebuild, which triggers server-side prewarming of the disk cache ahead of the browser-side worker.
+Within each band, items the server reported as `cached: true` are queued **ahead** of uncached ones. A cached item decodes in milliseconds while a miss waits on the origin, so this is what makes a scroll through warm items feel instant. The current item is exempt — it is what the user is looking at and must load either way.
+
+Each download carries a **10 s deadline**; on expiry the element's `src` is cleared to drop the connection and `item-failed(id, reason)` fires. Three workers plus a deadline is what stops one stalled origin from freezing every placeholder behind it: with a single worker and no timeout, a screen of spinners could sit there indefinitely — including items already on disk that would have painted immediately. Three also stays inside the browser's ~6-connections-per-host budget alongside gallery slides.
+
+The frontend also fires a fire-and-forget `POST /api/prefetch/hint` after each rebuild, which triggers server-side prewarming of the disk cache ahead of the browser-side workers.
+
+### Failed items
+
+`feed-view.js:onItemFailed(id, reason)` replaces the placeholder with a visible `.media-item.failed` tile naming the item and why it failed, and removes the item from the store so it does not come back on the next reload. It previously deleted the node outright, which made these failures invisible — the feed simply had fewer items in it than it should have.
 
 ### CSS Variable Injection
 
@@ -392,7 +417,8 @@ The frontend also fires a fire-and-forget `POST /api/prefetch/hint` after each r
 ```html
 <style>:root{
   --feed-initial-count:10;
-  --image-autoscroll-delay-s:2
+  --image-autoscroll-delay-s:2;
+  --ui-debug:0
 }</style>
 ```
 
@@ -406,7 +432,15 @@ Additionally, `{{VERSION}}` in static asset URLs (`style.css?v={{VERSION}}`, `ap
 
 `config.py` defines a `Settings` dataclass. Every field maps to an environment variable of the same name (uppercased). `_load_settings()` reads `os.environ` at import time and returns a singleton `settings` object. No `.env` file parsing at the Python level — that is handled by Docker/the shell.
 
-Frontend-visible values (`feed_initial_count`, `image_autoscroll_delay_s`) travel to the browser as CSS custom properties injected into the HTML at startup — see [CSS Variable Injection](#css-variable-injection) above.
+Frontend-visible values (`feed_initial_count`, `image_autoscroll_delay_s`, `ui_debug`) travel to the browser as CSS custom properties injected into the HTML at startup — see [CSS Variable Injection](#css-variable-injection) above.
+
+`_load_settings()` parses only `int` and `str`, so flags are declared as ints (`ui_debug: int = 0`, `dedup_similarity: int = 0`) rather than bools.
+
+### `UI_DEBUG` overlay
+
+`UI_DEBUG=1` makes `controls.js` build a fixed overlay in the top-right corner describing the item the feed is currently snapped to: feed name, title, media type and file extension, publish date, cache `HIT`/`MISS` with the measured load time, and the download queue depth. It is `pointer-events: none` so it never intercepts a tap.
+
+The feed *name* comes from a one-off `GET /api/feeds` mapping `feed_id → title`, because `/api/items` carries only `feed_id`. It lives in `controls.js` rather than its own file so no new `<script>` tag and no new entry in the service worker's hardcoded precache list are needed.
 
 ---
 

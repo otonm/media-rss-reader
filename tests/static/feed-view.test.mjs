@@ -570,3 +570,49 @@ test("onItemLoaded for a multi-slide gallery does NOT throw", () => {
   const nonFirst = slides[1].children[0];
   assert.match(nonFirst.src, /item_id=abc/, "slide >1 must include item_id in proxy URL");
 });
+
+// ---------------------------------------------------------------------------
+// A failed item must stay visible.
+//
+// onItemFailed used to delete the node outright, so a media file that would
+// not load simply left a shorter feed and no explanation anywhere. That is
+// why these failures went unnoticed for so long. The item still leaves the
+// store, so it is gone on the next reload.
+// ---------------------------------------------------------------------------
+
+test("onItemFailed replaces the placeholder with a visible error tile", () => {
+  const ctx = createDomContext();
+  const items = [
+    { id: "id0", media_type: "image", media_url: "https://example/0.jpg", title: "A broken picture" },
+    { id: "id1", media_type: "image", media_url: "https://example/1.jpg", title: "Fine" },
+  ];
+  ctx.window.MRR.itemStore = {
+    getItems: () => items,
+    getCurrentIndex: () => 0,
+    getItemAt: (i) => items[i],
+    findIndexById: (id) => items.findIndex((i) => i.id === id),
+    setCurrentIndex: () => {},
+  };
+  ctx.window.MRR.config = { autoscroll: false, mutedDefault: true };
+  ctx.window.MRR.autoscrollController = { bindIfVisible() {}, reset() {}, setAutoscroll() {} };
+  ctx.window.MRR.scrollController = { observe() {} };
+  loadScript(resolve(STATIC, "feed-view.js"), ctx);
+  const feed = ctx.document.createElement("div");
+  feed.id = "feed";
+  ctx.document.register(feed);
+  ctx.window.MRR.feedView.renderInitial(items);
+
+  ctx.window.MRR.feedView.onItemFailed("id0", "timed out after 10s");
+
+  const tile = feed.children.find((c) => c.dataset.id === "id0");
+  assert.ok(tile, "the failed item must remain in the feed, not vanish");
+  assert.match(tile.className, /failed/);
+  assert.equal(tile.querySelector(".failed-title").textContent, "A broken picture", "the tile names the item");
+  assert.equal(
+    tile.querySelector(".failed-reason").textContent,
+    "timed out after 10s",
+    "the tile states why it failed"
+  );
+  // Still dropped from the store, so a reload does not retry it.
+  assert.deepEqual(items.map((i) => i.id), ["id1"]);
+});

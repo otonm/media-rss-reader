@@ -614,3 +614,40 @@ async def test_items_interleaved_across_feeds(client: AsyncClient, db: aiosqlite
     # Round 3: only feedA remains (rn=3)
     # Within each round, feedA < feedB alphabetically
     assert ids == ["a1", "b1", "a2", "b2", "a3"]
+
+
+async def test_items_report_whether_media_is_already_cached(
+    client: AsyncClient, db: aiosqlite.Connection, tmp_path: object, monkeypatch: object
+) -> None:
+    """The browser downloads cached items first, so it has to be told which are cached.
+
+    A cached item decodes in milliseconds; an uncached one waits on the origin.
+    Without this flag the queue orders blindly and a miss at the front of the
+    lookahead holds up hits behind it.
+    """
+    import hashlib
+
+    import src.media.cache as cache_mod
+
+    monkeypatch.setattr(cache_mod.settings, "cache_dir", str(tmp_path))
+    warm = "http://example.com/warm.jpg"
+    cold = "http://example.com/cold.jpg"
+    (tmp_path / hashlib.sha256(warm.encode()).hexdigest()).write_bytes(b"cached")  # type: ignore[operator]
+
+    await db.execute("INSERT INTO feeds (id, url, title) VALUES ('f1', 'http://x.com', 'X')")
+    await db.execute(
+        "INSERT INTO items (id, feed_id, guid, media_url, media_type, pub_date)"
+        " VALUES ('i1', 'f1', 'g1', ?, 'image', '2024-01-01')",
+        (warm,),
+    )
+    await db.execute(
+        "INSERT INTO items (id, feed_id, guid, media_url, media_type, pub_date)"
+        " VALUES ('i2', 'f1', 'g2', ?, 'image', '2024-01-02')",
+        (cold,),
+    )
+    await db.commit()
+
+    resp = await client.get("/api/items")
+    assert resp.status_code == 200
+    cached_by_id = {i["id"]: i["cached"] for i in resp.json()}
+    assert cached_by_id == {"i1": True, "i2": False}

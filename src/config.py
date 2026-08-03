@@ -42,6 +42,10 @@ class Settings:
     # --- WebUI behaviour (injected as CSS variables at startup) ---
     feed_initial_count: int = 10
     image_autoscroll_delay_s: int = 2
+    # 1 shows a diagnostic overlay in the top-right corner naming the current
+    # item and how it loaded. An int, not a bool, because _load_settings only
+    # parses int and str.
+    ui_debug: int = 0
 
     # --- Server ---
     port: int = 8080

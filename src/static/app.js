@@ -23,6 +23,7 @@
     MRR.config = {
       feedInitialCount: num("--feed-initial-count", 10),
       imageAutoscrollDelayMs: num("--image-autoscroll-delay-s", 2) * 1000,
+      uiDebug: num("--ui-debug", 0) === 1,
       autoscroll: false,
       mutedDefault: true,
     };
@@ -78,8 +79,15 @@
     MRR.itemStore.setShowSeen(readShowSeenPref());
     MRR.scrollController.init();
     MRR.controls.init();
-    MRR.cacheQueue.on("item-loaded", (id, el) => MRR.feedView.onItemLoaded(id, el));
-    MRR.cacheQueue.on("item-failed", (id) => MRR.feedView.onItemFailed(id));
+    MRR.cacheQueue.on("item-loaded", (id, el, ms) => {
+      MRR.controls?.recordLoadMs(id, ms);
+      MRR.feedView.onItemLoaded(id, el);
+      MRR.controls?.renderDebug();
+    });
+    MRR.cacheQueue.on("item-failed", (id, reason) => {
+      MRR.feedView.onItemFailed(id, reason);
+      MRR.controls?.renderDebug();
+    });
     MRR.cacheQueue.start();
     reloadFeed();
 
@@ -165,6 +173,7 @@
 
     // Periodic check to fetch more pages when nearing the end of the loaded list.
     setInterval(() => {
+      MRR.controls?.renderDebug(); // keeps the queue counters live
       const cur = MRR.itemStore.getCurrentIndex();
       const total = MRR.itemStore.getItems().length;
       if (MRR.itemStore.hasMoreItems() && total - cur < MRR.config.feedInitialCount) {

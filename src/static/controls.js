@@ -142,6 +142,86 @@
     showSeen: false,
   };
 
+  // -------------------------------------------------------------------------
+  // UI_DEBUG overlay
+  //
+  // Off unless UI_DEBUG=1. Names the item the feed is currently snapped to and
+  // how it got there, which is what distinguishes "never cached" from "cached
+  // but undecodable" from "stuck behind a stalled download".
+  // -------------------------------------------------------------------------
+  const debug = {
+    el: null,
+    feedTitles: {},   // feed_id -> title, fetched once
+    loadMs: {},       // item id -> ms taken by the cache queue
+  };
+
+  function initDebugOverlay() {
+    if (!MRR.config.uiDebug) return;
+    debug.el = document.createElement("div");
+    debug.el.id = "debug-overlay";
+    document.body.appendChild(debug.el);
+    // /api/items carries feed_id but not the feed's name; fetch the mapping once.
+    fetch("/api/feeds")
+      .then((r) => (r.ok ? r.json() : []))
+      .then((feeds) => {
+        feeds.forEach((f) => { debug.feedTitles[f.id] = f.title; });
+        renderDebug();
+      })
+      .catch(() => {});
+    renderDebug();
+  }
+
+  function recordLoadMs(id, ms) {
+    if (MRR.config.uiDebug) debug.loadMs[id] = ms;
+  }
+
+  // "photo.jpg?width=900" -> "jpg". Empty when the URL carries no extension,
+  // which is common for CDN asset IDs.
+  function fileExt(url) {
+    const path = String(url || "").split(/[?#]/)[0];
+    const last = path.slice(path.lastIndexOf("/") + 1);
+    const dot = last.lastIndexOf(".");
+    return dot > 0 ? last.slice(dot + 1).toLowerCase() : "";
+  }
+
+  function row(label, value) {
+    const line = document.createElement("div");
+    line.className = "debug-row";
+    const k = document.createElement("span");
+    k.className = "debug-key";
+    k.textContent = label;
+    const v = document.createElement("span");
+    v.className = "debug-val";
+    v.textContent = value;
+    line.appendChild(k);
+    line.appendChild(v);
+    return line;
+  }
+
+  function renderDebug() {
+    if (!debug.el) return;
+    const item = MRR.itemStore.getItemAt(MRR.itemStore.getCurrentIndex());
+    debug.el.replaceChildren();
+    if (!item) {
+      debug.el.appendChild(row("item", "none"));
+      return;
+    }
+    const ext = fileExt(item.media_url);
+    const type = ext ? `${item.media_type} · ${ext}` : item.media_type;
+    const count = Array.isArray(item.media) ? item.media.length : 1;
+    const ms = debug.loadMs[item.id];
+    const stats = MRR.cacheQueue.getStats();
+
+    debug.el.appendChild(row("feed", debug.feedTitles[item.feed_id] || item.feed_id));
+    debug.el.appendChild(row("title", item.title || "(untitled)"));
+    debug.el.appendChild(row("type", count > 1 ? `${type} · ${count} slides` : type));
+    debug.el.appendChild(row("pubdate", item.pub_date || "—"));
+    debug.el.appendChild(
+      row("cache", (item.cached ? "HIT" : "MISS") + (ms === undefined ? "" : ` · ${ms}ms`))
+    );
+    debug.el.appendChild(row("queue", `${stats.loading} loading · ${stats.queued} queued`));
+  }
+
   function collapseControls() {
     document.getElementById("controls")?.classList.remove("expanded");
   }
@@ -215,7 +295,8 @@
     let stored = false;
     try { stored = localStorage.getItem("showSeen") === "1"; } catch (e) { /* ignore */ }
     setShowSeen(stored);
+    initDebugOverlay();
   }
 
-  MRR.controls = { init };
+  MRR.controls = { init, initDebugOverlay, renderDebug, recordLoadMs };
 })();

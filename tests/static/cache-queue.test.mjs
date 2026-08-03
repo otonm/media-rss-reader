@@ -13,7 +13,7 @@ import assert from "node:assert/strict";
 import { fileURLToPath } from "node:url";
 import { dirname, resolve } from "node:path";
 
-import { createDomContext, loadScript } from "./dom-mock.mjs";
+import { createDomContext, fakeTimeout, loadScript } from "./dom-mock.mjs";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const STATIC = resolve(__dirname, "../../src/static");
@@ -32,6 +32,8 @@ function makeItems(n, types) {
 // we can assert that rebuild() hits /api/prefetch/hint.
 function makeContext(items) {
   const ctx = createDomContext();
+  // The per-download deadline must not arm a real 10s timer in tests.
+  ctx.clock = fakeTimeout(ctx);
   // Track fetch calls.
   ctx.fetchCalls = [];
   ctx.fetch = (url, opts) => {
@@ -50,6 +52,13 @@ function makeContext(items) {
   return ctx;
 }
 
+// item_id query param of each proxy URL requested so far, in request order.
+function requestedIds(ctx) {
+  return ctx._images
+    .filter((img) => img.src)
+    .map((img) => decodeURIComponent(img.src.split("item_id=")[1]));
+}
+
 test("rebuild fires POST /api/prefetch/hint with the current item id", async () => {
   const items = makeItems(5, "iiiii");
   const ctx = makeContext(items);
@@ -65,4 +74,75 @@ test("rebuild fires POST /api/prefetch/hint with the current item id", async () 
   assert.equal(hintCalls[0].opts.method, "POST");
   const body = JSON.parse(hintCalls[0].opts.body);
   assert.equal(body.item_id, "id0");
+});
+
+test("already-cached items are downloaded before uncached ones", async () => {
+  // Items the server reports as on-disk decode in milliseconds; items that are
+  // not make the browser wait on the origin. Ordering the queue by that turns
+  // a screen of spinners into a screen of pictures.
+  const items = makeItems(5, "iiiii");
+  items[2].cached = true;
+  items[4].cached = true;
+  const ctx = makeContext(items);
+
+  ctx.window.MRR.cacheQueue.start();
+  ctx.window.MRR.cacheQueue.rebuild(0, 10, items);
+  await Promise.resolve();
+
+  // Three workers start three downloads immediately: the current item first
+  // regardless of cache state, then the cached ones ahead of the uncached.
+  assert.deepEqual(requestedIds(ctx), ["id0", "id2", "id4"]);
+});
+
+test("three downloads run concurrently, so one slow item cannot block the rest", async () => {
+  const items = makeItems(6, "iiiiii");
+  const ctx = makeContext(items);
+
+  ctx.window.MRR.cacheQueue.start();
+  ctx.window.MRR.cacheQueue.rebuild(0, 10, items);
+  await Promise.resolve();
+
+  assert.equal(requestedIds(ctx).length, 3);
+  assert.equal(ctx.window.MRR.cacheQueue.getStats().loading, 3);
+});
+
+test("a download that never loads fails on the deadline instead of spinning forever", async () => {
+  const items = makeItems(1, "i");
+  const ctx = makeContext(items);
+  const failed = [];
+  ctx.window.MRR.cacheQueue.on("item-failed", (id, reason) => failed.push({ id, reason }));
+
+  ctx.window.MRR.cacheQueue.start();
+  ctx.window.MRR.cacheQueue.rebuild(0, 10, items);
+  await Promise.resolve();
+  assert.deepEqual(failed, [], "must not fail before the deadline");
+
+  ctx.clock.advance(10000);
+  await Promise.resolve();
+  await Promise.resolve();
+
+  assert.equal(failed.length, 1);
+  assert.equal(failed[0].id, "id0");
+  assert.match(failed[0].reason, /timed out/);
+  // The element's src is cleared so the browser drops the connection.
+  assert.equal(ctx._images[0].src, "");
+});
+
+test("a successful load clears the deadline and reports how long it took", async () => {
+  const items = makeItems(1, "i");
+  const ctx = makeContext(items);
+  const loaded = [];
+  ctx.window.MRR.cacheQueue.on("item-loaded", (id, el, ms) => loaded.push({ id, ms }));
+
+  ctx.window.MRR.cacheQueue.start();
+  ctx.window.MRR.cacheQueue.rebuild(0, 10, items);
+  await Promise.resolve();
+
+  ctx._images[0].dispatchEvent({ type: "load" });
+  await Promise.resolve();
+
+  assert.equal(loaded.length, 1);
+  assert.equal(loaded[0].id, "id0");
+  assert.equal(typeof loaded[0].ms, "number");
+  assert.equal(ctx.clock.pending(), 0, "the deadline timer must be cleared");
 });

@@ -22,6 +22,14 @@ def test_settings_env_override(monkeypatch: pytest.MonkeyPatch) -> None:
     assert s.log_level == "debug"
 
 
+def test_ui_debug_defaults_off_and_reads_env(monkeypatch: pytest.MonkeyPatch) -> None:
+    assert Settings().ui_debug == 0
+    monkeypatch.setenv("UI_DEBUG", "1")
+    from src.config import _load_settings
+
+    assert _load_settings().ui_debug == 1
+
+
 def test_auth_settings_defaults() -> None:
     assert settings.auth_lockout_attempts == 5
     assert settings.auth_lockout_minutes == 15

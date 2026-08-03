@@ -19,6 +19,7 @@
   --counter-size: 13px;
   --feed-initial-count: 10;
   --image-autoscroll-delay-s: 2;
+  --ui-debug: 0;
 }
 
 html[data-theme="dark"] {
@@ -93,6 +94,69 @@ html, body {
 /* Hide broken media (e.g. transparent placeholder pixel). */
 .media-item img[src=""],
 .media-item video[src=""] { display: none; }
+
+/* -----------------------------------------------------------------------
+   Failed item — shown in place of media that could not be downloaded.
+   Previously such items were removed silently, which made the failure
+   invisible: the feed simply had fewer items than it should have.
+   ----------------------------------------------------------------------- */
+.failed-box {
+  max-width: min(80%, 28rem);
+  padding: 1.5rem;
+  text-align: center;
+  color: var(--fg-dim);
+  border: 1px solid var(--control-border);
+  border-radius: 12px;
+  background: var(--control-bg);
+}
+
+.failed-icon { font-size: 2rem; line-height: 1; margin-bottom: 0.6rem; }
+
+.failed-title {
+  color: var(--fg);
+  font-size: 0.95rem;
+  line-height: 1.35;
+  margin-bottom: 0.4rem;
+  overflow-wrap: anywhere;
+}
+
+.failed-reason { font-size: 0.8rem; }
+
+/* -----------------------------------------------------------------------
+   UI_DEBUG overlay — only created by controls.js when UI_DEBUG=1.
+   ----------------------------------------------------------------------- */
+#debug-overlay {
+  position: fixed;
+  top: max(0.5rem, env(safe-area-inset-top));
+  right: max(0.5rem, env(safe-area-inset-right));
+  z-index: 40;
+  max-width: min(22rem, 60vw);
+  padding: 0.5rem 0.65rem;
+  border: 1px solid var(--control-border);
+  border-radius: 8px;
+  background: var(--control-bg);
+  color: var(--fg);
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 11px;
+  line-height: 1.5;
+  pointer-events: none; /* never intercept a tap meant for the media */
+  backdrop-filter: blur(6px);
+}
+
+.debug-row { display: flex; gap: 0.5rem; }
+
+.debug-key {
+  flex: 0 0 3.5rem;
+  color: var(--fg-dim);
+  text-transform: uppercase;
+  font-size: 10px;
+}
+
+.debug-val {
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
 
 /* -----------------------------------------------------------------------
    Seen badge — a small ✓ in the top-right corner of media-items the

@@ -12,65 +12,26 @@ prefetch_ahead() — called from the /api/prefetch/hint endpoint; warms the
 
 import asyncio
 import logging
-from collections.abc import Awaitable, Callable
 
 import aiosqlite
 import httpx
 
 from src.config import settings
-from src.db.connection import open_db
-from src.media.availability import mark_url_dead_and_maybe_drop
-from src.media.cache import cache_read, cache_stream_write
-from src.media.dedup import record_media_hash
+from src.media.cache import cache_read
+from src.media.fetch import fetch_to_cache
 
 logger = logging.getLogger(__name__)
-
-
-async def _with_own_db(
-    label: str,
-    url: str,
-    write: Callable[[aiosqlite.Connection], Awaitable[object]],
-) -> None:
-    """Run one DB write on a fresh connection, logging and swallowing failures.
-
-    _warm runs as a fire-and-forget task that outlives its caller, so a
-    borrowed connection would already be closed by the time we got here.
-    """
-    try:
-        db = await open_db()
-        try:
-            await write(db)
-        finally:
-            await db.close()
-    except Exception as exc:  # pragma: no cover
-        logger.warning(f"{label} failed for {url}: {exc}")
 
 
 async def _warm(item_id: str, url: str, client: httpx.AsyncClient) -> None:
     """Fetch and cache one URL if it is not already cached.
 
-    On success, record the content digest so a duplicate arriving under a
-    different URL can be collapsed. On upstream non-success, mark the URL dead
-    via the availability helper so a fully-dead post can be dropped. Silent on
-    errors.
+    Caching, digest recording and dead-URL marking all live in src.media.fetch,
+    shared with the proxy, so both paths cannot drift apart.
     """
     if cache_read(url) is not None:
         return  # already cached — nothing to do
-    try:
-        async with client.stream("GET", url, follow_redirects=True, timeout=30) as response:
-            if response.is_success:
-                content_type = response.headers.get("content-type", "application/octet-stream")
-                _, digest = await cache_stream_write(url, response.aiter_bytes(65536), content_type)
-                await _with_own_db("record_media_hash", url, lambda db: record_media_hash(url, digest, db))
-            else:
-                await response.aread()
-                await _with_own_db(
-                    "mark_url_dead_and_maybe_drop",
-                    url,
-                    lambda db: mark_url_dead_and_maybe_drop(url, item_id, db),
-                )
-    except Exception as exc:  # pragma: no cover
-        logger.debug(f"prefetch failed for {url}: {exc}")
+    await fetch_to_cache(url, item_id, client)
 
 
 async def warm_startup_cache(db: aiosqlite.Connection, client: httpx.AsyncClient) -> None:

@@ -66,6 +66,59 @@ async def test_stream_write_failure_cleans_sidecar(tmp_path: Path, monkeypatch: 
     assert not any(p.suffix == ".tmp" for p in tmp_path.iterdir())  # noqa: ASYNC240
 
 
+async def test_concurrent_writes_same_url_keep_entry_valid(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Two writers racing on one URL must leave a complete file and its sidecar.
+
+    This is the normal case, not an edge case: the browser's proxy GET for an
+    item routinely overlaps the background _warm task for the same URL. With a
+    shared .tmp name the second writer's open("wb") truncates the first's
+    in-flight file, and the loser's rename failure used to unlink the winner's
+    sidecar -- leaving a cache hit that the proxy serves as text/plain.
+    """
+    monkeypatch.setattr(cache_mod.settings, "cache_dir", str(tmp_path))
+    url = "https://example.com/big.jpg"
+    payload = b"A" * 4096 + b"B" * 4096
+    resumed = asyncio.Event()
+
+    async def slow_chunks() -> AsyncGenerator[bytes]:
+        yield payload[:4096]
+        await resumed.wait()  # the other writer completes while we hold the fd
+        yield payload[4096:]
+
+    async def fast_chunks() -> AsyncGenerator[bytes]:
+        yield payload
+        resumed.set()
+
+    await asyncio.gather(
+        cache_mod.cache_stream_write(url, slow_chunks(), "image/jpeg"),
+        cache_mod.cache_stream_write(url, fast_chunks(), "image/jpeg"),
+    )
+
+    path = cache_mod.cache_read(url)
+    assert path is not None
+    assert path.read_bytes() == payload
+    assert cache_mod.cache_read_meta(url) == "image/jpeg"
+    assert not any(p.suffix == ".tmp" for p in tmp_path.iterdir())  # noqa: ASYNC240
+
+
+async def test_evict_ignores_inflight_tmp_files(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """A .tmp file is an in-flight download, not a cache entry.
+
+    Counting it toward cache_max_items evicts a real entry too early, and
+    unlinking it mid-download breaks the writer that owns it.
+    """
+    monkeypatch.setattr(cache_mod.settings, "cache_dir", str(tmp_path))
+    monkeypatch.setattr(cache_mod.settings, "cache_max_items", 2)
+    monkeypatch.setattr(cache_mod.settings, "cache_max_age_hours", 0)
+    inflight = tmp_path / "abc123.tmp"
+    inflight.write_bytes(b"partial")
+    await _write("https://example.com/keep.gif", b"x", "image/gif")
+
+    await cache_mod.evict()
+
+    assert inflight.exists()
+
+
 async def test_evict_by_count_removes_sidecars(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(cache_mod.settings, "cache_dir", str(tmp_path))
     monkeypatch.setattr(cache_mod.settings, "cache_max_items", 2)

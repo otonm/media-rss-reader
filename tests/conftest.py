@@ -24,8 +24,22 @@ from src.db.schema import create_schema
 
 
 @pytest.fixture
-async def db() -> AsyncGenerator[aiosqlite.Connection]:
-    conn = await open_db(":memory:")
+async def db(
+    tmp_path_factory: pytest.TempPathFactory, monkeypatch: pytest.MonkeyPatch
+) -> AsyncGenerator[aiosqlite.Connection]:
+    """A file-backed test DB, with settings.db_path pointed at it.
+
+    Not :memory: — the proxy and the prefetcher record dead URLs and content
+    digests on their *own* connection, because that work outlives the request
+    that started it. A second connection cannot see another connection's
+    in-memory database, so those writes would silently land nowhere.
+
+    Its own directory, not the test's tmp_path: tests that point cache_dir at
+    tmp_path would otherwise count the DB file as a cache entry.
+    """
+    db_file = tmp_path_factory.mktemp("db") / "test.db"
+    monkeypatch.setattr(settings, "db_path", str(db_file))
+    conn = await open_db(str(db_file))
     await create_schema(conn)
     await run_migrations(conn)
     yield conn
