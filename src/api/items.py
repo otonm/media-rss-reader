@@ -151,26 +151,30 @@ async def mark_seen(
     """
     logger.debug(f"mark_seen item_id={item_id}")
     now = dt.datetime.now(dt.UTC).strftime("%Y-%m-%d %H:%M:%S")
-    t0 = time.perf_counter()
-    async with db.execute(
-        "UPDATE items SET seen_at = ? WHERE id = ? RETURNING media_url, seen_at",
-        (now, item_id),
-    ) as cur:
-        row = await cur.fetchone()
-    update_ms = (time.perf_counter() - t0) * 1000
-    if row is None:
-        logger.debug(f"mark_seen item_id={item_id} not found")
-        raise HTTPException(status_code=404, detail="Not found")
+    try:
+        t0 = time.perf_counter()
+        async with db.execute(
+            "UPDATE items SET seen_at = ? WHERE id = ? RETURNING media_url, seen_at",
+            (now, item_id),
+        ) as cur:
+            row = await cur.fetchone()
+        update_ms = (time.perf_counter() - t0) * 1000
+        if row is None:
+            logger.debug(f"mark_seen item_id={item_id} not found")
+            raise HTTPException(status_code=404, detail="Not found")
 
-    t0 = time.perf_counter()
-    await db.execute(
-        "INSERT OR REPLACE INTO seen_media (media_key, seen_at) VALUES (?, ?)",
-        (media_key(row["media_url"]), now),
-    )
-    insert_ms = (time.perf_counter() - t0) * 1000
-    t0 = time.perf_counter()
-    await db.commit()
-    commit_ms = (time.perf_counter() - t0) * 1000
+        t0 = time.perf_counter()
+        await db.execute(
+            "INSERT OR REPLACE INTO seen_media (media_key, seen_at) VALUES (?, ?)",
+            (media_key(row["media_url"]), now),
+        )
+        insert_ms = (time.perf_counter() - t0) * 1000
+        t0 = time.perf_counter()
+        await db.commit()
+        commit_ms = (time.perf_counter() - t0) * 1000
+    except Exception:
+        await db.rollback()
+        raise
 
     logger.debug(
         f"mark_seen item_id={item_id} seen_at={row['seen_at']} "

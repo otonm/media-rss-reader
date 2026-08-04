@@ -229,6 +229,26 @@ async def test_mark_seen(client: AsyncClient, db: aiosqlite.Connection) -> None:
     assert row[0] is not None
 
 
+async def test_mark_seen_items_and_seen_media_share_timestamp(
+    client: AsyncClient, db: aiosqlite.Connection
+) -> None:
+    """F11: items.seen_at and seen_media.seen_at are bound to one `now` so they
+    cannot diverge. A refactor that binds a second dt.now() to the INSERT must
+    fail this test.
+    """
+    await _insert_feed(db)
+    await _insert_item(db, "item1", "feed1", seen_at=None)
+    resp = await client.post("/api/items/item1/seen")
+    assert resp.status_code == 200
+    async with db.execute("SELECT seen_at FROM items WHERE id = 'item1'") as cur:
+        items_seen = (await cur.fetchone())[0]
+    async with db.execute(
+        "SELECT seen_at FROM seen_media WHERE media_key = 'http://example.com/img.jpg'"
+    ) as cur:
+        media_seen = (await cur.fetchone())[0]
+    assert items_seen == media_seen, f"items.seen_at ({items_seen}) != seen_media.seen_at ({media_seen})"
+
+
 async def test_mark_seen_writes_seen_media(client: AsyncClient, db: aiosqlite.Connection) -> None:
     """seen_media is the durable record — it must outlive the items row."""
     await _insert_feed(db)
@@ -246,6 +266,34 @@ async def test_mark_seen_writes_seen_media(client: AsyncClient, db: aiosqlite.Co
     await db.commit()
     async with db.execute("SELECT COUNT(*) FROM seen_media") as cur:
         assert (await cur.fetchone())[0] == 1
+
+
+async def test_mark_seen_rolls_back_when_seen_media_write_fails(
+    client: AsyncClient, db: aiosqlite.Connection, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """If the INSERT OR REPLACE INTO seen_media raises, the UPDATE must not
+    be left committed — otherwise items.seen_at is set with no durable seen
+    record.
+    """
+    await _insert_feed(db)
+    await _insert_item(db, "item1", "feed1", seen_at=None)
+    orig_execute = db.execute
+    calls = {"n": 0}
+
+    def _flaky_execute(query: str, params: tuple[object, ...] = ()) -> object:
+        calls["n"] += 1
+        if "INSERT OR REPLACE INTO seen_media" in query:
+            raise aiosqlite.OperationalError("simulated disk full")
+        return orig_execute(query, params)
+
+    monkeypatch.setattr(db, "execute", _flaky_execute)
+    monkeypatch.setattr(client._transport, "raise_app_exceptions", False)
+    resp = await client.post("/api/items/item1/seen")
+    monkeypatch.undo()
+    assert resp.status_code == 500
+    async with db.execute("SELECT seen_at FROM items WHERE id = 'item1'") as cur:
+        row = await cur.fetchone()
+    assert row[0] is None, "items.seen_at must be rolled back when seen_media write fails"
 
 
 async def test_mark_seen_not_found(client: AsyncClient) -> None:
