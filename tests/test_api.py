@@ -1344,3 +1344,32 @@ async def test_proxy_exception_uses_logger_exception(
     assert any(r.levelno >= logging.WARNING and r.exc_info for r in caplog.records), (
         "the generic except must use logger.exception (exc_info set)"
     )
+
+
+async def test_items_cursor_survives_pruned_anchor(client: AsyncClient, db: aiosqlite.Connection) -> None:
+    """The docstring's central edge case: the anchor row itself is pruned
+    between page-1 and page-2. The COUNT(*)-derived rank must still place the
+    cursor at the anchor's position, so page-2 returns exactly the post-anchor
+    items with no duplicates of page-1."""
+    await _insert_feed(db)
+    for i in range(1, 6):
+        await _insert_item(db, f"item{i}", "feed1")
+    page1 = (await client.get("/api/items", params={"size": 3})).json()
+    assert [i["id"] for i in page1] == ["item1", "item2", "item3"]
+    anchor = page1[-1]
+    await db.execute("DELETE FROM items WHERE id = 'item3'")
+    await db.commit()
+    page2 = (
+        await client.get(
+            "/api/items",
+            params={
+                "after_feed_id": anchor["feed_id"],
+                "after_pub_date": anchor["pub_date"],
+                "after_id": anchor["id"],
+                "size": 10,
+            },
+        )
+    ).json()
+    assert [i["id"] for i in page2] == ["item4", "item5"], (
+        f"pruned-anchor cursor must not re-emit page-1 items or skip ahead; got {[i['id'] for i in page2]}"
+    )
