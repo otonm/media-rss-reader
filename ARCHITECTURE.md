@@ -276,7 +276,7 @@ An abandoned stream (the user scrolled past) caches nothing: `cache_stream_tee` 
 2. On miss: `open_upstream` + `StreamingResponse(tee_to_cache(...))` — upstream bytes go to the browser and into the cache in the same pass, so the browser starts painting on the first chunk
 3. On upstream non-success: `mark_url_dead_and_maybe_drop(url, item_id, db)` records the failure and potentially drops the item, then the proxy returns 502
 
-Step 2 previously downloaded the whole file to disk and only then replied, which meant the browser saw *nothing* — a full-screen spinner on a black background — for the entire upstream transfer. That was the single largest contributor to the "black screen while loading" symptom. A miss is served as a non-Range `200`, so an uncached video is not seekable until it has been cached; a cache hit is.
+Step 2 previously downloaded the whole file to disk and only then replied, which meant the browser saw *nothing* — a full-screen spinner on a black background — for the entire upstream transfer. That was the single largest contributor to the "black screen while loading" symptom. A miss is served as a non-Range `200`, so an uncached video is not seekable until it has been cached; a cache hit is. Documented trade-off (F7): the miss path intentionally does not honour `Range` — seeking an uncached video, or Safari's initial byte-range probe for `<video>`, restarts from zero — because streaming the miss through is what prevents the black-screen stall on first paint.
 
 The `item_id` parameter (added in `74e2b9e`) enables dead-URL tracking for gallery slides that aren't the primary `media_url`.
 

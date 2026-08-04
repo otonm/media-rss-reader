@@ -40,6 +40,13 @@ async def proxy_media(
 
     On upstream non-success, `url` is marked dead and a fully-dead item is
     dropped from the DB before the 502 goes out.
+
+    Limitation: the miss path uses StreamingResponse and does not honour Range
+    requests, so seeking an uncached video (or Safari's initial byte-range probe)
+    restarts from zero. The hit path (FileResponse) handles Range correctly, so
+    the same video is seekable on second view once cached. Documented trade-off:
+    streaming misses through is what prevents the black-screen stall on first
+    paint (F7).
     """
     path = cache_read(url)
     if path is not None:
