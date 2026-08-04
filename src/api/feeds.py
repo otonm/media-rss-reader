@@ -1,19 +1,20 @@
 """GET /api/feeds — list all feeds with item counts."""
 
 import logging
-from typing import Annotated, Any
+from typing import Annotated
 
 import aiosqlite
 from fastapi import APIRouter, Depends
 
+from src.api.schemas import FeedOut
 from src.db.connection import get_db
 
 logger = logging.getLogger(__name__)
 router = APIRouter()
 
 
-@router.get("/feeds")
-async def list_feeds(db: Annotated[aiosqlite.Connection, Depends(get_db)]) -> list[dict[str, Any]]:
+@router.get("/feeds", response_model=None)
+async def list_feeds(db: Annotated[aiosqlite.Connection, Depends(get_db)]) -> list[FeedOut]:
     """Return all feeds with total and unseen item counts.
 
     The LEFT JOIN + conditional COUNT gives both counts in one query,

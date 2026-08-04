@@ -2,12 +2,13 @@
 
 import logging
 import os
-from typing import Annotated, Any
+from typing import Annotated
 
 import aiosqlite
 from fastapi import APIRouter, Depends, HTTPException, Query, Response
 from fastapi.responses import FileResponse, StreamingResponse
 
+from src.api.schemas import PrefetchHint, PrefetchHintResponse
 from src.db.connection import get_db
 from src.media.availability import is_known_media_url
 from src.media.cache import cache_read, cache_read_meta
@@ -97,17 +98,17 @@ async def proxy_media(
 
 @router.post("/prefetch/hint")
 async def prefetch_hint(
-    body: dict[str, Any],
+    body: PrefetchHint,
     db: _DbDep = None,  # type: ignore[assignment]
-) -> dict[str, str]:
+) -> PrefetchHintResponse:
     """Trigger background pre-fetching of items ahead of the given item.
 
     The browser calls this as a fire-and-forget POST whenever it loads a
     new page of items. The hint launches asyncio background tasks; the
     response returns immediately.
     """
-    item_id = str(body.get("item_id", ""))
-    unseen = bool(body.get("unseen", True))
+    item_id = body.item_id
+    unseen = body.unseen
     logger.debug(f"prefetch_hint item_id={item_id} unseen={unseen}")
     if not item_id:
         logger.debug("prefetch_hint: 422, no item_id in body")

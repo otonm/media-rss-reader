@@ -10,6 +10,7 @@ from typing import Annotated, Any
 import aiosqlite
 from fastapi import APIRouter, Depends, HTTPException, Query
 
+from src.api.schemas import ItemOut, SeenResponse
 from src.db.connection import get_db
 from src.db.queries import INTERLEAVE_ORDER_BY, RANKED_ITEMS_CTE
 from src.media.cache import cache_present_names
@@ -46,7 +47,7 @@ def _row_to_item(row: aiosqlite.Row, cached_names: set[str]) -> dict[str, Any]:
     return item
 
 
-@router.get("/items")
+@router.get("/items", response_model=None)
 async def list_items(
     unseen: bool = False,
     after_feed_id: str | None = None,
@@ -54,7 +55,7 @@ async def list_items(
     after_id: str | None = None,
     size: int = Query(50, ge=1, le=200),
     db: _DbDep = None,  # type: ignore[assignment]
-) -> list[dict[str, Any]]:
+) -> list[ItemOut]:
     """Return a keyset-paginated, interleaved list of media items.
 
     The window function assigns rn per feed over the FULL items set (seen
@@ -124,11 +125,11 @@ async def list_items(
     return items
 
 
-@router.post("/items/{item_id}/seen")
+@router.post("/items/{item_id}/seen", response_model=None)
 async def mark_seen(
     item_id: str,
     db: _DbDep = None,  # type: ignore[assignment]
-) -> dict[str, str]:
+) -> SeenResponse:
     """Mark an item as seen and return the timestamp.
 
     Uses UPDATE ... RETURNING (SQLite >= 3.35) so the SELECT-before-UPDATE

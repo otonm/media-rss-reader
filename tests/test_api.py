@@ -600,6 +600,24 @@ async def test_prefetch_hint_unknown_item_404(client: AsyncClient, db: aiosqlite
     assert resp.status_code == 404
 
 
+@pytest.mark.parametrize(
+    "body",
+    [
+        {"item_id": "x", "unseen": "false"},
+        {"item_id": "x", "unseen": None},
+        {"item_id": 123},
+        {"unseen": True},
+    ],
+)
+async def test_prefetch_hint_rejects_bad_body(
+    client: AsyncClient, body: dict[str, object], db: aiosqlite.Connection
+) -> None:
+    await _insert_feed(db)
+    await _insert_item(db, "x", "feed1")
+    resp = await client.post("/api/prefetch/hint", json=body)
+    assert resp.status_code == 422
+
+
 # ---------------------------------------------------------------------------
 # GET /api/reddit-feeds/status tests
 # ---------------------------------------------------------------------------
