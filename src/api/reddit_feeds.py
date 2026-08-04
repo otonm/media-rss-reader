@@ -28,9 +28,7 @@ async def reddit_feeds_status() -> Response:
         raise HTTPException(status_code=502, detail="Reddit Feeds API unreachable") from exc
     elapsed_ms = (time.perf_counter() - started) * 1000
     if not resp.is_success:
-        logger.warning(
-            f"reddit_feeds_status upstream returned {resp.status_code} for {url} in {elapsed_ms:.0f}ms"
-        )
+        logger.warning(f"reddit_feeds_status upstream returned {resp.status_code} for {url} in {elapsed_ms:.0f}ms")
         raise HTTPException(status_code=502, detail="Reddit Feeds API error")
     try:
         resp.json()

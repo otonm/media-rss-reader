@@ -170,9 +170,7 @@ async def test_evict_nonexistent_dir_is_noop(
     await cache_mod.evict()  # must not raise
 
 
-async def test_evict_drops_oldest_until_under_byte_budget(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
+async def test_evict_drops_oldest_until_under_byte_budget(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     """R7: eviction counted files, never bytes, so 500 multi-gigabyte entries
     stayed under the limit while filling the volume."""
     import time

@@ -189,9 +189,7 @@ async def test_open_upstream_refuses_hostname_resolving_private(
 
 
 @respx.mock
-async def test_open_upstream_refuses_redirect_into_private(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
+async def test_open_upstream_refuses_redirect_into_private(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     """follow_redirects used to be True, so a public host could bounce the
     fetch into the Docker network on the second hop."""
     monkeypatch.setattr(cache_mod.settings, "cache_dir", str(tmp_path))
@@ -219,9 +217,7 @@ async def test_open_upstream_follows_public_redirect(tmp_path: Path, monkeypatch
         await response.aclose()
 
 
-async def test_open_upstream_allows_private_when_configured(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
+async def test_open_upstream_allows_private_when_configured(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     """ALLOW_PRIVATE_MEDIA_HOSTS=1 is the escape hatch for self-hosted media."""
     monkeypatch.setattr(cache_mod.settings, "cache_dir", str(tmp_path))
     monkeypatch.setattr(fetch_mod.settings, "allow_private_media_hosts", 1)
@@ -264,9 +260,7 @@ async def test_open_upstream_429_does_not_mark_dead(
 
 
 @respx.mock
-async def test_open_upstream_rejects_oversized_content_length(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
+async def test_open_upstream_rejects_oversized_content_length(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     """R7: Content-Length was logged and never checked."""
     monkeypatch.setattr(cache_mod.settings, "cache_dir", str(tmp_path))
     monkeypatch.setattr(fetch_mod.settings, "media_max_bytes", 100)
@@ -282,9 +276,7 @@ async def test_open_upstream_rejects_oversized_content_length(
 
 
 @respx.mock
-async def test_tee_to_cache_aborts_past_the_byte_budget(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
+async def test_tee_to_cache_aborts_past_the_byte_budget(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     """R7: a server that declares no Content-Length could stream forever."""
     monkeypatch.setattr(cache_mod.settings, "cache_dir", str(tmp_path))
     monkeypatch.setattr(fetch_mod.settings, "media_max_bytes", 10)
@@ -293,9 +285,7 @@ async def test_tee_to_cache_aborts_past_the_byte_budget(
     # open_upstream cannot trip, so the running budget in tee_to_cache is the
     # only thing that can stop it (the scenario the test names).
     respx.get(url).mock(
-        return_value=httpx.Response(
-            200, headers={"content-type": "video/mp4"}, stream=httpx.ByteStream(b"x" * 1000)
-        )
+        return_value=httpx.Response(200, headers={"content-type": "video/mp4"}, stream=httpx.ByteStream(b"x" * 1000))
     )
     async with httpx.AsyncClient() as client:
         response = await open_upstream(url, None, client)

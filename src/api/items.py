@@ -95,8 +95,7 @@ async def list_items(
         # The anchor's rank, derived from immutable values rather than echoed
         # back by the client. Same partition, same tiebreak as the CTE window.
         conditions.append(
-            "(rn, feed_id, id) > ("
-            "(SELECT COUNT(*) FROM items WHERE feed_id = ? AND (pub_date, id) <= (?, ?)), ?, ?)"
+            "(rn, feed_id, id) > ((SELECT COUNT(*) FROM items WHERE feed_id = ? AND (pub_date, id) <= (?, ?)), ?, ?)"
         )
         params.extend([after_feed_id, after_pub_date, after_id, after_feed_id, after_id])
     where_clause = ("WHERE " + " AND ".join(conditions)) if conditions else ""

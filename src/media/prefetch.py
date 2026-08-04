@@ -91,9 +91,7 @@ async def warm_startup_cache(db: aiosqlite.Connection, client: httpx.AsyncClient
         _track(t)
 
 
-async def prefetch_ahead(
-    item_id: str, db: aiosqlite.Connection, client: httpx.AsyncClient, unseen: bool = True
-) -> int:
+async def prefetch_ahead(item_id: str, db: aiosqlite.Connection, client: httpx.AsyncClient, unseen: bool = True) -> int:
     """Fire background warm tasks for the next PREFETCH_AHEAD items after item_id.
 
     'After' means strictly greater in the (rn, feed_id, id) interleave key that
