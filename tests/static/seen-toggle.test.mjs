@@ -23,7 +23,10 @@ function setupHarness({ showSeen }) {
   ctx.fetchCalls = [];
   ctx.fetch = (url, opts) => {
     ctx.fetchCalls.push({ url, opts });
-    return Promise.resolve({ ok: true, json: async () => [{ id: "x" }] });
+    return Promise.resolve({
+      ok: true,
+      json: async () => [{ id: "x", feed_id: "f1", pub_date: "2026-01-01T00:00:00" }],
+    });
   };
   ctx.window.MRR.config = { feedInitialCount: 10 };
   loadScript(resolve(STATIC, "item-store.js"), ctx);
@@ -58,37 +61,42 @@ test("setShowSeen flips the routing without requiring a re-load of the module", 
   assert.ok(itemsCalls[1].url.includes("unseen=false"));
 });
 
-test("fetchPage offsets by the unseen items it holds, not by a page number", async () => {
-  // With unseen=true the server's result set shrinks as items are marked
-  // seen. A page number multiplied by size therefore over-shoots and skips
-  // items, which then only resurfaced on the next reload.
+test("fetchPage uses a keyset cursor from the last held item, not a page offset", async () => {
+  // A page-number offset over-shoots and skips items once any item is marked
+  // seen (the server's result set shrinks but the client's count doesn't).
+  // The keyset cursor on (feed_id, pub_date, id) is the fix: it is the last
+  // held item's immutable columns, so it stays valid across mark-seen (F17).
   const ctx = setupHarness({ showSeen: false });
   const store = ctx.window.MRR.itemStore;
 
   await store.fetchPage();
   let itemsCalls = ctx.fetchCalls.filter((c) => c.url.startsWith("/api/items?"));
-  assert.ok(itemsCalls[0].url.includes("offset=0"), itemsCalls[0].url);
+  assert.ok(!itemsCalls[0].url.includes("offset="), `no offset param: ${itemsCalls[0].url}`);
+  assert.ok(!itemsCalls[0].url.includes("after_id="), `no cursor on first page: ${itemsCalls[0].url}`);
 
-  // One item held and still unseen → offset 1.
+  // Second page: cursor derived from the last held item, not a page number.
   await store.fetchPage();
   itemsCalls = ctx.fetchCalls.filter((c) => c.url.startsWith("/api/items?"));
-  assert.ok(itemsCalls[1].url.includes("offset=1"), itemsCalls[1].url);
+  assert.ok(itemsCalls[1].url.includes("after_id=x"), `cursor from held item: ${itemsCalls[1].url}`);
 
-  // Mark it seen: it drops out of the server's set, so the offset drops too.
+  // Mark it seen: the cursor is immutable, so it does NOT change — that is
+  // the F17 guarantee (mark-seen must not renumber or skip later items).
   store.markSeen("x", "2026-06-11T12:00:00");
   await store.fetchPage();
   itemsCalls = ctx.fetchCalls.filter((c) => c.url.startsWith("/api/items?"));
-  assert.ok(itemsCalls[2].url.includes("offset=0"), itemsCalls[2].url);
+  assert.ok(itemsCalls[2].url.includes("after_id=x"), `cursor stable after mark-seen: ${itemsCalls[2].url}`);
 });
 
-test("fetchPage offsets by every held item when showSeen is on", async () => {
+test("fetchPage cursor includes the held item's position when showSeen is on", async () => {
+  // With showSeen on, the client requests unseen=false (all items), so the
+  // held item stays in the server's set — the cursor still points past it.
   const ctx = setupHarness({ showSeen: true });
   const store = ctx.window.MRR.itemStore;
   await store.fetchPage();
   store.markSeen("x", "2026-06-11T12:00:00");
   await store.fetchPage();
   const itemsCalls = ctx.fetchCalls.filter((c) => c.url.startsWith("/api/items?"));
-  assert.ok(itemsCalls[1].url.includes("offset=1"), itemsCalls[1].url);
+  assert.ok(itemsCalls[1].url.includes("after_id=x"), `cursor from held item: ${itemsCalls[1].url}`);
 });
 
 test("fetchPage does not append an item it already holds", async () => {
