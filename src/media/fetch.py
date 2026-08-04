@@ -18,13 +18,18 @@ connection is closed.
 
 from __future__ import annotations
 
+import asyncio
 import hashlib
+import ipaddress
 import logging
+import socket
 from collections.abc import AsyncIterator
 from contextlib import aclosing
+from urllib.parse import urlsplit
 
 import httpx
 
+from src.config import settings
 from src.db.connection import run_with_own_db
 from src.media.availability import mark_url_dead_and_maybe_drop
 from src.media.cache import cache_stream_tee, download_claim
@@ -35,6 +40,9 @@ logger = logging.getLogger(__name__)
 CHUNK_SIZE = 65536
 # Per-operation httpx budget: connect, read, write and pool each get this.
 UPSTREAM_TIMEOUT_S = 30
+# Redirect hops the manual loop will follow. httpx's own follow_redirects is
+# off here because each hop has to be re-validated (R1).
+MAX_REDIRECTS = 5
 
 
 class UpstreamError(Exception):
@@ -51,11 +59,65 @@ class NonMediaUpstreamError(Exception):
     """
 
 
+def _resolve(host: str) -> list[str]:
+    """Return the IP addresses `host` resolves to. A literal IP resolves to itself.
+
+    A module-level function so tests can replace it: the suite mocks HTTP
+    transports, not name resolution.
+    """
+    try:
+        ipaddress.ip_address(host)
+    except ValueError:
+        return [info[4][0] for info in socket.getaddrinfo(host, None, proto=socket.IPPROTO_TCP)]
+    return [host]
+
+
+async def _check_url(url: str) -> None:
+    """Raise UpstreamError unless `url` is an http(s) URL on a public address.
+
+    This is the only place that sees every fetch target: the proxy passes a
+    client-supplied `url` and the prefetcher passes URLs taken straight from
+    third-party feed content, with no session involved at all. Without it the
+    reader will fetch anything on the Docker network, or a cloud metadata
+    endpoint, and stream the body back (R1).
+    """
+    parts = urlsplit(url)
+    if parts.scheme not in ("http", "https"):
+        raise UpstreamError(f"refusing non-http(s) URL {url}")
+    host = parts.hostname
+    if not host:
+        raise UpstreamError(f"refusing URL with no host: {url}")
+    if settings.allow_private_media_hosts:
+        return
+    try:
+        addrs = await asyncio.to_thread(_resolve, host)
+    except OSError as exc:
+        raise UpstreamError(f"cannot resolve {host} for {url}: {exc}") from exc
+    for addr in addrs:
+        ip = ipaddress.ip_address(addr)
+        # ::ffff:127.0.0.1 is loopback wearing an IPv6 hat.
+        ip = getattr(ip, "ipv4_mapped", None) or ip
+        if (
+            ip.is_private
+            or ip.is_loopback
+            or ip.is_link_local
+            or ip.is_multicast
+            or ip.is_reserved
+            or ip.is_unspecified
+        ):
+            logger.warning(f"_check_url: refusing {url} — {host} resolves to non-public address {ip}")
+            raise UpstreamError(f"refusing non-public address {ip} for {url}")
+
+
 async def open_upstream(url: str, item_id: str | None, client: httpx.AsyncClient) -> httpx.Response:
     """Open a streaming upstream response, or raise UpstreamError.
 
     The body is left unread so the caller can tee it. Ownership of the response
     passes to tee_to_cache, which always closes it.
+
+    Every fetch target — the original URL and each redirect hop — is checked
+    against _check_url first, which is why redirects are followed manually
+    here rather than by httpx (R1).
 
     On a non-success status the URL is marked dead (and a fully-dead item is
     dropped) before raising — that is what stops a 404'd post coming back on
@@ -64,11 +126,22 @@ async def open_upstream(url: str, item_id: str | None, client: httpx.AsyncClient
     nothing is cached (F5).
     """
     logger.debug(f"open_upstream: GET {url} (item_id={item_id}, timeout={UPSTREAM_TIMEOUT_S}s)")
-    response = await client.send(
-        client.build_request("GET", url, timeout=UPSTREAM_TIMEOUT_S),
-        stream=True,
-        follow_redirects=True,
-    )
+    target = url
+    for _ in range(MAX_REDIRECTS + 1):
+        await _check_url(target)
+        response = await client.send(
+            client.build_request("GET", target, timeout=UPSTREAM_TIMEOUT_S),
+            stream=True,
+            follow_redirects=False,
+        )
+        if not response.has_redirect_location:
+            break
+        location = response.headers["location"]
+        await response.aclose()
+        target = str(response.url.join(location))
+        logger.debug(f"open_upstream: {url} redirected to {target}")
+    else:
+        raise UpstreamError(f"more than {MAX_REDIRECTS} redirects for {url}")
     if not response.is_success:
         status = response.status_code
         await response.aclose()

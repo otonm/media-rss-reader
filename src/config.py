@@ -25,6 +25,12 @@ class Settings:
     cache_dir: str = "/cache"
     cache_max_items: int = 500
     cache_max_age_hours: int = 48
+    # 1 lets media URLs point at loopback/RFC1918 addresses. Off by default:
+    # media URLs come from third-party feed content and the prefetcher fetches
+    # them with no session at all (R1). Turn it on only if you serve media from
+    # another container on the same Docker network. An int, not a bool, because
+    # _load_settings only parses int and str.
+    allow_private_media_hosts: int = 0
 
     # --- Item retention ---
     keep_items: int = 1000

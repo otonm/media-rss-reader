@@ -8,6 +8,7 @@ import pytest
 import respx
 
 from src.media import cache as cache_mod
+from src.media import fetch as fetch_mod
 from src.media.cache import cache_read, cache_read_meta, download_claim
 from src.media.fetch import NonMediaUpstreamError, UpstreamError, fetch_to_cache, open_upstream, tee_to_cache
 
@@ -150,3 +151,85 @@ async def test_fetch_to_cache_dedupes_concurrent_same_url(tmp_path: Path, monkey
             )
 
     assert calls == 1, f"expected 1 upstream GET, got {calls}"
+
+
+async def test_open_upstream_refuses_loopback(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """R1 (blocker): the proxy and the prefetcher both reach this function with
+    URLs from third-party feeds. A loopback target reaches anything on the
+    Docker network."""
+    monkeypatch.setattr(cache_mod.settings, "cache_dir", str(tmp_path))
+    async with httpx.AsyncClient() as client:
+        with pytest.raises(UpstreamError):
+            await open_upstream("http://127.0.0.1:9090/status", None, client)
+
+
+async def test_open_upstream_refuses_link_local_metadata(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(cache_mod.settings, "cache_dir", str(tmp_path))
+    async with httpx.AsyncClient() as client:
+        with pytest.raises(UpstreamError):
+            await open_upstream("http://169.254.169.254/latest/meta-data/", None, client)
+
+
+async def test_open_upstream_refuses_non_http_scheme(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(cache_mod.settings, "cache_dir", str(tmp_path))
+    async with httpx.AsyncClient() as client:
+        with pytest.raises(UpstreamError):
+            await open_upstream("file:///etc/passwd", None, client)
+
+
+async def test_open_upstream_refuses_hostname_resolving_private(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A public-looking hostname that resolves into RFC1918 must be refused."""
+    monkeypatch.setattr(cache_mod.settings, "cache_dir", str(tmp_path))
+    monkeypatch.setattr("src.media.fetch._resolve", lambda host: ["10.0.0.5"])
+    async with httpx.AsyncClient() as client:
+        with pytest.raises(UpstreamError):
+            await open_upstream("http://evil.example.com/x.jpg", None, client)
+
+
+@respx.mock
+async def test_open_upstream_refuses_redirect_into_private(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """follow_redirects used to be True, so a public host could bounce the
+    fetch into the Docker network on the second hop."""
+    monkeypatch.setattr(cache_mod.settings, "cache_dir", str(tmp_path))
+    respx.get("http://example.com/x.jpg").mock(
+        return_value=httpx.Response(302, headers={"location": "http://127.0.0.1:9090/status"})
+    )
+    async with httpx.AsyncClient() as client:
+        with pytest.raises(UpstreamError):
+            await open_upstream("http://example.com/x.jpg", None, client)
+
+
+@respx.mock
+async def test_open_upstream_follows_public_redirect(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """The manual redirect loop must still follow an ordinary CDN redirect."""
+    monkeypatch.setattr(cache_mod.settings, "cache_dir", str(tmp_path))
+    respx.get("http://example.com/x.jpg").mock(
+        return_value=httpx.Response(302, headers={"location": "http://cdn.example.com/x.jpg"})
+    )
+    respx.get("http://cdn.example.com/x.jpg").mock(
+        return_value=httpx.Response(200, content=b"bytes", headers={"content-type": "image/jpeg"})
+    )
+    async with httpx.AsyncClient() as client:
+        response = await open_upstream("http://example.com/x.jpg", None, client)
+        assert response.status_code == 200
+        await response.aclose()
+
+
+async def test_open_upstream_allows_private_when_configured(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """ALLOW_PRIVATE_MEDIA_HOSTS=1 is the escape hatch for self-hosted media."""
+    monkeypatch.setattr(cache_mod.settings, "cache_dir", str(tmp_path))
+    monkeypatch.setattr(fetch_mod.settings, "allow_private_media_hosts", 1)
+    with respx.mock:
+        respx.get("http://10.0.0.5/x.jpg").mock(
+            return_value=httpx.Response(200, content=b"bytes", headers={"content-type": "image/jpeg"})
+        )
+        async with httpx.AsyncClient() as client:
+            response = await open_upstream("http://10.0.0.5/x.jpg", None, client)
+            assert response.status_code == 200
+            await response.aclose()

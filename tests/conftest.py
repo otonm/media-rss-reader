@@ -127,3 +127,25 @@ async def authed_client(auth_client: HttpxAsyncClient) -> HttpxAsyncClient:
     token = sign_session(settings.auth_secret_key)
     auth_client.cookies.set(SESSION_COOKIE, token)
     return auth_client
+
+
+@pytest.fixture(autouse=True)
+def _stub_dns(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Keep the SSRF guard (R1) off real DNS.
+
+    Hostnames resolve to a fixed public address so respx-mocked fetches pass
+    the guard offline; literal IPs still resolve to themselves, so tests that
+    aim the proxy at 127.0.0.1 or 10.x are unaffected.
+    """
+    import ipaddress
+
+    import src.media.fetch as fetch_mod
+
+    def _fake_resolve(host: str) -> list[str]:
+        try:
+            ipaddress.ip_address(host)
+        except ValueError:
+            return ["93.184.216.34"]
+        return [host]
+
+    monkeypatch.setattr(fetch_mod, "_resolve", _fake_resolve)
