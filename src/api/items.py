@@ -11,6 +11,7 @@ import aiosqlite
 from fastapi import APIRouter, Depends, HTTPException, Query
 
 from src.db.connection import get_db
+from src.db.queries import INTERLEAVE_ORDER_BY, RANKED_ITEMS_CTE
 from src.media.cache import cache_present_names
 from src.media.normalize import media_key
 
@@ -88,17 +89,12 @@ async def list_items(
     params.append(size)
 
     query = f"""
-        WITH ranked AS (
-            SELECT id, feed_id, title, media_url, media_type, media_json,
-                   pub_date, fetched_at, seen_at,
-                   ROW_NUMBER() OVER (PARTITION BY feed_id ORDER BY pub_date ASC) AS rn
-            FROM items
-        )
+        {RANKED_ITEMS_CTE}
         SELECT id, feed_id, title, media_url, media_type, media_json,
                pub_date, fetched_at, seen_at, rn
         FROM ranked
         {where_clause}
-        ORDER BY rn ASC, feed_id ASC, id ASC
+        {INTERLEAVE_ORDER_BY}
         LIMIT ?
     """
     logger.debug(f"list_items unseen={unseen} cursor=({after_rn},{after_feed_id},{after_id}) size={size}")

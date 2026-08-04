@@ -18,6 +18,7 @@ import aiosqlite
 import httpx
 
 from src.config import settings
+from src.db.queries import INTERLEAVE_ORDER_BY, RANKED_ITEMS_CTE
 from src.media.cache import cache_read
 from src.media.fetch import fetch_to_cache
 
@@ -84,12 +85,7 @@ async def prefetch_ahead(item_id: str, db: aiosqlite.Connection, client: httpx.A
     client will never request.
     """
     async with db.execute(
-        """WITH ranked AS (
-                 SELECT id, feed_id,
-                        ROW_NUMBER() OVER (PARTITION BY feed_id ORDER BY pub_date ASC) AS rn
-                 FROM items
-               )
-               SELECT rn, feed_id, id FROM ranked WHERE id = ?""",
+        f"{RANKED_ITEMS_CTE} SELECT rn, feed_id, id FROM ranked WHERE id = ?",
         (item_id,),
     ) as cur:
         cursor = await cur.fetchone()
@@ -97,14 +93,10 @@ async def prefetch_ahead(item_id: str, db: aiosqlite.Connection, client: httpx.A
         logger.debug(f"prefetch_ahead: item {item_id} not found, warming nothing")
         return
     async with db.execute(
-        """WITH ranked AS (
-                 SELECT id, feed_id, media_url, seen_at,
-                        ROW_NUMBER() OVER (PARTITION BY feed_id ORDER BY pub_date ASC) AS rn
-                 FROM items
-               )
-               SELECT id, media_url FROM ranked
-               WHERE seen_at IS NULL AND (rn, feed_id, id) > (?, ?, ?)
-               ORDER BY rn, feed_id, id LIMIT ?""",
+        f"""{RANKED_ITEMS_CTE}
+            SELECT id, media_url FROM ranked
+            WHERE seen_at IS NULL AND (rn, feed_id, id) > (?, ?, ?)
+            {INTERLEAVE_ORDER_BY} LIMIT ?""",
         (cursor["rn"], cursor["feed_id"], cursor["id"], settings.prefetch_ahead),
     ) as cur:
         rows = await cur.fetchall()

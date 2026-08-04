@@ -804,3 +804,26 @@ async def test_items_cached_excludes_meta_and_tmp(
     await db.commit()
     resp = await client.get("/api/items")
     assert resp.json()[0]["cached"] is True
+
+
+async def test_items_rank_ties_break_by_id(client: AsyncClient, db: aiosqlite.Connection) -> None:
+    """R12: rn must be deterministic when two items share a pub_date.
+
+    The cursor (Task 2) derives rn by counting rows <= (pub_date, id), which
+    only equals ROW_NUMBER if the window breaks ties by id. Inserted out of
+    order so insertion order cannot pass this by accident.
+    """
+    await _insert_feed(db)
+    for item_id in ("zz", "mm", "aa"):
+        await db.execute(
+            """INSERT INTO items(id, feed_id, guid, title, media_url, media_type, pub_date)
+               VALUES (?, 'feed1', ?, 'T', 'http://example.com/img.jpg', 'image', '2026-01-01T00:00:00')""",
+            (item_id, item_id),
+        )
+    await db.commit()
+
+    resp = await client.get("/api/items")
+    assert resp.status_code == 200
+    data = resp.json()
+    assert [i["id"] for i in data] == ["aa", "mm", "zz"]
+    assert [i["rn"] for i in data] == [1, 2, 3]
