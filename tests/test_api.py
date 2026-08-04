@@ -261,13 +261,26 @@ async def test_mark_seen_after_prune_returns_clean_shape(client: AsyncClient, db
 # ---------------------------------------------------------------------------
 
 
-async def test_proxy_cache_hit(client: AsyncClient, tmp_path: object, monkeypatch: object) -> None:
+async def _register_proxy_url(db: aiosqlite.Connection, url: str) -> None:
+    """Register `url` as an item's media_url so the proxy gate accepts it."""
+    await db.execute("INSERT INTO feeds(id, url, title) VALUES ('fproxy', 'http://x', 'X')")
+    await db.execute(
+        "INSERT INTO items(id, feed_id, guid, media_url, media_type) VALUES ('iproxy', 'fproxy', 'g', ?, 'image')",
+        (url,),
+    )
+    await db.commit()
+
+
+async def test_proxy_cache_hit(
+    client: AsyncClient, tmp_path: object, monkeypatch: object, db: aiosqlite.Connection
+) -> None:
     import hashlib
 
     import src.media.cache as cache_mod
 
     monkeypatch.setattr(cache_mod.settings, "cache_dir", str(tmp_path))
     url = "http://example.com/img.jpg"
+    await _register_proxy_url(db, url)
     filename = hashlib.sha256(url.encode()).hexdigest()
     (tmp_path / filename).write_bytes(b"cached")  # type: ignore[operator]
 
@@ -277,7 +290,7 @@ async def test_proxy_cache_hit(client: AsyncClient, tmp_path: object, monkeypatc
 
 
 async def test_proxy_cache_hit_returns_correct_content_type(
-    client: AsyncClient, tmp_path: object, monkeypatch: object
+    client: AsyncClient, tmp_path: object, monkeypatch: object, db: aiosqlite.Connection
 ) -> None:
     """Cache hit must serve the stored Content-Type, not octet-stream.
 
@@ -292,6 +305,7 @@ async def test_proxy_cache_hit_returns_correct_content_type(
 
     monkeypatch.setattr(cache_mod.settings, "cache_dir", str(tmp_path))
     url = "http://example.com/anim.gif"
+    await _register_proxy_url(db, url)
     filename = hashlib.sha256(url.encode()).hexdigest()
     (tmp_path / filename).write_bytes(b"GIF89a")  # type: ignore[operator]
     (tmp_path / f"{filename}.meta").write_text("image/gif")  # type: ignore[operator]
@@ -302,7 +316,7 @@ async def test_proxy_cache_hit_returns_correct_content_type(
 
 
 async def test_proxy_cache_hit_falls_back_when_sidecar_missing(
-    client: AsyncClient, tmp_path: object, monkeypatch: object
+    client: AsyncClient, tmp_path: object, monkeypatch: object, db: aiosqlite.Connection
 ) -> None:
     """Pre-sidecar cached files (no .meta sibling) must still be servable."""
     import hashlib
@@ -311,6 +325,7 @@ async def test_proxy_cache_hit_falls_back_when_sidecar_missing(
 
     monkeypatch.setattr(cache_mod.settings, "cache_dir", str(tmp_path))
     url = "http://example.com/anim.gif"
+    await _register_proxy_url(db, url)
     filename = hashlib.sha256(url.encode()).hexdigest()
     (tmp_path / filename).write_bytes(b"GIF89a")  # type: ignore[operator]
     # no .meta written — simulates a cache file from before sidecars existed
@@ -325,7 +340,9 @@ async def test_proxy_cache_hit_falls_back_when_sidecar_missing(
     assert resp.headers["x-content-type-options"] == "nosniff"
 
 
-async def test_proxy_cache_miss(client: AsyncClient, tmp_path: object, monkeypatch: object) -> None:
+async def test_proxy_cache_miss(
+    client: AsyncClient, tmp_path: object, monkeypatch: object, db: aiosqlite.Connection
+) -> None:
     import httpx
     import respx
 
@@ -333,6 +350,7 @@ async def test_proxy_cache_miss(client: AsyncClient, tmp_path: object, monkeypat
 
     monkeypatch.setattr(cache_mod.settings, "cache_dir", str(tmp_path))
     url = "http://example.com/photo.jpg"
+    await _register_proxy_url(db, url)
 
     with respx.mock:
         respx.get(url).mock(
@@ -357,6 +375,7 @@ async def test_proxy_rejects_html_upstream(
     client: AsyncClient,
     tmp_path: object,
     monkeypatch: object,
+    db: aiosqlite.Connection,
 ) -> None:
     """An upstream serving text/html for a media URL is same-origin content
     injection (F5). Reject it as 502 instead of forwarding the content-type."""
@@ -367,6 +386,7 @@ async def test_proxy_rejects_html_upstream(
 
     monkeypatch.setattr(cache_mod.settings, "cache_dir", str(tmp_path))
     url = "http://example.com/sneaky.jpg"
+    await _register_proxy_url(db, url)
     with respx.mock:
         respx.get(url).mock(return_value=httpx.Response(200, content=b"<html/>", headers={"content-type": "text/html"}))
         real_client = httpx.AsyncClient()
@@ -380,6 +400,7 @@ async def test_proxy_image_passes_with_nosniff(
     client: AsyncClient,
     tmp_path: object,
     monkeypatch: object,
+    db: aiosqlite.Connection,
 ) -> None:
     import httpx
     import respx
@@ -388,6 +409,7 @@ async def test_proxy_image_passes_with_nosniff(
 
     monkeypatch.setattr(cache_mod.settings, "cache_dir", str(tmp_path))
     url = "http://example.com/real.jpg"
+    await _register_proxy_url(db, url)
     with respx.mock:
         respx.get(url).mock(
             return_value=httpx.Response(200, content=b"jpgdata", headers={"content-type": "image/jpeg"})
@@ -405,6 +427,7 @@ async def test_proxy_octet_stream_upstream_passes(
     client: AsyncClient,
     tmp_path: object,
     monkeypatch: object,
+    db: aiosqlite.Connection,
 ) -> None:
     """CDNs that don't declare a media type must not be rejected (F5)."""
     import httpx
@@ -414,6 +437,7 @@ async def test_proxy_octet_stream_upstream_passes(
 
     monkeypatch.setattr(cache_mod.settings, "cache_dir", str(tmp_path))
     url = "http://example.com/unknown.jpg"
+    await _register_proxy_url(db, url)
     with respx.mock:
         respx.get(url).mock(
             return_value=httpx.Response(200, content=b"jpgdata", headers={"content-type": "application/octet-stream"})
@@ -440,6 +464,7 @@ async def test_proxy_upstream_error(
 
     monkeypatch.setattr(cache_mod.settings, "cache_dir", str(tmp_path))
     url = "http://example.com/broken.jpg"
+    await _register_proxy_url(db, url)
 
     with respx.mock:
         respx.get(url).mock(return_value=httpx.Response(404))
@@ -517,6 +542,7 @@ async def test_proxy_404_without_item_id_still_returns_502(
 
     monkeypatch.setattr(cache_mod.settings, "cache_dir", str(tmp_path))
     url = "http://example.com/broken.jpg"
+    await _register_proxy_url(db, url)
 
     with respx.mock:
         respx.get(url).mock(return_value=httpx.Response(404))
@@ -893,6 +919,7 @@ async def test_proxy_cache_hit_evicted_before_send_refetches(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
     mock_http: respx.MockRouter,
+    db: aiosqlite.Connection,
 ) -> None:
     """R2: cache_read only stats for existence; FileResponse opens the file
     after the handler returned. evict() runs after every refresh cycle while
@@ -902,6 +929,7 @@ async def test_proxy_cache_hit_evicted_before_send_refetches(
 
     monkeypatch.setattr(cache_mod.settings, "cache_dir", str(tmp_path))
     url = "http://example.com/gone.jpg"
+    await _register_proxy_url(db, url)
     # cache_read says hit; the file is already gone by the time we serve it.
     monkeypatch.setattr("src.api.media.cache_read", lambda _url: tmp_path / "evicted")
 
@@ -918,7 +946,7 @@ async def test_proxy_cache_hit_evicted_before_send_refetches(
 
 
 async def test_proxy_cache_hit_sets_nosniff(
-    client: AsyncClient, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    client: AsyncClient, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, db: aiosqlite.Connection
 ) -> None:
     """R8: the miss path set nosniff and the hit path set no security headers,
     so the same bytes were served differently on first and second view — and
@@ -929,6 +957,7 @@ async def test_proxy_cache_hit_sets_nosniff(
 
     monkeypatch.setattr(cache_mod.settings, "cache_dir", str(tmp_path))
     url = "http://example.com/img.jpg"
+    await _register_proxy_url(db, url)
     filename = hashlib.sha256(url.encode()).hexdigest()
     (tmp_path / filename).write_bytes(b"cached")
     (tmp_path / f"{filename}.meta").write_text("image/jpeg")
@@ -944,6 +973,7 @@ async def test_proxy_upstream_error_logged_at_warning(
     monkeypatch: pytest.MonkeyPatch,
     mock_http: respx.MockRouter,
     caplog: pytest.LogCaptureFixture,
+    db: aiosqlite.Connection,
 ) -> None:
     """R10: the 502 is raised only after a URL was marked dead and a fully-dead
     item dropped. That was logged at DEBUG, and log_level defaults to info — so
@@ -953,6 +983,7 @@ async def test_proxy_upstream_error_logged_at_warning(
 
     monkeypatch.setattr(cache_mod.settings, "cache_dir", str(tmp_path))
     url = "http://example.com/gone.jpg"
+    await _register_proxy_url(db, url)
     mock_http.get(url).mock(return_value=httpx.Response(404))
     real_client = httpx.AsyncClient()
     monkeypatch.setattr("src.api.media.get_http_client", lambda: real_client)
@@ -1043,7 +1074,7 @@ async def test_reddit_feeds_status_logs_the_exception(
 
 
 async def test_proxy_cache_hit_honours_range(
-    client: AsyncClient, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    client: AsyncClient, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, db: aiosqlite.Connection
 ) -> None:
     """R14: the hit path uses FileResponse specifically because it is
     Range-capable — 'what makes a cached video seekable'. Nothing tested it, so
@@ -1054,6 +1085,7 @@ async def test_proxy_cache_hit_honours_range(
 
     monkeypatch.setattr(cache_mod.settings, "cache_dir", str(tmp_path))
     url = "http://example.com/clip.mp4"
+    await _register_proxy_url(db, url)
     filename = hashlib.sha256(url.encode()).hexdigest()
     (tmp_path / filename).write_bytes(b"0123456789")
     (tmp_path / f"{filename}.meta").write_text("video/mp4")
@@ -1069,6 +1101,7 @@ async def test_proxy_cache_miss_ignores_range(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
     mock_http: respx.MockRouter,
+    db: aiosqlite.Connection,
 ) -> None:
     """The documented other half (F7): the miss path streams and deliberately
     does not honour Range, because streaming misses through is what prevents
@@ -1077,6 +1110,7 @@ async def test_proxy_cache_miss_ignores_range(
 
     monkeypatch.setattr(cache_mod.settings, "cache_dir", str(tmp_path))
     url = "http://example.com/fresh.mp4"
+    await _register_proxy_url(db, url)
     mock_http.get(url).mock(
         return_value=httpx.Response(200, content=b"0123456789", headers={"content-type": "video/mp4"})
     )
@@ -1102,3 +1136,13 @@ async def test_is_known_media_url_primary_and_gallery(db: aiosqlite.Connection) 
     assert await is_known_media_url("http://primary.jpg", db) is True
     assert await is_known_media_url("http://slide-b.jpg", db) is True
     assert await is_known_media_url("http://not-in-items.jpg", db) is False
+
+
+async def test_proxy_rejects_unknown_url(client: AsyncClient, tmp_path: object, monkeypatch: object) -> None:
+    import src.media.cache as cache_mod
+
+    monkeypatch.setattr(cache_mod.settings, "cache_dir", str(tmp_path))
+    url = "http://example.com/not-in-db.jpg"
+    resp = await client.get(f"/api/media/proxy?url={url}")
+    assert resp.status_code == 404
+    assert resp.json()["detail"] == "not a known media url"

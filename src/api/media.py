@@ -9,6 +9,7 @@ from fastapi import APIRouter, Depends, HTTPException, Query, Response
 from fastapi.responses import FileResponse, StreamingResponse
 
 from src.db.connection import get_db
+from src.media.availability import is_known_media_url
 from src.media.cache import cache_read, cache_read_meta
 from src.media.fetch import UpstreamError, open_upstream, tee_to_cache
 from src.media.prefetch import prefetch_ahead
@@ -25,6 +26,7 @@ _DbDep = Annotated[aiosqlite.Connection, Depends(get_db)]
 async def proxy_media(
     url: str = Query(...),
     item_id: str | None = Query(None),
+    db: _DbDep = None,  # type: ignore[assignment]
 ) -> Response:
     """Cache-through proxy for media files.
 
@@ -47,6 +49,9 @@ async def proxy_media(
     streaming misses through is what prevents the black-screen stall on first
     paint (F7).
     """
+    if not await is_known_media_url(url, db):
+        logger.debug(f"proxy_media: refusing unknown url {url}")
+        raise HTTPException(status_code=404, detail="not a known media url")
     path = cache_read(url)
     if path is not None:
         try:
