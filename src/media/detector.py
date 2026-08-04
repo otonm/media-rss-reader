@@ -23,7 +23,7 @@ from pathlib import PurePosixPath
 logger = logging.getLogger(__name__)
 
 # Supported extensions per media type. Query strings are stripped before matching.
-_IMAGE_EXTS = {".jpg", ".jpeg", ".png", ".webp", ".avif", ".svg"}
+_IMAGE_EXTS = {".jpg", ".jpeg", ".png", ".webp", ".avif"}  # no .svg: active document (R8)
 _GIF_EXTS = {".gif"}
 _VIDEO_EXTS = {".mp4", ".webm", ".mov", ".avi"}
 

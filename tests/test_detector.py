@@ -211,3 +211,8 @@ def test_extract_img_srcs_helper() -> None:
     assert _extract_img_srcs('&lt;img src="https://i.redd.it/x.jpg"&gt;') == [
         "https://i.redd.it/x.jpg",
     ]
+
+
+def test_svg_is_not_a_media_type() -> None:
+    """R8: .svg URLs must not enter the DB — nothing downstream may serve one."""
+    assert detect_type("http://example.com/logo.svg") is None

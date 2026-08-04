@@ -303,3 +303,19 @@ async def test_tee_to_cache_aborts_past_the_byte_budget(
             async for _ in tee_to_cache(url, response):
                 pass
     assert list(tmp_path.iterdir()) == []  # noqa: ASYNC240
+
+
+@respx.mock
+async def test_open_upstream_refuses_svg(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """R8: an SVG is an active document. Served from /api/media/proxy it runs
+    its <script> on the app's own origin, with the session cookie attached."""
+    monkeypatch.setattr(cache_mod.settings, "cache_dir", str(tmp_path))
+    url = "http://example.com/evil.svg"
+    respx.get(url).mock(
+        return_value=httpx.Response(
+            200, headers={"content-type": "image/svg+xml"}, content=b"<svg><script>x</script></svg>"
+        )
+    )
+    async with httpx.AsyncClient() as client:
+        with pytest.raises(NonMediaUpstreamError):
+            await open_upstream(url, None, client)

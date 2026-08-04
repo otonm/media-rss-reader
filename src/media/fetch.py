@@ -159,10 +159,11 @@ async def open_upstream(url: str, item_id: str | None, client: httpx.AsyncClient
             logger.debug(f"open_upstream: {url} returned {status}; transient, not marking dead")
         raise UpstreamError(f"upstream returned {status} for {url}")
     content_type = response.headers.get("content-type", "application/octet-stream")
-    if not (
-        content_type.startswith("image/")
-        or content_type.startswith("video/")
-        or content_type == "application/octet-stream"
+    media_type = content_type.split(";")[0].strip().lower()
+    # SVG starts with image/ but is an active document: served from our own
+    # origin its <script> runs there with the session cookie attached (R8).
+    if media_type == "image/svg+xml" or not (
+        media_type.startswith("image/") or media_type.startswith("video/") or media_type == "application/octet-stream"
     ):
         await response.aclose()
         logger.warning(f"open_upstream: refusing non-media content-type {content_type} for {url}")
