@@ -37,3 +37,5 @@ feeds.opml
 
 examples/
 deduplicators/
+# Deep review reports
+.claude-review/
