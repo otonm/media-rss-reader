@@ -595,7 +595,56 @@ async def test_reddit_feeds_status_upstream_error(
     monkeypatch.setattr("src.api.reddit_feeds.get_http_client", lambda: real_client)
     resp = await client.get("/api/reddit-feeds/status")
     await real_client.aclose()
-    assert resp.status_code == 500
+    assert resp.status_code == 502
+
+
+async def test_reddit_feeds_status_redirects_followed(
+    client: AsyncClient,
+    mock_http: respx.MockRouter,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """F10: a 301 from the upstream must be followed, not fall through to a
+    JSONDecodeError on the redirect body."""
+    mock_http.get("http://127.0.0.1:9090/status").mock(
+        return_value=httpx.Response(301, headers={"location": "http://127.0.0.1:9090/v2/status"})
+    )
+    mock_http.get("http://127.0.0.1:9090/v2/status").mock(return_value=httpx.Response(200, json={"ok": True}))
+    real_client = httpx.AsyncClient(follow_redirects=True)
+    monkeypatch.setattr("src.api.reddit_feeds.get_http_client", lambda: real_client)
+    resp = await client.get("/api/reddit-feeds/status")
+    await real_client.aclose()
+    assert resp.status_code == 200
+    assert resp.json() == {"ok": True}
+
+
+async def test_reddit_feeds_status_401_maps_to_502(
+    client: AsyncClient,
+    mock_http: respx.MockRouter,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """F10: upstream 401 must not read as a failure of OUR session."""
+    mock_http.get("http://127.0.0.1:9090/status").mock(return_value=httpx.Response(401))
+    real_client = httpx.AsyncClient()
+    monkeypatch.setattr("src.api.reddit_feeds.get_http_client", lambda: real_client)
+    resp = await client.get("/api/reddit-feeds/status")
+    await real_client.aclose()
+    assert resp.status_code == 502
+
+
+async def test_reddit_feeds_status_non_json_body(
+    client: AsyncClient,
+    mock_http: respx.MockRouter,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """F10: a 200 with a non-JSON body must 502, not 500 with JSONDecodeError."""
+    mock_http.get("http://127.0.0.1:9090/status").mock(
+        return_value=httpx.Response(200, content=b"not json", headers={"content-type": "text/plain"})
+    )
+    real_client = httpx.AsyncClient()
+    monkeypatch.setattr("src.api.reddit_feeds.get_http_client", lambda: real_client)
+    resp = await client.get("/api/reddit-feeds/status")
+    await real_client.aclose()
+    assert resp.status_code == 502
 
 
 async def test_reddit_feeds_status_pending_status(

@@ -17,12 +17,15 @@ async def reddit_feeds_status() -> dict:
     url = f"{settings.reddit_feeds_api_url.rstrip('/')}/status"
     logger.debug(f"reddit_feeds_status fetching {url}")
     try:
-        resp = await client.get(url, timeout=10)
+        resp = await client.get(url, timeout=10, follow_redirects=True)
     except Exception as exc:
         logger.warning(f"reddit_feeds_status unreachable: {exc}")
         raise HTTPException(status_code=502, detail="Reddit Feeds API unreachable") from None
-    if resp.is_error:
+    if resp.status_code != 200:
         logger.warning(f"reddit_feeds_status upstream returned {resp.status_code}")
-        raise HTTPException(status_code=resp.status_code, detail="Reddit Feeds API error")
-    logger.debug(f"reddit_feeds_status ok from {url}")
-    return resp.json()
+        raise HTTPException(status_code=502, detail="Reddit Feeds API error")
+    try:
+        return resp.json()
+    except Exception:
+        logger.warning("reddit_feeds_status upstream returned non-JSON body")
+        raise HTTPException(status_code=502, detail="Reddit Feeds API returned non-JSON body") from None
