@@ -27,7 +27,7 @@ Three planes interact at runtime:
 │  FastAPI  (Uvicorn, async)                                  │
 │  /health  /login  /setup  /logout                           │
 │  /api/feeds  /api/items  /api/media/proxy                   │
-│  /api/prefetch/hint  /api/status  /api/reddit-feeds/status  │
+│  /api/prefetch/hint  /api/reddit-feeds/status                  │
 └───────────┬─────────────────────┬───────────────────────────┘
             │  aiosqlite          │  filesystem
 ┌───────────▼──────────┐  ┌───────▼──────────────────────┐
@@ -80,7 +80,7 @@ src/
 ├── api/
 │   ├── feeds.py        GET /api/feeds
 │   ├── items.py        GET /api/items, POST /api/items/{id}/seen
-│   ├── media.py        GET /api/media/proxy, POST /api/prefetch/hint, GET /api/status
+│   ├── media.py        GET /api/media/proxy, POST /api/prefetch/hint
 │   └── reddit_feeds.py GET /api/reddit-feeds/status (proxies Reddit Feeds API)
 │
 └── static/
@@ -319,10 +319,6 @@ LIMIT ? OFFSET ?
 Sets `seen_at = datetime('now')` and writes through to `seen_media`, keyed on the normalised media URL. Returns the timestamp.
 
 The browser marks the item locally *before* firing the request and sends it with `navigator.sendBeacon`, not `fetch`: the browser cancels in-flight fetches when the tab closes, which used to lose the marks made in the last moments of a session. Beacons are queued and delivered regardless, and there is no response to wait for. `item.seen_at` still prevents a double-POST on the same item.
-
-### `GET /api/status`
-
-Aggregates counts from both tables and computes cache directory size in MB. Used for health checks and operator dashboards.
 
 ### `GET /api/reddit-feeds/status`
 
