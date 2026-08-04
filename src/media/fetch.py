@@ -41,6 +41,16 @@ class UpstreamError(Exception):
     """The origin refused the request. The URL has already been marked dead."""
 
 
+class NonMediaUpstreamError(Exception):
+    """The origin served a non-media content type; nothing cached, nothing marked dead.
+
+    Distinct from UpstreamError because the URL is deliberately NOT marked
+    dead here: a WAF page or transient HTML can flip back to media, and the
+    item is not gone. Raised from open_upstream so the prefetch path cannot
+    cache HTML and later serve it as a cache hit (F5).
+    """
+
+
 async def open_upstream(url: str, item_id: str | None, client: httpx.AsyncClient) -> httpx.Response:
     """Open a streaming upstream response, or raise UpstreamError.
 
@@ -49,7 +59,9 @@ async def open_upstream(url: str, item_id: str | None, client: httpx.AsyncClient
 
     On a non-success status the URL is marked dead (and a fully-dead item is
     dropped) before raising — that is what stops a 404'd post coming back on
-    the next sync.
+    the next sync. A non-media content type raises NonMediaUpstreamError
+    instead: the URL is NOT marked dead, but the response is closed and
+    nothing is cached (F5).
     """
     logger.debug(f"open_upstream: GET {url} (item_id={item_id}, timeout={UPSTREAM_TIMEOUT_S}s)")
     response = await client.send(
@@ -66,6 +78,15 @@ async def open_upstream(url: str, item_id: str | None, client: httpx.AsyncClient
             lambda db: mark_url_dead_and_maybe_drop(url, item_id, db),
         )
         raise UpstreamError(f"upstream returned {status} for {url}")
+    content_type = response.headers.get("content-type", "application/octet-stream")
+    if not (
+        content_type.startswith("image/")
+        or content_type.startswith("video/")
+        or content_type == "application/octet-stream"
+    ):
+        await response.aclose()
+        logger.warning(f"open_upstream: refusing non-media content-type {content_type} for {url}")
+        raise NonMediaUpstreamError(f"upstream returned non-media content type {content_type} for {url}")
     logger.debug(
         f"open_upstream: {url} -> {response.status_code} "
         f"type={response.headers.get('content-type', '?')} "

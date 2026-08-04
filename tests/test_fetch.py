@@ -9,7 +9,7 @@ import respx
 
 from src.media import cache as cache_mod
 from src.media.cache import cache_read, cache_read_meta, download_claim
-from src.media.fetch import UpstreamError, fetch_to_cache, open_upstream, tee_to_cache
+from src.media.fetch import NonMediaUpstreamError, UpstreamError, fetch_to_cache, open_upstream, tee_to_cache
 
 URL = "http://example.com/photo.jpg"
 PAYLOAD = b"x" * 200_000  # several 64 KiB chunks, so a stream can be abandoned mid-way
@@ -90,3 +90,30 @@ async def test_fetch_to_cache_skips_url_already_in_flight(tmp_path: Path, monkey
 
     assert route.call_count == 0
     assert cache_read(URL) is None
+
+
+async def test_open_upstream_refuses_non_media(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """HTML served for a media URL must be rejected, not streamed or cached (F5)."""
+    monkeypatch.setattr(cache_mod.settings, "cache_dir", str(tmp_path))
+
+    with respx.mock:
+        respx.get(URL).mock(return_value=httpx.Response(200, content=b"<html/>", headers={"content-type": "text/html"}))
+        async with httpx.AsyncClient() as client:
+            with pytest.raises(NonMediaUpstreamError):
+                await open_upstream(URL, "item-1", client)
+
+    assert cache_read(URL) is None
+    assert _tmp_files(tmp_path) == []
+
+
+async def test_fetch_to_cache_html_not_cached(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """End-to-end: fetch_to_cache must not leave an HTML file in the cache (F5)."""
+    monkeypatch.setattr(cache_mod.settings, "cache_dir", str(tmp_path))
+
+    with respx.mock:
+        respx.get(URL).mock(return_value=httpx.Response(200, content=b"<html/>", headers={"content-type": "text/html"}))
+        async with httpx.AsyncClient() as client:
+            await fetch_to_cache(URL, "item-1", client)  # never raises
+
+    assert cache_read(URL) is None
+    assert _tmp_files(tmp_path) == []
