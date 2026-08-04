@@ -1,6 +1,7 @@
 """Media proxy and prefetch hint endpoints."""
 
 import logging
+import os
 from typing import Annotated, Any
 
 import aiosqlite
@@ -48,9 +49,23 @@ async def proxy_media(
     """
     path = cache_read(url)
     if path is not None:
-        media_type = cache_read_meta(url) or "application/octet-stream"
-        logger.debug(f"proxy_media: HIT {url} -> {path.name} (type={media_type})")
-        return FileResponse(str(path), media_type=media_type)
+        try:
+            # cache_read only checks existence; FileResponse opens the file when
+            # the response is *sent*, after this function returned. evict() runs
+            # after every refresh cycle, and losing that race was a 500 for media
+            # the miss path below would have refetched (R2).
+            stat_result = os.stat(path)
+        except FileNotFoundError:
+            logger.debug(f"proxy_media: {url} evicted between check and send, falling through to upstream")
+        else:
+            media_type = cache_read_meta(url) or "application/octet-stream"
+            logger.debug(f"proxy_media: HIT {url} -> {path.name} (type={media_type})")
+            return FileResponse(
+                path,
+                media_type=media_type,
+                stat_result=stat_result,
+                headers={"X-Content-Type-Options": "nosniff"},
+            )
 
     logger.debug(f"proxy_media: MISS {url} (item_id={item_id}), streaming from upstream")
     client = get_http_client()

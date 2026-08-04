@@ -1,3 +1,5 @@
+from pathlib import Path
+
 import aiosqlite
 import httpx
 import pytest
@@ -316,9 +318,10 @@ async def test_proxy_cache_hit_falls_back_when_sidecar_missing(
     assert resp.status_code == 200
     assert resp.content == b"GIF89a"
     # No sidecar → must NOT be served as text/plain (Starlette's guess on a
-    # bare-sha256 filename). octet-stream lets the browser sniff and render;
-    # no nosniff on this path (F5 scopes nosniff to the miss path).
+    # bare-sha256 filename). octet-stream lets the browser sniff and render.
     assert resp.headers["content-type"].startswith("application/octet-stream")
+    # R8: nosniff is on both paths now, not just the miss path.
+    assert resp.headers["x-content-type-options"] == "nosniff"
 
 
 async def test_proxy_cache_miss(client: AsyncClient, tmp_path: object, monkeypatch: object) -> None:
@@ -878,3 +881,53 @@ async def test_items_partial_cursor_rejected(client: AsyncClient, db: aiosqlite.
     ):
         resp = await client.get("/api/items", params=params)
         assert resp.status_code == 422, f"{params} should be rejected"
+
+
+async def test_proxy_cache_hit_evicted_before_send_refetches(
+    client: AsyncClient,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    mock_http: respx.MockRouter,
+) -> None:
+    """R2: cache_read only stats for existence; FileResponse opens the file
+    after the handler returned. evict() runs after every refresh cycle while
+    the browser pulls several proxy requests, and losing that race raised
+    RuntimeError -> 500 for media the miss path would have refetched."""
+    import src.media.cache as cache_mod
+
+    monkeypatch.setattr(cache_mod.settings, "cache_dir", str(tmp_path))
+    url = "http://example.com/gone.jpg"
+    # cache_read says hit; the file is already gone by the time we serve it.
+    monkeypatch.setattr("src.api.media.cache_read", lambda _url: tmp_path / "evicted")
+
+    mock_http.get(url).mock(
+        return_value=httpx.Response(200, content=b"refetched", headers={"content-type": "image/jpeg"})
+    )
+    real_client = httpx.AsyncClient()
+    monkeypatch.setattr("src.api.media.get_http_client", lambda: real_client)
+    resp = await client.get(f"/api/media/proxy?url={url}")
+    await real_client.aclose()
+
+    assert resp.status_code == 200
+    assert resp.content == b"refetched"
+
+
+async def test_proxy_cache_hit_sets_nosniff(
+    client: AsyncClient, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """R8: the miss path set nosniff and the hit path set no security headers,
+    so the same bytes were served differently on first and second view — and
+    the cached copy is the one served repeatedly."""
+    import hashlib
+
+    import src.media.cache as cache_mod
+
+    monkeypatch.setattr(cache_mod.settings, "cache_dir", str(tmp_path))
+    url = "http://example.com/img.jpg"
+    filename = hashlib.sha256(url.encode()).hexdigest()
+    (tmp_path / filename).write_bytes(b"cached")
+    (tmp_path / f"{filename}.meta").write_text("image/jpeg")
+
+    resp = await client.get(f"/api/media/proxy?url={url}")
+    assert resp.status_code == 200
+    assert resp.headers["x-content-type-options"] == "nosniff"
