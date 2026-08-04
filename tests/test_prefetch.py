@@ -125,3 +125,38 @@ async def test_background_tasks_are_tracked(tmp_path: Path, monkeypatch: pytest.
     assert t in pf._bg_tasks
     await t
     assert t not in pf._bg_tasks
+
+
+async def test_prefetch_ahead_warms_items_ahead_not_behind(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """F2: under ASC interleave, 'ahead' = greater (rn, feed_id, id), not
+    smaller pub_date. The old query warmed items behind the cursor."""
+    from src.db.connection import open_db
+    from src.db.migrations import run_migrations
+    from src.db.schema import create_schema
+    from src.media.prefetch import prefetch_ahead
+
+    monkeypatch.setattr(cache_mod.settings, "cache_dir", str(tmp_path))
+    conn = await open_db(":memory:")
+    await create_schema(conn)
+    await run_migrations(conn)
+    await conn.execute("INSERT INTO feeds(id,url,title) VALUES ('f1','http://x','F')")
+    for i in range(4):
+        await conn.execute(
+            "INSERT INTO items(id,feed_id,guid,title,media_url,media_type,pub_date)"
+            " VALUES (?, 'f1', ?, 't', ?, 'image', datetime('now', ?))",
+            (f"i{i}", f"g{i}", f"http://example.com/{i}.jpg", f"-{3 - i} seconds"),
+        )
+    await conn.commit()
+
+    with respx.mock:
+        respx.get("http://example.com/1.jpg").mock(return_value=httpx.Response(200, content=b"d"))
+        respx.get("http://example.com/2.jpg").mock(return_value=httpx.Response(200, content=b"d"))
+        async with httpx.AsyncClient() as client:
+            await prefetch_ahead("i0", conn, client)
+            await asyncio.sleep(0.1)
+
+    # i0 is the oldest (pub_date oldest). Ahead = i1, i2 (next in ASC order),
+    # NOT items with smaller pub_date (there are none older than i0).
+    assert cache_mod.cache_read("http://example.com/1.jpg") is not None
+    assert cache_mod.cache_read("http://example.com/2.jpg") is not None
+    await conn.close()

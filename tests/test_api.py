@@ -120,19 +120,20 @@ async def test_items_keyset_cursor(client: AsyncClient, db: aiosqlite.Connection
     assert [i["id"] for i in page1] == ["item1", "item2"]
     # Page 2: cursor from page1's last item
     last = page1[-1]
-    resp2 = await client.get("/api/items", params={
-        "after_rn": last["rn"],
-        "after_feed_id": last["feed_id"],
-        "after_id": last["id"],
-        "size": 2,
-    })
+    resp2 = await client.get(
+        "/api/items",
+        params={
+            "after_rn": last["rn"],
+            "after_feed_id": last["feed_id"],
+            "after_id": last["id"],
+            "size": 2,
+        },
+    )
     assert resp2.status_code == 200
     assert [i["id"] for i in resp2.json()] == ["item3"]
 
 
-async def test_items_keyset_no_skip_after_mark_seen(
-    client: AsyncClient, db: aiosqlite.Connection
-) -> None:
+async def test_items_keyset_no_skip_after_mark_seen(client: AsyncClient, db: aiosqlite.Connection) -> None:
     """F17 regression: marking items seen must not renumber or skip later items.
 
     Old code computed rn over the filtered set, so marking item1 seen
@@ -153,13 +154,16 @@ async def test_items_keyset_no_skip_after_mark_seen(
     await client.post("/api/items/item2/seen")
 
     last = first.json()[-1]
-    second = await client.get("/api/items", params={
-        "unseen": "true",
-        "after_rn": last["rn"],
-        "after_feed_id": last["feed_id"],
-        "after_id": last["id"],
-        "size": 2,
-    })
+    second = await client.get(
+        "/api/items",
+        params={
+            "unseen": "true",
+            "after_rn": last["rn"],
+            "after_feed_id": last["feed_id"],
+            "after_id": last["id"],
+            "size": 2,
+        },
+    )
     assert [i["id"] for i in second.json()] == ["item3", "item4"]
 
 
@@ -549,6 +553,12 @@ async def test_prefetch_hint(client: AsyncClient, db: aiosqlite.Connection, monk
 async def test_prefetch_hint_missing_item_id(client: AsyncClient) -> None:
     resp = await client.post("/api/prefetch/hint", json={})
     assert resp.status_code == 422
+
+
+async def test_prefetch_hint_unknown_item_404(client: AsyncClient, db: aiosqlite.Connection) -> None:
+    """F16: a typo'd item_id must be 404, not indistinguishable from ok."""
+    resp = await client.post("/api/prefetch/hint", json={"item_id": "nonexistent"})
+    assert resp.status_code == 404
 
 
 # ---------------------------------------------------------------------------

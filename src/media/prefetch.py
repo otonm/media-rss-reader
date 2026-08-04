@@ -6,8 +6,9 @@ warm_startup_cache() — called once at startup; warms the cache with the most
     recent CACHE_MAX_ITEMS items, capped at 10 concurrent requests.
 
 prefetch_ahead() — called from the /api/prefetch/hint endpoint; warms the
-    next PREFETCH_AHEAD items older than the given item's pub_date. Intended
-    to be fired as a background task ahead of the user's scroll position.
+    next PREFETCH_AHEAD items after the given item in interleave order.
+    Intended to be fired as a background task ahead of the user's scroll
+    position.
 """
 
 import asyncio
@@ -75,19 +76,39 @@ async def warm_startup_cache(db: aiosqlite.Connection, client: httpx.AsyncClient
 async def prefetch_ahead(item_id: str, db: aiosqlite.Connection, client: httpx.AsyncClient) -> None:
     """Fire background warm tasks for the next PREFETCH_AHEAD items after item_id.
 
-    Queries items with a pub_date strictly less than the given item's pub_date
-    (i.e. items that come *after* it in reverse-chronological display order).
-    Each warm task runs independently; errors are silently ignored.
+    'After' means strictly greater in the (rn, feed_id, id) interleave key
+    that /api/items uses — i.e. items the client will request next as it
+    scrolls forward. Previously this queried pub_date < cursor, which under
+    the current ASC display order warmed items the user had already scrolled
+    past (F2). Also applies the unseen filter so we don't warm items the
+    client will never request.
     """
     async with db.execute(
-        """SELECT id, media_url FROM items
-           WHERE pub_date < (SELECT pub_date FROM items WHERE id = ?)
-           ORDER BY pub_date DESC
-           LIMIT ?""",
-        (item_id, settings.prefetch_ahead),
+        """WITH ranked AS (
+                 SELECT id, feed_id,
+                        ROW_NUMBER() OVER (PARTITION BY feed_id ORDER BY pub_date ASC) AS rn
+                 FROM items
+               )
+               SELECT rn, feed_id, id FROM ranked WHERE id = ?""",
+        (item_id,),
+    ) as cur:
+        cursor = await cur.fetchone()
+    if cursor is None:
+        logger.debug(f"prefetch_ahead: item {item_id} not found, warming nothing")
+        return
+    async with db.execute(
+        """WITH ranked AS (
+                 SELECT id, feed_id, media_url, seen_at,
+                        ROW_NUMBER() OVER (PARTITION BY feed_id ORDER BY pub_date ASC) AS rn
+                 FROM items
+               )
+               SELECT id, media_url FROM ranked
+               WHERE seen_at IS NULL AND (rn, feed_id, id) > (?, ?, ?)
+               ORDER BY rn, feed_id, id LIMIT ?""",
+        (cursor["rn"], cursor["feed_id"], cursor["id"], settings.prefetch_ahead),
     ) as cur:
         rows = await cur.fetchall()
-    logger.debug(f"prefetch_ahead for {item_id}: {len(rows)} item(s)")
+    logger.debug(f"prefetch_ahead for {item_id}: {len(rows)} item(s) ahead")
     for row in rows:
         t = asyncio.create_task(_warm(row["id"], row["media_url"], client))
         _track(t)
