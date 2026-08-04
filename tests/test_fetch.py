@@ -117,3 +117,36 @@ async def test_fetch_to_cache_html_not_cached(tmp_path: Path, monkeypatch: pytes
 
     assert cache_read(URL) is None
     assert _tmp_files(tmp_path) == []
+
+
+async def test_fetch_to_cache_dedupes_concurrent_same_url(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """F19: two concurrent fetch_to_cache for the same URL must issue one
+    upstream GET. Before the fix, the outer claim released before open_upstream,
+    so both passed the check and both pulled the origin."""
+    import asyncio
+
+    import httpx
+    import respx
+
+    import src.media.cache as cache_mod
+    from src.media.fetch import fetch_to_cache
+
+    monkeypatch.setattr(cache_mod.settings, "cache_dir", str(tmp_path))
+    url = "http://example.com/dup.jpg"
+    calls = 0
+
+    async def handler(request: httpx.Request) -> httpx.Response:
+        nonlocal calls
+        calls += 1
+        await asyncio.sleep(0.05)
+        return httpx.Response(200, content=b"bytes", headers={"content-type": "image/jpeg"})
+
+    with respx.mock:
+        respx.get(url).mock(side_effect=handler)
+        async with httpx.AsyncClient() as client:
+            await asyncio.gather(
+                fetch_to_cache(url, "i1", client),
+                fetch_to_cache(url, "i1", client),
+            )
+
+    assert calls == 1, f"expected 1 upstream GET, got {calls}"

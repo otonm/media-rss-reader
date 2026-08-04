@@ -151,11 +151,11 @@ async def fetch_to_cache(url: str, item_id: str, client: httpx.AsyncClient) -> N
         if not first:
             logger.debug(f"fetch_to_cache: {url} already in flight, skipping")
             return
-    try:
-        logger.debug(f"fetch_to_cache: warming {url} (item_id={item_id})")
-        response = await open_upstream(url, item_id, client)
-        async for _ in tee_to_cache(url, response):
-            pass
-        logger.debug(f"fetch_to_cache: warmed {url}")
-    except Exception as exc:
-        logger.debug(f"fetch_to_cache failed for {url}: {type(exc).__name__}: {exc}")
+        try:
+            logger.debug(f"fetch_to_cache: warming {url} (item_id={item_id})")
+            response = await open_upstream(url, item_id, client)
+            async for _ in tee_to_cache(url, response):
+                pass
+            logger.debug(f"fetch_to_cache: warmed {url}")
+        except Exception as exc:
+            logger.debug(f"fetch_to_cache failed for {url}: {type(exc).__name__}: {exc}")
