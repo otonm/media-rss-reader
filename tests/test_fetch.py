@@ -432,3 +432,51 @@ async def test_tee_to_cache_client_disconnect_logs_debug(tmp_path: Path, caplog:
         monkeypatch_fetch.undo()
 
     assert any(r.levelno == logging.DEBUG and "client stopped reading" in r.getMessage() for r in caplog.records)
+
+
+async def test_tee_to_cache_non_client_abort_not_mislabeled(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+) -> None:
+    """A cache-side failure (disk full, write error) raised after the first
+    chunk must NOT fall through to the "client stopped reading" debug log —
+    T5 only covered the byte-budget path. Regression guard."""
+    import collections.abc
+
+    import httpx
+    import respx
+
+    monkeypatch.setattr(cache_mod.settings, "cache_dir", str(tmp_path))
+
+    # Wrap the bound cache_stream_tee in fetch_mod so the second yield raises.
+    orig = fetch_mod.cache_stream_tee
+
+    async def _failing_tee(
+        url: str, chunks: collections.abc.AsyncIterable[bytes], content_type: str = "application/octet-stream"
+    ) -> None:
+        yielded = 0
+        async for chunk in orig(url, chunks, content_type):
+            yielded += 1
+            yield chunk
+            if yielded >= 1:
+                raise OSError("simulated cache write failure")
+
+    monkeypatch.setattr(fetch_mod, "cache_stream_tee", _failing_tee)
+
+    url = "http://example.com/boomboom.jpg"
+    with respx.mock:
+        respx.get(_pinned(url)).mock(
+            return_value=httpx.Response(200, content=b"x" * 4096, headers={"content-type": "image/jpeg"})
+        )
+        caplog.set_level(logging.DEBUG)
+        async with httpx.AsyncClient() as client:
+            resp = await fetch_mod.open_upstream(url, None, client)
+            with pytest.raises(OSError, match="simulated cache write failure"):
+                async for _ in fetch_mod.tee_to_cache(url, resp):
+                    pass
+
+    assert any(r.levelno == logging.WARNING and "aborted" in r.getMessage() for r in caplog.records), (
+        "cache-side abort must log at WARNING"
+    )
+    assert not any(r.levelno == logging.DEBUG and "client stopped reading" in r.getMessage() for r in caplog.records), (
+        "non-client abort must NOT be mislabelled as a client disconnect"
+    )

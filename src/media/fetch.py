@@ -224,6 +224,7 @@ async def tee_to_cache(url: str, response: httpx.Response, request_id: str | Non
     sent = 0
     complete = False
     server_abort = False
+    non_client_abort = False
     # Held for the whole transfer so the prefetcher leaves this URL alone while
     # a client is already pulling it.
     with download_claim(url):
@@ -260,6 +261,7 @@ async def tee_to_cache(url: str, response: httpx.Response, request_id: str | Non
                         f"tee_to_cache: aborted {url} after {sent} bytes: {type(exc).__name__}: {exc} "
                         f"(request_id={request_id})"
                     )
+                    non_client_abort = True
                     raise
                 complete = True
         finally:
@@ -268,7 +270,7 @@ async def tee_to_cache(url: str, response: httpx.Response, request_id: str | Non
                 logger.debug(
                     f"tee_to_cache: streamed {sent} bytes of {url} to client and cache (request_id={request_id})"
                 )
-            elif server_abort:
+            elif server_abort or non_client_abort:
                 pass  # already logged at WARNING above
             else:
                 logger.debug(
