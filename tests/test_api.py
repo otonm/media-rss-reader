@@ -624,3 +624,28 @@ async def test_items_report_whether_media_is_already_cached(
     assert resp.status_code == 200
     cached_by_id = {i["id"]: i["cached"] for i in resp.json()}
     assert cached_by_id == {"i1": True, "i2": False}
+
+
+async def test_items_cached_excludes_meta_and_tmp(
+    client: AsyncClient,
+    db: aiosqlite.Connection,
+    tmp_path: object,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import hashlib
+
+    import src.media.cache as cache_mod
+
+    monkeypatch.setattr(cache_mod.settings, "cache_dir", str(tmp_path))
+    warm = "http://example.com/warm.jpg"
+    (tmp_path / hashlib.sha256(warm.encode()).hexdigest()).write_bytes(b"x")
+    (tmp_path / "abc123.tmp").write_bytes(b"partial")  # in-flight, must not count
+    await db.execute("INSERT INTO feeds(id,url,title) VALUES ('f1','http://x','X')")
+    await db.execute(
+        "INSERT INTO items(id,feed_id,guid,media_url,media_type,pub_date)"
+        " VALUES ('i1','f1','g1',?,'image','2026-01-01')",
+        (warm,),
+    )
+    await db.commit()
+    resp = await client.get("/api/items")
+    assert resp.json()[0]["cached"] is True

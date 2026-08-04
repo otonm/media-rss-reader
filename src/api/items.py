@@ -1,5 +1,7 @@
 """GET /api/items and POST /api/items/{id}/seen."""
 
+import asyncio
+import hashlib
 import json
 import logging
 from typing import Annotated, Any
@@ -8,7 +10,7 @@ import aiosqlite
 from fastapi import APIRouter, Depends, HTTPException, Query
 
 from src.db.connection import get_db
-from src.media.cache import cache_read
+from src.media.cache import cache_present_names
 from src.media.normalize import media_key
 
 logger = logging.getLogger(__name__)
@@ -17,7 +19,7 @@ router = APIRouter()
 _DbDep = Annotated[aiosqlite.Connection, Depends(get_db)]
 
 
-def _row_to_item(row: aiosqlite.Row) -> dict[str, Any]:
+def _row_to_item(row: aiosqlite.Row, cached_names: set[str]) -> dict[str, Any]:
     """Convert an items row to the API shape, expanding media_json to `media`.
 
     Rows predating migration v5 have media_json NULL; they fall back to a
@@ -26,16 +28,19 @@ def _row_to_item(row: aiosqlite.Row) -> dict[str, Any]:
 
     `cached` tells the browser which items are already on disk so it can
     download those first — they decode in milliseconds, while a miss waits on
-    the origin. It costs one stat() per row and is a hint, not a promise: an
-    entry can be evicted, or warmed, moments after the response goes out.
+    the origin. It is a hint, not a promise: an entry can be evicted, or
+    warmed, moments after the response goes out.
     """
+    # ponytail: cached = slide[0] hit; queue prioritises paintable items, not
+    # full-gallery warmth (F9). Checking all slides would mark a gallery whose
+    # first slide is on disk as a miss, so the queue would re-download it.
     item = dict(row)
     raw = item.pop("media_json")
     if raw:
         item["media"] = json.loads(raw)
     else:
         item["media"] = [{"url": item["media_url"], "type": item["media_type"]}]
-    item["cached"] = cache_read(item["media_url"]) is not None
+    item["cached"] = hashlib.sha256(item["media_url"].encode()).hexdigest() in cached_names
     return item
 
 
@@ -87,7 +92,8 @@ async def list_items(
     logger.debug(f"list_items unseen={unseen} feed_id={feed_id} offset={offset} size={size}")
     async with db.execute(query, params) as cur:
         rows = await cur.fetchall()
-    items = [_row_to_item(row) for row in rows]
+    cached_names = await asyncio.to_thread(cache_present_names)
+    items = [_row_to_item(row, cached_names) for row in rows]
     # The cached count is the number the browser can paint instantly; a low
     # ratio here is why a scroll feels slow, and it is what the UI_DEBUG
     # overlay's HIT/MISS line reflects.

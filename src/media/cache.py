@@ -156,6 +156,19 @@ def cache_read_meta(url: str) -> str | None:
     return meta.read_text(encoding="ascii").strip() or None
 
 
+def cache_present_names() -> set[str]:
+    """Return the set of cached data filenames (sha256 hex, no extension).
+
+    Excludes `.meta` sidecars and in-flight `.tmp` files. One iterdir syscall,
+    shared across a whole /api/items page so the event loop isn't hit per row
+    (F18). Cache may change between call and response; `cached` is a hint.
+    """
+    try:
+        return {p.name for p in Path(settings.cache_dir).iterdir() if p.is_file() and p.suffix == ""}
+    except FileNotFoundError:
+        return set()
+
+
 def _evict_sync(cache_dir: Path, max_age_secs: float, max_items: int) -> None:
     """Blocking eviction logic — run via asyncio.to_thread to keep the event loop free.
 
