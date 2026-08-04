@@ -631,7 +631,11 @@ async def test_reddit_feeds_status_redirects_followed(
         return_value=httpx.Response(301, headers={"location": "http://127.0.0.1:9090/v2/status"})
     )
     mock_http.get("http://127.0.0.1:9090/v2/status").mock(return_value=httpx.Response(200, json={"ok": True}))
-    real_client = httpx.AsyncClient(follow_redirects=True)
+    # Production builds httpx.AsyncClient() (src/scheduler.py:79), whose
+    # follow_redirects defaults to False — so the route's own argument is the
+    # only thing that can follow the redirect. With the client configured to
+    # follow, this test passed with the fix deleted (R13).
+    real_client = httpx.AsyncClient()
     monkeypatch.setattr("src.api.reddit_feeds.get_http_client", lambda: real_client)
     resp = await client.get("/api/reddit-feeds/status")
     await real_client.aclose()
