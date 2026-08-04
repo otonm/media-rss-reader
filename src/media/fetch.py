@@ -119,11 +119,11 @@ async def open_upstream(url: str, item_id: str | None, client: httpx.AsyncClient
     against _check_url first, which is why redirects are followed manually
     here rather than by httpx (R1).
 
-    On a non-success status the URL is marked dead (and a fully-dead item is
-    dropped) before raising — that is what stops a 404'd post coming back on
-    the next sync. A non-media content type raises NonMediaUpstreamError
-    instead: the URL is NOT marked dead, but the response is closed and
-    nothing is cached (F5).
+    On 404 or 410 the URL is marked dead (and a fully-dead item is dropped)
+    before raising — that is what stops a 404'd post coming back on the next
+    sync. Any other non-success raises without touching the database. A
+    non-media content type raises NonMediaUpstreamError instead: the URL is
+    NOT marked dead, but the response is closed and nothing is cached (F5).
     """
     logger.debug(f"open_upstream: GET {url} (item_id={item_id}, timeout={UPSTREAM_TIMEOUT_S}s)")
     target = url
@@ -145,11 +145,18 @@ async def open_upstream(url: str, item_id: str | None, client: httpx.AsyncClient
     if not response.is_success:
         status = response.status_code
         await response.aclose()
-        logger.debug(f"open_upstream: {url} returned {status}, marking dead")
-        await run_with_own_db(
-            f"mark_url_dead_and_maybe_drop for {url}",
-            lambda db: mark_url_dead_and_maybe_drop(url, item_id, db),
-        )
+        # Only a permanent answer may reach mark_url_dead_and_maybe_drop: it
+        # DELETEs the item and tombstones its guid so the next sync will not
+        # re-insert it. A 429 or 503 from a busy CDN is transient, and marking
+        # dead on those erased posts permanently (R5).
+        if status in (404, 410):
+            logger.debug(f"open_upstream: {url} returned {status}, marking dead")
+            await run_with_own_db(
+                f"mark_url_dead_and_maybe_drop for {url}",
+                lambda db: mark_url_dead_and_maybe_drop(url, item_id, db),
+            )
+        else:
+            logger.debug(f"open_upstream: {url} returned {status}; transient, not marking dead")
         raise UpstreamError(f"upstream returned {status} for {url}")
     content_type = response.headers.get("content-type", "application/octet-stream")
     if not (

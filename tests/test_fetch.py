@@ -233,3 +233,31 @@ async def test_open_upstream_allows_private_when_configured(
             response = await open_upstream("http://10.0.0.5/x.jpg", None, client)
             assert response.status_code == 200
             await response.aclose()
+
+
+@respx.mock
+async def test_open_upstream_429_does_not_mark_dead(
+    db: aiosqlite.Connection, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """R5: a CDN rate-limiting a burst of <img> loads used to mark the URL dead
+    and DELETE the item, tombstoning its guid so the next sync would not
+    re-insert it. A 429 is transient; it must change nothing."""
+    monkeypatch.setattr(cache_mod.settings, "cache_dir", str(tmp_path))
+    url = "http://example.com/busy.jpg"
+    await db.execute("INSERT INTO feeds(id, url, title) VALUES ('f1', 'http://x.com/feed', 'F')")
+    await db.execute(
+        """INSERT INTO items(id, feed_id, guid, title, media_url, media_type, pub_date)
+           VALUES ('i1', 'f1', 'g1', 'T', ?, 'image', '2026-01-01T00:00:00')""",
+        (url,),
+    )
+    await db.commit()
+
+    respx.get(url).mock(return_value=httpx.Response(429))
+    async with httpx.AsyncClient() as client:
+        with pytest.raises(UpstreamError):
+            await open_upstream(url, "i1", client)
+
+    async with db.execute("SELECT COUNT(*) FROM dead_urls") as cur:
+        assert (await cur.fetchone())[0] == 0
+    async with db.execute("SELECT COUNT(*) FROM items WHERE id = 'i1'") as cur:
+        assert (await cur.fetchone())[0] == 1
