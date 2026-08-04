@@ -655,27 +655,61 @@ async def test_reddit_feeds_status_upstream_error(
     assert resp.status_code == 502
 
 
-async def test_reddit_feeds_status_redirects_followed(
+async def test_reddit_feeds_status_redirects_become_502(
     client: AsyncClient,
     mock_http: respx.MockRouter,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """F10: a 301 from the upstream must be followed, not fall through to a
-    JSONDecodeError on the redirect body."""
+    """Task 6: a 301 from the upstream must surface as 502 — the trusted URL
+    must not be silently rewritten by an attacker-controlled Location header.
+    follow_redirects=False is the contract (was True; F10/R13 fixed it then,
+    Task 6 closed it for security)."""
     mock_http.get("http://127.0.0.1:9090/status").mock(
         return_value=httpx.Response(301, headers={"location": "http://127.0.0.1:9090/v2/status"})
     )
-    mock_http.get("http://127.0.0.1:9090/v2/status").mock(return_value=httpx.Response(200, json={"ok": True}))
-    # Production builds httpx.AsyncClient() (src/scheduler.py:79), whose
-    # follow_redirects defaults to False — so the route's own argument is the
-    # only thing that can follow the redirect. With the client configured to
-    # follow, this test passed with the fix deleted (R13).
     real_client = httpx.AsyncClient()
     monkeypatch.setattr("src.api.reddit_feeds.get_http_client", lambda: real_client)
     resp = await client.get("/api/reddit-feeds/status")
     await real_client.aclose()
+    assert resp.status_code == 502
+
+
+async def test_reddit_feeds_status_has_nosniff(
+    client: AsyncClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Task 6: proxied JSON must always carry X-Content-Type-Options: nosniff."""
+    from src.config import settings
+
+    monkeypatch.setattr(settings, "reddit_feeds_api_url", "http://rf.local")
+    with respx.mock:
+        respx.get("http://rf.local/status").mock(
+            return_value=httpx.Response(200, content=b"[]", headers={"content-type": "application/json"})
+        )
+        real_client = httpx.AsyncClient()
+        monkeypatch.setattr("src.api.reddit_feeds.get_http_client", lambda: real_client)
+        resp = await client.get("/api/reddit-feeds/status")
+        await real_client.aclose()
     assert resp.status_code == 200
-    assert resp.json() == {"ok": True}
+    assert resp.headers["x-content-type-options"] == "nosniff"
+
+
+async def test_reddit_feeds_status_redirect_is_502(
+    client: AsyncClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Task 6: a 3xx from upstream must surface as 502, never be silently
+    proxied through a rewritten Location header."""
+    from src.config import settings
+
+    monkeypatch.setattr(settings, "reddit_feeds_api_url", "http://rf.local")
+    with respx.mock:
+        respx.get("http://rf.local/status").mock(
+            return_value=httpx.Response(301, headers={"location": "http://elsewhere/status"})
+        )
+        real_client = httpx.AsyncClient()
+        monkeypatch.setattr("src.api.reddit_feeds.get_http_client", lambda: real_client)
+        resp = await client.get("/api/reddit-feeds/status")
+        await real_client.aclose()
+    assert resp.status_code == 502
 
 
 async def test_reddit_feeds_status_401_maps_to_502(
