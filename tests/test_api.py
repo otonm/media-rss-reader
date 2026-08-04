@@ -326,6 +326,54 @@ async def test_proxy_cache_miss(client: AsyncClient, tmp_path: object, monkeypat
     assert (tmp_path / f"{fname}.meta").read_text() == "image/jpeg"  # type: ignore[operator]
 
 
+async def test_proxy_rejects_html_upstream(
+    client: AsyncClient,
+    tmp_path: object,
+    monkeypatch: object,
+) -> None:
+    """An upstream serving text/html for a media URL is same-origin content
+    injection (F5). Reject it as 502 instead of forwarding the content-type."""
+    import httpx
+    import respx
+
+    import src.media.cache as cache_mod
+
+    monkeypatch.setattr(cache_mod.settings, "cache_dir", str(tmp_path))
+    url = "http://example.com/sneaky.jpg"
+    with respx.mock:
+        respx.get(url).mock(return_value=httpx.Response(200, content=b"<html/>", headers={"content-type": "text/html"}))
+        real_client = httpx.AsyncClient()
+        monkeypatch.setattr("src.api.media.get_http_client", lambda: real_client)
+        resp = await client.get(f"/api/media/proxy?url={url}")
+        await real_client.aclose()
+    assert resp.status_code == 502
+
+
+async def test_proxy_image_passes_with_nosniff(
+    client: AsyncClient,
+    tmp_path: object,
+    monkeypatch: object,
+) -> None:
+    import httpx
+    import respx
+
+    import src.media.cache as cache_mod
+
+    monkeypatch.setattr(cache_mod.settings, "cache_dir", str(tmp_path))
+    url = "http://example.com/real.jpg"
+    with respx.mock:
+        respx.get(url).mock(
+            return_value=httpx.Response(200, content=b"jpgdata", headers={"content-type": "image/jpeg"})
+        )
+        real_client = httpx.AsyncClient()
+        monkeypatch.setattr("src.api.media.get_http_client", lambda: real_client)
+        resp = await client.get(f"/api/media/proxy?url={url}")
+        await real_client.aclose()
+    assert resp.status_code == 200
+    assert resp.headers["x-content-type-options"] == "nosniff"
+    assert resp.headers["content-type"].startswith("image/jpeg")
+
+
 async def test_proxy_upstream_error(
     client: AsyncClient,
     tmp_path: object,

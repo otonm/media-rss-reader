@@ -64,7 +64,15 @@ async def proxy_media(
         raise HTTPException(status_code=502, detail="upstream fetch failed") from exc
 
     content_type = response.headers.get("content-type", "application/octet-stream")
-    return StreamingResponse(tee_to_cache(url, response), media_type=content_type)
+    if not (content_type.startswith("image/") or content_type.startswith("video/")):
+        await response.aclose()
+        logger.warning(f"proxy_media: rejecting non-media content-type {content_type} for {url}")
+        raise HTTPException(status_code=502, detail="upstream returned non-media content type")
+    return StreamingResponse(
+        tee_to_cache(url, response),
+        media_type=content_type,
+        headers={"X-Content-Type-Options": "nosniff"},
+    )
 
 
 @router.post("/prefetch/hint")
