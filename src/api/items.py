@@ -88,7 +88,7 @@ async def list_items(
         )
 
     conditions: list[str] = []
-    params: list[Any] = []
+    params: list[str | int] = []
     if unseen:
         conditions.append("seen_at IS NULL")
     if all(part is not None for part in cursor):

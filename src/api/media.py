@@ -1,7 +1,6 @@
 """Media proxy and prefetch hint endpoints."""
 
 import logging
-import os
 
 from fastapi import APIRouter, HTTPException, Query, Response
 from fastapi.responses import FileResponse, StreamingResponse
@@ -57,7 +56,7 @@ async def proxy_media(
             # the response is *sent*, after this function returned. evict() runs
             # after every refresh cycle, and losing that race was a 500 for media
             # the miss path below would have refetched (R2).
-            stat_result = os.stat(path)
+            stat_result = path.stat()
         except FileNotFoundError:
             logger.debug(f"proxy_media: {url} evicted between check and send, falling through to upstream")
         else:
