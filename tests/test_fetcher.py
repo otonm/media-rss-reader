@@ -97,3 +97,29 @@ async def test_fetch_feed_single_media_item_has_one_element_media_json(mock_http
         items = await fetch_feed("https://example.com/feed.xml", client)
     img = next(i for i in items if i["media_type"] == "image")
     assert json.loads(img["media_json"]) == [{"url": "https://example.com/photo.jpg", "type": "image"}]
+
+
+_PUBDATE_RSS = """\
+<?xml version="1.0"?>
+<rss version="2.0"><channel><title>P</title>
+  <item><title>Img</title><guid>g1</guid>
+    <pubDate>Sun, 02 Aug 2026 10:00:00 +0000</pubDate>
+    <enclosure url="https://example.com/p.jpg" type="image/jpeg" length="0"/>
+  </item>
+</channel></rss>"""
+
+
+async def test_fetch_feed_normalizes_pub_date(mock_http: respx.MockRouter) -> None:
+    mock_http.get("https://example.com/feed.xml").mock(return_value=httpx.Response(200, text=_PUBDATE_RSS))
+    async with httpx.AsyncClient() as client:
+        items = await fetch_feed("https://example.com/feed.xml", client)
+    # RFC-822 "Sun, 02 Aug 2026 10:00:00 +0000" must become ISO, not stored verbatim.
+    assert items[0]["pub_date"] == "2026-08-02 10:00:00"
+
+
+async def test_fetch_feed_pub_date_none_when_absent(mock_http: respx.MockRouter) -> None:
+    # _RSS (module fixture) has no pubDate → pub_date must be None, not a weekday string.
+    mock_http.get("https://example.com/feed.xml").mock(return_value=httpx.Response(200, text=_RSS))
+    async with httpx.AsyncClient() as client:
+        items = await fetch_feed("https://example.com/feed.xml", client)
+    assert items[0]["pub_date"] is None

@@ -9,6 +9,7 @@ import asyncio
 import hashlib
 import json
 import logging
+from datetime import datetime
 
 import feedparser
 import httpx
@@ -27,6 +28,23 @@ def _feed_id(url: str) -> str:
 def _item_id(feed_id: str, guid: str) -> str:
     """Stable item ID derived from the feed ID and the entry's GUID."""
     return hashlib.sha256((feed_id + guid).encode()).hexdigest()
+
+
+def _parse_pub_date(entry: dict) -> str | None:
+    """Normalise feed dates to a SQLite-sortable ISO string (UTC).
+
+    feedparser hands us a struct_time in `published_parsed`/`updated_parsed`;
+    the raw `published` string is RFC-822 for RSS 2.0, which sorts
+    alphabetically by weekday name in SQLite TEXT comparison (F1).
+    Returns None when no parseable date is present.
+    """
+    parsed = entry.get("published_parsed") or entry.get("updated_parsed")
+    if parsed is None:
+        return None
+    try:
+        return datetime(*parsed[:6]).isoformat(sep=" ")
+    except TypeError, ValueError:
+        return None
 
 
 def entry_to_item(feed_id: str, entry: dict) -> dict | None:
@@ -54,7 +72,7 @@ def entry_to_item(feed_id: str, entry: dict) -> dict | None:
         "media_key": media_key(media_url),
         "media_type": media_type,
         "media_json": json.dumps([{"url": u, "type": t} for u, t in results]),
-        "pub_date": entry.get("published") or entry.get("updated"),
+        "pub_date": _parse_pub_date(entry),
     }
 
 
