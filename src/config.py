@@ -85,7 +85,16 @@ def _load_settings() -> Settings:
             kwargs[f.name] = int(env_val)
         else:
             kwargs[f.name] = env_val
-    return Settings(**kwargs)
+    s = Settings(**kwargs)
+    # Fail fast at startup: an empty session signer is forgeable, and a single
+    # empty credential silently turns compare_digest("", "") into a free login.
+    if not s.auth_secret_key:
+        raise RuntimeError("AUTH_SECRET_KEY must be set; the session signer must not be empty")
+    if (bool(s.auth_username)) != (bool(s.auth_password)):
+        raise RuntimeError(
+            "AUTH_USERNAME and AUTH_PASSWORD must both be set, or both empty (no-auth mode)"
+        )
+    return s
 
 
 settings = _load_settings()
