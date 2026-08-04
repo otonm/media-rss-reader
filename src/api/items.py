@@ -48,49 +48,60 @@ def _row_to_item(row: aiosqlite.Row, cached_names: set[str]) -> dict[str, Any]:
 @router.get("/items")
 async def list_items(
     unseen: bool = False,
-    feed_id: str | None = None,
-    offset: int = Query(0, ge=0),
+    after_rn: int | None = None,
+    after_feed_id: str | None = None,
+    after_id: str | None = None,
     size: int = Query(50, ge=1, le=200),
     db: _DbDep = None,  # type: ignore[assignment]
 ) -> list[dict[str, Any]]:
-    """Return a paginated, interleaved list of media items.
+    """Return a keyset-paginated, interleaved list of media items.
 
-    The window-function query assigns a rank (rn) per feed ordered by
-    pub_date ASC, then sorts globally by rn then feed_id. This interleaves
-    feeds evenly: all feeds contribute their oldest unseen item before any
-    feed contributes its second item, preventing one prolific feed from
-    dominating the top of the page.
+    The window function assigns rn per feed over the FULL items set (seen
+    filter applied outside the CTE), so rn is stable when the client marks
+    items seen: marking item X seen removes it from the result but does not
+    renumber any other item. Pagination is a keyset cursor on
+    (rn, feed_id, id) — the last item the client holds is echoed back as
+    after_rn/after_feed_id/after_id and the next page starts strictly after
+    it. A count-based OFFSET cannot be correct here: the set the client is
+    counting over ceases to be a prefix of the server's ranking the moment
+    any item changes seen state (F17).
 
-    `offset` is a raw row offset, not a page number, because with unseen=true
-    the result set shrinks as the client marks items seen. The client sends
-    how many matching items it already holds; a page number would multiply by
-    a size that no longer describes what came before.
+    Limitation: a newly inserted item with an older pub_date shifts its
+    feed's rn values and can invalidate an outstanding cursor. Rare in
+    practice (new feed entries vs. per-scroll mark-seen); the client's
+    known-set guard dedups the duplicate side.
     """
+    if after_rn is not None and (after_feed_id is None or after_id is None):
+        raise HTTPException(
+            status_code=422,
+            detail="after_rn requires after_feed_id and after_id",
+        )
+
     conditions: list[str] = []
     params: list[Any] = []
-
     if unseen:
         conditions.append("seen_at IS NULL")
-    if feed_id is not None:
-        conditions.append("feed_id = ?")
-        params.append(feed_id)
-
+    if after_rn is not None:
+        conditions.append("(rn, feed_id, id) > (?, ?, ?)")
+        params.extend([after_rn, after_feed_id, after_id])
     where_clause = ("WHERE " + " AND ".join(conditions)) if conditions else ""
-    params.extend([size, offset])
+    params.append(size)
 
     query = f"""
         WITH ranked AS (
-            SELECT *,
+            SELECT id, feed_id, title, media_url, media_type, media_json,
+                   pub_date, fetched_at, seen_at,
                    ROW_NUMBER() OVER (PARTITION BY feed_id ORDER BY pub_date ASC) AS rn
             FROM items
-            {where_clause}
         )
-        SELECT id, feed_id, title, media_url, media_type, media_json, pub_date, fetched_at, seen_at
+        SELECT id, feed_id, title, media_url, media_type, media_json,
+               pub_date, fetched_at, seen_at, rn
         FROM ranked
-        ORDER BY rn ASC, feed_id ASC
-        LIMIT ? OFFSET ?
+        {where_clause}
+        ORDER BY rn ASC, feed_id ASC, id ASC
+        LIMIT ?
     """
-    logger.debug(f"list_items unseen={unseen} feed_id={feed_id} offset={offset} size={size}")
+    logger.debug(f"list_items unseen={unseen} cursor=({after_rn},{after_feed_id},{after_id}) size={size}")
     async with db.execute(query, params) as cur:
         rows = await cur.fetchall()
     cached_names = await asyncio.to_thread(cache_present_names)

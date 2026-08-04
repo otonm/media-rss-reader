@@ -30,13 +30,14 @@
     return state.showSeen ? "false" : "true";
   }
 
-  // How many items we hold that the server's current result set still
-  // contains. Page numbers were wrong here: with unseen=true the result set
-  // shrinks as we mark items seen, so page*size skipped that many items and
-  // they only resurfaced on the next reload.
-  function nextOffset() {
-    if (state.showSeen) return state.items.length;
-    return state.items.filter((i) => !i.seen_at).length;
+  // The cursor is the (rn, feed_id, id) of the last item we hold. The server
+  // ranks items over the full set (seen filter applied outside the CTE), so
+  // rn is stable when we mark items seen — the cursor stays valid across
+  // mark-seen, which a count-based offset could not (F17).
+  function nextCursor() {
+    if (state.items.length === 0) return null;
+    const last = state.items[state.items.length - 1];
+    return { rn: last.rn, feed_id: last.feed_id, id: last.id };
   }
 
   async function fetchPage() {
@@ -44,7 +45,11 @@
     state.fetching = true;
     try {
       const cfg = MRR.config;
-      const url = `/api/items?unseen=${unseenParam()}&offset=${nextOffset()}&size=${cfg.feedInitialCount}`;
+      let url = `/api/items?unseen=${unseenParam()}&size=${cfg.feedInitialCount}`;
+      const c = nextCursor();
+      if (c) {
+        url += `&after_rn=${c.rn}&after_feed_id=${encodeURIComponent(c.feed_id)}&after_id=${encodeURIComponent(c.id)}`;
+      }
       const resp = await fetch(url);
       if (!resp.ok) return;
       const newItems = await resp.json();
@@ -88,7 +93,7 @@
 
   // Called by app.reloadFeed() when the show-seen toggle is flipped or
   // any other reason to refetch from the start. Clearing the item list is
-  // enough to reset the offset, which is derived from it.
+  // enough to reset the cursor, which is derived from it.
   function resetForReload() {
     state.items = [];
     state.currentIndex = 0;

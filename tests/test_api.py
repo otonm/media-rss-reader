@@ -108,50 +108,58 @@ async def test_items_unseen_filter(client: AsyncClient, db: aiosqlite.Connection
     assert data[0]["id"] == "unseen_item"
 
 
-async def test_items_feed_filter(client: AsyncClient, db: aiosqlite.Connection) -> None:
-    await _insert_feed(db, feed_id="feedA", url="http://a.com/feed.xml")
-    await _insert_feed(db, feed_id="feedB", url="http://b.com/feed.xml")
-    await _insert_item(db, "itemA", "feedA")
-    await _insert_item(db, "itemB", "feedB")
-    resp = await client.get("/api/items", params={"feed_id": "feedA"})
-    assert resp.status_code == 200
-    data = resp.json()
-    assert len(data) == 1
-    assert data[0]["id"] == "itemA"
-
-
-async def test_items_offset(client: AsyncClient, db: aiosqlite.Connection) -> None:
+async def test_items_keyset_cursor(client: AsyncClient, db: aiosqlite.Connection) -> None:
     await _insert_feed(db)
     await _insert_item(db, "item1", "feed1")
     await _insert_item(db, "item2", "feed1")
     await _insert_item(db, "item3", "feed1")
-    resp_head = await client.get("/api/items", params={"offset": 0, "size": 2})
-    assert resp_head.status_code == 200
-    assert [i["id"] for i in resp_head.json()] == ["item1", "item2"]
-    resp_rest = await client.get("/api/items", params={"offset": 2, "size": 2})
-    assert resp_rest.status_code == 200
-    assert [i["id"] for i in resp_rest.json()] == ["item3"]
+    # Page 1: no cursor
+    resp1 = await client.get("/api/items", params={"size": 2})
+    assert resp1.status_code == 200
+    page1 = resp1.json()
+    assert [i["id"] for i in page1] == ["item1", "item2"]
+    # Page 2: cursor from page1's last item
+    last = page1[-1]
+    resp2 = await client.get("/api/items", params={
+        "after_rn": last["rn"],
+        "after_feed_id": last["feed_id"],
+        "after_id": last["id"],
+        "size": 2,
+    })
+    assert resp2.status_code == 200
+    assert [i["id"] for i in resp2.json()] == ["item3"]
 
 
-async def test_items_unseen_offset_counts_only_remaining(client: AsyncClient, db: aiosqlite.Connection) -> None:
-    """The client's offset is how many *unseen* items it already holds.
+async def test_items_keyset_no_skip_after_mark_seen(
+    client: AsyncClient, db: aiosqlite.Connection
+) -> None:
+    """F17 regression: marking items seen must not renumber or skip later items.
 
-    Page numbers used to be wrong here: marking items seen shrinks the
-    unseen result set, so OFFSET page*size silently skipped items.
+    Old code computed rn over the filtered set, so marking item1 seen
+    renumbered item2→1, item3→2, item4→3, and the client's offset=2 skipped
+    the new position-0 item. Keyset over the full set keeps rn stable.
     """
     await _insert_feed(db)
     for n in range(1, 5):
         await _insert_item(db, f"item{n}", "feed1")
 
-    first = await client.get("/api/items", params={"unseen": "true", "offset": 0, "size": 2})
+    first = await client.get("/api/items", params={"unseen": "true", "size": 2})
     assert [i["id"] for i in first.json()] == ["item1", "item2"]
 
-    # The client marks both seen; it now holds zero unseen items, so it asks
-    # again from offset 0 and must get the next two, not item3 onwards skipped.
+    # Mark both seen; the client still holds them, so its cursor is the last
+    # item it received (item2). The server must return item3 and item4, not
+    # skip item3 the way the old offset=2 did.
     await client.post("/api/items/item1/seen")
     await client.post("/api/items/item2/seen")
 
-    second = await client.get("/api/items", params={"unseen": "true", "offset": 0, "size": 2})
+    last = first.json()[-1]
+    second = await client.get("/api/items", params={
+        "unseen": "true",
+        "after_rn": last["rn"],
+        "after_feed_id": last["feed_id"],
+        "after_id": last["id"],
+        "size": 2,
+    })
     assert [i["id"] for i in second.json()] == ["item3", "item4"]
 
 
@@ -707,15 +715,17 @@ async def test_items_interleaved_across_feeds(client: AsyncClient, db: aiosqlite
     await insert_item("b2", fb, "g2", pub_offset_days=1)
     await db.commit()
 
-    resp = await client.get("/api/items?offset=0&size=10")
+    resp = await client.get("/api/items?size=10")
     assert resp.status_code == 200
-    ids = [item["id"] for item in resp.json()]
+    data = resp.json()
+    ids = [item["id"] for item in data]
 
     # Round 1: rn=1 for each feed — feedA (oldest=3d) and feedB (oldest=4d)
     # Round 2: rn=2 for each feed
     # Round 3: only feedA remains (rn=3)
     # Within each round, feedA < feedB alphabetically
     assert ids == ["a1", "b1", "a2", "b2", "a3"]
+    assert [item["rn"] for item in data] == [1, 1, 2, 2, 3]
 
 
 async def test_items_rejects_invalid_size(client: AsyncClient) -> None:
