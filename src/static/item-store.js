@@ -30,14 +30,15 @@
     return state.showSeen ? "false" : "true";
   }
 
-  // The cursor is the (rn, feed_id, id) of the last item we hold. The server
-  // ranks items over the full set (seen filter applied outside the CTE), so
-  // rn is stable when we mark items seen — the cursor stays valid across
-  // mark-seen, which a count-based offset could not (F17).
+  // The cursor is the (feed_id, pub_date, id) of the last item we hold — three
+  // immutable column values. rn is NOT sent: the server recomputes it per
+  // request, so a pruned row beneath the cursor would shift it and we would
+  // skip exactly as many items as were pruned (R3). The server derives the
+  // anchor's rank from these three instead.
   function nextCursor() {
     if (state.items.length === 0) return null;
     const last = state.items[state.items.length - 1];
-    return { rn: last.rn, feed_id: last.feed_id, id: last.id };
+    return { feed_id: last.feed_id, pub_date: last.pub_date, id: last.id };
   }
 
   async function fetchPage() {
@@ -48,7 +49,7 @@
       let url = `/api/items?unseen=${unseenParam()}&size=${cfg.feedInitialCount}`;
       const c = nextCursor();
       if (c) {
-        url += `&after_rn=${c.rn}&after_feed_id=${encodeURIComponent(c.feed_id)}&after_id=${encodeURIComponent(c.id)}`;
+        url += `&after_feed_id=${encodeURIComponent(c.feed_id)}&after_pub_date=${encodeURIComponent(c.pub_date)}&after_id=${encodeURIComponent(c.id)}`;
       }
       const resp = await fetch(url);
       if (!resp.ok) return;

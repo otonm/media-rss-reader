@@ -49,8 +49,8 @@ def _row_to_item(row: aiosqlite.Row, cached_names: set[str]) -> dict[str, Any]:
 @router.get("/items")
 async def list_items(
     unseen: bool = False,
-    after_rn: int | None = None,
     after_feed_id: str | None = None,
+    after_pub_date: str | None = None,
     after_id: str | None = None,
     size: int = Query(50, ge=1, le=200),
     db: _DbDep = None,  # type: ignore[assignment]
@@ -60,31 +60,45 @@ async def list_items(
     The window function assigns rn per feed over the FULL items set (seen
     filter applied outside the CTE), so rn is stable when the client marks
     items seen: marking item X seen removes it from the result but does not
-    renumber any other item. Pagination is a keyset cursor on
-    (rn, feed_id, id) — the last item the client holds is echoed back as
-    after_rn/after_feed_id/after_id and the next page starts strictly after
-    it. A count-based OFFSET cannot be correct here: the set the client is
-    counting over ceases to be a prefix of the server's ranking the moment
-    any item changes seen state (F17).
+    renumber any other item.
 
-    Limitation: a newly inserted item with an older pub_date shifts its
-    feed's rn values and can invalidate an outstanding cursor. Rare in
-    practice (new feed entries vs. per-scroll mark-seen); the client's
-    known-set guard dedups the duplicate side.
+    The cursor is the last item's (feed_id, pub_date, id) — three immutable
+    column values. rn itself is NOT a cursor: it is recomputed per request, so
+    every prune_items cycle shifts it down under an outstanding client cursor
+    and the client skips exactly as many items as were pruned beneath it (R3).
+    Instead the anchor's rank is derived here by counting the rows of its feed
+    at or before it, which moves in lockstep with the ranks of the rows after
+    it. The count also resolves correctly when the anchor row was itself
+    pruned: it yields the position of the last surviving row at or before it.
+
+    A count-based OFFSET cannot be correct here either: the set the client is
+    counting over ceases to be a prefix of the server's ranking the moment any
+    item changes seen state (F17).
+
+    Limitation: a newly inserted item with an older pub_date shifts its feed's
+    rn values and can invalidate an outstanding cursor. Rare in practice (new
+    feed entries vs. per-scroll mark-seen); the client's known-set guard dedups
+    the duplicate side.
     """
-    if after_rn is not None and (after_feed_id is None or after_id is None):
+    cursor = (after_feed_id, after_pub_date, after_id)
+    if any(part is not None for part in cursor) and not all(part is not None for part in cursor):
         raise HTTPException(
             status_code=422,
-            detail="after_rn requires after_feed_id and after_id",
+            detail="after_feed_id, after_pub_date and after_id must be given together",
         )
 
     conditions: list[str] = []
     params: list[Any] = []
     if unseen:
         conditions.append("seen_at IS NULL")
-    if after_rn is not None:
-        conditions.append("(rn, feed_id, id) > (?, ?, ?)")
-        params.extend([after_rn, after_feed_id, after_id])
+    if all(part is not None for part in cursor):
+        # The anchor's rank, derived from immutable values rather than echoed
+        # back by the client. Same partition, same tiebreak as the CTE window.
+        conditions.append(
+            "(rn, feed_id, id) > ("
+            "(SELECT COUNT(*) FROM items WHERE feed_id = ? AND (pub_date, id) <= (?, ?)), ?, ?)"
+        )
+        params.extend([after_feed_id, after_pub_date, after_id, after_feed_id, after_id])
     where_clause = ("WHERE " + " AND ".join(conditions)) if conditions else ""
     params.append(size)
 
@@ -97,7 +111,7 @@ async def list_items(
         {INTERLEAVE_ORDER_BY}
         LIMIT ?
     """
-    logger.debug(f"list_items unseen={unseen} cursor=({after_rn},{after_feed_id},{after_id}) size={size}")
+    logger.debug(f"list_items unseen={unseen} cursor=({after_feed_id},{after_pub_date},{after_id}) size={size}")
     async with db.execute(query, params) as cur:
         rows = await cur.fetchall()
     cached_names = await asyncio.to_thread(cache_present_names)

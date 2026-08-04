@@ -123,8 +123,8 @@ async def test_items_keyset_cursor(client: AsyncClient, db: aiosqlite.Connection
     resp2 = await client.get(
         "/api/items",
         params={
-            "after_rn": last["rn"],
             "after_feed_id": last["feed_id"],
+            "after_pub_date": last["pub_date"],
             "after_id": last["id"],
             "size": 2,
         },
@@ -158,8 +158,8 @@ async def test_items_keyset_no_skip_after_mark_seen(client: AsyncClient, db: aio
         "/api/items",
         params={
             "unseen": "true",
-            "after_rn": last["rn"],
             "after_feed_id": last["feed_id"],
+            "after_pub_date": last["pub_date"],
             "after_id": last["id"],
             "size": 2,
         },
@@ -827,3 +827,54 @@ async def test_items_rank_ties_break_by_id(client: AsyncClient, db: aiosqlite.Co
     data = resp.json()
     assert [i["id"] for i in data] == ["aa", "mm", "zz"]
     assert [i["rn"] for i in data] == [1, 2, 3]
+
+
+async def test_items_cursor_survives_prune_beneath_it(client: AsyncClient, db: aiosqlite.Connection) -> None:
+    """R3: pruning rows below an outstanding cursor must not skip items.
+
+    rn is recomputed per request, so deleting the two lowest rows used to shift
+    every later rn down by two — a client holding the old rn started two items
+    too far ahead and never rendered them. prune_items does exactly this on
+    every refresh cycle.
+    """
+    await _insert_feed(db)
+    for n in range(1, 9):
+        await db.execute(
+            """INSERT INTO items(id, feed_id, guid, title, media_url, media_type, pub_date)
+               VALUES (?, 'feed1', ?, 'T', 'http://example.com/img.jpg', 'image', ?)""",
+            (f"item{n}", f"g{n}", f"2026-01-0{n}T00:00:00"),
+        )
+    await db.commit()
+
+    page1 = await client.get("/api/items", params={"size": 4})
+    assert [i["id"] for i in page1.json()] == ["item1", "item2", "item3", "item4"]
+    last = page1.json()[-1]
+
+    # A refresh cycle prunes the two oldest rows while the client holds its cursor.
+    await db.execute("DELETE FROM items WHERE id IN ('item1', 'item2')")
+    await db.commit()
+
+    page2 = await client.get(
+        "/api/items",
+        params={
+            "after_feed_id": last["feed_id"],
+            "after_pub_date": last["pub_date"],
+            "after_id": last["id"],
+            "size": 4,
+        },
+    )
+    assert [i["id"] for i in page2.json()] == ["item5", "item6", "item7", "item8"]
+
+
+async def test_items_partial_cursor_rejected(client: AsyncClient, db: aiosqlite.Connection) -> None:
+    """R3: a partial cursor must 422, not be silently dropped back to page 1."""
+    await _insert_feed(db)
+    await _insert_item(db, "item1", "feed1")
+    for params in (
+        {"after_feed_id": "feed1"},
+        {"after_id": "item1"},
+        {"after_feed_id": "feed1", "after_id": "item1"},
+        {"after_pub_date": "2026-01-01T00:00:00", "after_id": "item1"},
+    ):
+        resp = await client.get("/api/items", params=params)
+        assert resp.status_code == 422, f"{params} should be rejected"
