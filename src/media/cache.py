@@ -40,6 +40,17 @@ def _cache_path(url: str) -> Path:
     return Path(settings.cache_dir) / hashlib.sha256(url.encode()).hexdigest()
 
 
+def cache_name(url: str) -> str:
+    """The cache filename for `url` (sha256 hex, no extension).
+
+    Single source of the naming contract: items.py compares this against
+    `cache_present_names()`'s set to set the `cached` hint, so the two must
+    not drift. Implemented as `_cache_path(url).name` so a scheme change here
+    flips both sides at once.
+    """
+    return _cache_path(url).name
+
+
 def _meta_path(url: str) -> Path:
     """Return the sidecar path holding the cached URL's Content-Type."""
     return _cache_path(url).with_suffix(".meta")

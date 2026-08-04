@@ -190,3 +190,20 @@ async def test_evict_drops_oldest_until_under_byte_budget(tmp_path: Path, monkey
 
     remaining = sorted(p.name for p in tmp_path.iterdir())  # noqa: ASYNC240
     assert remaining == ["file2"]
+
+
+def test_cache_name_matches_cache_path_name() -> None:
+    import hashlib
+
+    from src.media.cache import _cache_path, cache_name
+
+    url = "http://example.com/x.jpg"
+    assert cache_name(url) == _cache_path(url).name
+    assert cache_name(url) == hashlib.sha256(url.encode()).hexdigest()
+
+
+def test_cache_name_is_the_single_source() -> None:
+    from src.media.cache import _cache_path, cache_name
+
+    url = "http://example.com/y.png"
+    assert cache_name(url) == _cache_path(url).name

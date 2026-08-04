@@ -2,7 +2,6 @@
 
 import asyncio
 import datetime as dt
-import hashlib
 import json
 import logging
 import time
@@ -14,7 +13,7 @@ from fastapi import APIRouter, HTTPException, Query
 from src.api.schemas import ItemOut, SeenResponse
 from src.db.connection import _DbDep
 from src.db.queries import INTERLEAVE_ORDER_BY, RANKED_ITEMS_CTE
-from src.media.cache import cache_present_names
+from src.media.cache import cache_name, cache_present_names
 from src.media.normalize import media_key
 
 logger = logging.getLogger(__name__)
@@ -42,7 +41,7 @@ def _row_to_item(row: aiosqlite.Row, cached_names: set[str]) -> dict[str, Any]:
         item["media"] = json.loads(raw)
     else:
         item["media"] = [{"url": item["media_url"], "type": item["media_type"]}]
-    item["cached"] = hashlib.sha256(item["media_url"].encode()).hexdigest() in cached_names
+    item["cached"] = cache_name(item["media_url"]) in cached_names
     return item
 
 
