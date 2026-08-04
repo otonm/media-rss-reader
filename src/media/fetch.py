@@ -25,7 +25,7 @@ import logging
 import socket
 from collections.abc import AsyncIterator
 from contextlib import aclosing
-from urllib.parse import urlsplit
+from urllib.parse import urljoin, urlsplit
 
 import httpx
 
@@ -72,14 +72,20 @@ def _resolve(host: str) -> list[str]:
     return [host]
 
 
-async def _check_url(url: str) -> None:
-    """Raise UpstreamError unless `url` is an http(s) URL on a public address.
+def _pinned_url(original: str, ip: str) -> str:
+    """Return `original` with its host replaced by the literal IP `ip`."""
+    parts = urlsplit(original)
+    port = parts.port
+    netloc = (f"[{ip}]:{port}" if port else f"[{ip}]") if ":" in ip else f"{ip}:{port}" if port else ip
+    return parts._replace(netloc=netloc).geturl()
 
-    This is the only place that sees every fetch target: the proxy passes a
-    client-supplied `url` and the prefetcher passes URLs taken straight from
-    third-party feed content, with no session involved at all. Without it the
-    reader will fetch anything on the Docker network, or a cloud metadata
-    endpoint, and stream the body back (R1).
+
+async def _check_url(url: str) -> list[str]:
+    """Return the validated public IP(s) for `url`, or raise UpstreamError.
+
+    The caller pins the httpx request to one of these IPs (with the original
+    Host header + SNI) so httpx cannot re-resolve the host and reach a
+    different address than the one validated here (DNS-rebinding TOCTOU).
     """
     parts = urlsplit(url)
     if parts.scheme not in ("http", "https"):
@@ -88,25 +94,32 @@ async def _check_url(url: str) -> None:
     if not host:
         raise UpstreamError(f"refusing URL with no host: {url}")
     if settings.allow_private_media_hosts:
-        return
-    try:
         addrs = await asyncio.to_thread(_resolve, host)
-    except OSError as exc:
-        raise UpstreamError(f"cannot resolve {host} for {url}: {exc}") from exc
-    for addr in addrs:
-        ip = ipaddress.ip_address(addr)
-        # ::ffff:127.0.0.1 is loopback wearing an IPv6 hat.
-        ip = getattr(ip, "ipv4_mapped", None) or ip
-        if (
-            ip.is_private
-            or ip.is_loopback
-            or ip.is_link_local
-            or ip.is_multicast
-            or ip.is_reserved
-            or ip.is_unspecified
-        ):
-            logger.warning(f"_check_url: refusing {url} — {host} resolves to non-public address {ip}")
-            raise UpstreamError(f"refusing non-public address {ip} for {url}")
+    else:
+        try:
+            addrs = await asyncio.to_thread(_resolve, host)
+        except OSError as exc:
+            raise UpstreamError(f"cannot resolve {host} for {url}: {exc}") from exc
+        validated: list[str] = []
+        for addr in addrs:
+            ip = ipaddress.ip_address(addr)
+            # ::ffff:127.0.0.1 is loopback wearing an IPv6 hat.
+            ip = getattr(ip, "ipv4_mapped", None) or ip
+            if (
+                ip.is_private
+                or ip.is_loopback
+                or ip.is_link_local
+                or ip.is_multicast
+                or ip.is_reserved
+                or ip.is_unspecified
+            ):
+                logger.warning(f"_check_url: refusing {url} — {host} resolves to non-public address {ip}")
+                raise UpstreamError(f"refusing non-public address {ip} for {url}")
+            validated.append(str(ip))
+        addrs = validated
+    if not addrs:
+        raise UpstreamError(f"cannot resolve {host} for {url}")
+    return addrs
 
 
 async def open_upstream(url: str, item_id: str | None, client: httpx.AsyncClient) -> httpx.Response:
@@ -126,20 +139,27 @@ async def open_upstream(url: str, item_id: str | None, client: httpx.AsyncClient
     NOT marked dead, but the response is closed and nothing is cached (F5).
     """
     logger.debug(f"open_upstream: GET {url} (item_id={item_id}, timeout={UPSTREAM_TIMEOUT_S}s)")
-    target = url
+    logical = url
     for _ in range(MAX_REDIRECTS + 1):
-        await _check_url(target)
-        response = await client.send(
-            client.build_request("GET", target, timeout=UPSTREAM_TIMEOUT_S),
-            stream=True,
-            follow_redirects=False,
+        validated = await _check_url(logical)
+        pinned = _pinned_url(logical, validated[0])
+        host = urlsplit(logical).hostname or ""
+        request = client.build_request(
+            "GET",
+            pinned,
+            timeout=UPSTREAM_TIMEOUT_S,
+            headers={"Host": host} if host else None,
+            extensions={"sni_hostname": host} if host else None,
         )
+        response = await client.send(request, stream=True, follow_redirects=False)
         if not response.has_redirect_location:
             break
         location = response.headers["location"]
         await response.aclose()
-        target = str(response.url.join(location))
-        logger.debug(f"open_upstream: {url} redirected to {target}")
+        # Join the location against the LOGICAL url (original host), not the
+        # pinned IP, so the original hostname survives relative redirects.
+        logical = urljoin(logical, location)
+        logger.debug(f"open_upstream: {url} redirected to {logical}")
     else:
         raise UpstreamError(f"more than {MAX_REDIRECTS} redirects for {url}")
     if not response.is_success:

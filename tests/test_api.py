@@ -8,6 +8,13 @@ import respx
 from httpx import AsyncClient
 
 
+def _pinned(url: str) -> str:
+    """The url as open_upstream now sends it: host replaced by the stubbed IP."""
+    from src.media import fetch as fetch_mod
+
+    return fetch_mod._pinned_url(url, "93.184.216.34")
+
+
 async def test_feeds_empty(client: AsyncClient) -> None:
     resp = await client.get("/api/feeds")
     assert resp.status_code == 200
@@ -353,7 +360,7 @@ async def test_proxy_cache_miss(
     await _register_proxy_url(db, url)
 
     with respx.mock:
-        respx.get(url).mock(
+        respx.get(_pinned(url)).mock(
             return_value=httpx.Response(200, content=b"freshdata", headers={"content-type": "image/jpeg"})
         )
         real_client = httpx.AsyncClient()
@@ -388,7 +395,9 @@ async def test_proxy_rejects_html_upstream(
     url = "http://example.com/sneaky.jpg"
     await _register_proxy_url(db, url)
     with respx.mock:
-        respx.get(url).mock(return_value=httpx.Response(200, content=b"<html/>", headers={"content-type": "text/html"}))
+        respx.get(_pinned(url)).mock(
+            return_value=httpx.Response(200, content=b"<html/>", headers={"content-type": "text/html"})
+        )
         real_client = httpx.AsyncClient()
         monkeypatch.setattr("src.api.media.get_http_client", lambda: real_client)
         resp = await client.get(f"/api/media/proxy?url={url}")
@@ -411,7 +420,7 @@ async def test_proxy_image_passes_with_nosniff(
     url = "http://example.com/real.jpg"
     await _register_proxy_url(db, url)
     with respx.mock:
-        respx.get(url).mock(
+        respx.get(_pinned(url)).mock(
             return_value=httpx.Response(200, content=b"jpgdata", headers={"content-type": "image/jpeg"})
         )
         real_client = httpx.AsyncClient()
@@ -439,7 +448,7 @@ async def test_proxy_octet_stream_upstream_passes(
     url = "http://example.com/unknown.jpg"
     await _register_proxy_url(db, url)
     with respx.mock:
-        respx.get(url).mock(
+        respx.get(_pinned(url)).mock(
             return_value=httpx.Response(200, content=b"jpgdata", headers={"content-type": "application/octet-stream"})
         )
         real_client = httpx.AsyncClient()
@@ -467,7 +476,7 @@ async def test_proxy_upstream_error(
     await _register_proxy_url(db, url)
 
     with respx.mock:
-        respx.get(url).mock(return_value=httpx.Response(404))
+        respx.get(_pinned(url)).mock(return_value=httpx.Response(404))
         real_client = httpx.AsyncClient()
         monkeypatch.setattr("src.api.media.get_http_client", lambda: real_client)
         resp = await client.get(f"/api/media/proxy?url={url}")
@@ -509,7 +518,7 @@ async def test_proxy_404_marks_item_unavailable(
     await db.commit()
 
     with respx.mock:
-        respx.get(url).mock(return_value=httpx.Response(404))
+        respx.get(_pinned(url)).mock(return_value=httpx.Response(404))
         real_client = httpx.AsyncClient()
         monkeypatch.setattr("src.api.media.get_http_client", lambda: real_client)
         resp = await client.get(f"/api/media/proxy?url={url}&item_id={item_id}")
@@ -545,7 +554,7 @@ async def test_proxy_404_without_item_id_still_returns_502(
     await _register_proxy_url(db, url)
 
     with respx.mock:
-        respx.get(url).mock(return_value=httpx.Response(404))
+        respx.get(_pinned(url)).mock(return_value=httpx.Response(404))
         real_client = httpx.AsyncClient()
         monkeypatch.setattr("src.api.media.get_http_client", lambda: real_client)
         resp = await client.get(f"/api/media/proxy?url={url}")
@@ -933,7 +942,7 @@ async def test_proxy_cache_hit_evicted_before_send_refetches(
     # cache_read says hit; the file is already gone by the time we serve it.
     monkeypatch.setattr("src.api.media.cache_read", lambda _url: tmp_path / "evicted")
 
-    mock_http.get(url).mock(
+    mock_http.get(_pinned(url)).mock(
         return_value=httpx.Response(200, content=b"refetched", headers={"content-type": "image/jpeg"})
     )
     real_client = httpx.AsyncClient()
@@ -984,7 +993,7 @@ async def test_proxy_upstream_error_logged_at_warning(
     monkeypatch.setattr(cache_mod.settings, "cache_dir", str(tmp_path))
     url = "http://example.com/gone.jpg"
     await _register_proxy_url(db, url)
-    mock_http.get(url).mock(return_value=httpx.Response(404))
+    mock_http.get(_pinned(url)).mock(return_value=httpx.Response(404))
     real_client = httpx.AsyncClient()
     monkeypatch.setattr("src.api.media.get_http_client", lambda: real_client)
 
@@ -1111,7 +1120,7 @@ async def test_proxy_cache_miss_ignores_range(
     monkeypatch.setattr(cache_mod.settings, "cache_dir", str(tmp_path))
     url = "http://example.com/fresh.mp4"
     await _register_proxy_url(db, url)
-    mock_http.get(url).mock(
+    mock_http.get(_pinned(url)).mock(
         return_value=httpx.Response(200, content=b"0123456789", headers={"content-type": "video/mp4"})
     )
     real_client = httpx.AsyncClient()
