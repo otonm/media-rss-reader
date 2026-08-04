@@ -1,19 +1,17 @@
-"""Media proxy, prefetch hint, and status endpoints."""
+"""Media proxy and prefetch hint endpoints."""
 
 import logging
-from pathlib import Path
-from typing import Annotated, Any
+from typing import Annotated
 
 import aiosqlite
 from fastapi import APIRouter, Depends, HTTPException, Query, Response
 from fastapi.responses import FileResponse, StreamingResponse
 
-from src.config import settings
 from src.db.connection import get_db
 from src.media.cache import cache_read, cache_read_meta
 from src.media.fetch import UpstreamError, open_upstream, tee_to_cache
 from src.media.prefetch import prefetch_ahead
-from src.scheduler import get_http_client, get_last_opml_sync
+from src.scheduler import get_http_client
 
 router = APIRouter()
 
@@ -86,30 +84,3 @@ async def prefetch_hint(
     client = get_http_client()
     await prefetch_ahead(item_id, db, client)
     return {"status": "ok"}
-
-
-@router.get("/status")
-async def get_status(
-    db: _DbDep = None,  # type: ignore[assignment]
-) -> dict[str, Any]:
-    """Return a health/status snapshot: feed count, item counts, cache size, last sync."""
-    async with db.execute("SELECT COUNT(*) FROM feeds") as cur:
-        feeds_count: int = (await cur.fetchone())[0]
-    async with db.execute("SELECT COUNT(*) FROM items") as cur:
-        items_total: int = (await cur.fetchone())[0]
-    async with db.execute("SELECT COUNT(*) FROM items WHERE seen_at IS NULL") as cur:
-        items_unseen: int = (await cur.fetchone())[0]
-
-    cache_dir = Path(settings.cache_dir)
-    cache_size_mb = 0.0
-    if cache_dir.exists():  # noqa: ASYNC240
-        cache_size_mb = sum(f.stat().st_size for f in cache_dir.iterdir() if f.is_file()) / (1024 * 1024)  # noqa: ASYNC240
-
-    last_sync = get_last_opml_sync()
-    return {
-        "feeds": feeds_count,
-        "items_total": items_total,
-        "items_unseen": items_unseen,
-        "cache_size_mb": round(cache_size_mb, 2),
-        "last_opml_sync": last_sync.isoformat() if last_sync else None,
-    }

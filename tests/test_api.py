@@ -458,47 +458,6 @@ async def test_prefetch_hint_missing_item_id(client: AsyncClient) -> None:
 
 
 # ---------------------------------------------------------------------------
-# GET /api/status tests
-# ---------------------------------------------------------------------------
-
-
-async def test_status(client: AsyncClient, db: aiosqlite.Connection, tmp_path: object, monkeypatch: object) -> None:
-    import src.media.cache as cache_mod
-
-    monkeypatch.setattr(cache_mod.settings, "cache_dir", str(tmp_path))
-
-    await db.execute("INSERT INTO feeds(id, url, title) VALUES ('f1', 'http://x.com/feed', 'F')")
-    await db.execute(
-        "INSERT INTO items(id, feed_id, guid, title, media_url, media_type, pub_date) "
-        "VALUES ('i1', 'f1', 'g1', 'T', 'http://x.com/img.jpg', 'image', datetime('now'))"
-    )
-    await db.commit()
-
-    resp = await client.get("/api/status")
-    assert resp.status_code == 200
-    data = resp.json()
-    assert data["feeds"] == 1
-    assert data["items_total"] == 1
-    assert data["items_unseen"] == 1
-    assert "cache_size_mb" in data
-    assert "last_opml_sync" in data
-
-
-async def test_status_empty(client: AsyncClient, tmp_path: object, monkeypatch: object) -> None:
-    import src.media.cache as cache_mod
-
-    monkeypatch.setattr(cache_mod.settings, "cache_dir", str(tmp_path))
-
-    resp = await client.get("/api/status")
-    assert resp.status_code == 200
-    data = resp.json()
-    assert data["feeds"] == 0
-    assert data["items_total"] == 0
-    assert data["items_unseen"] == 0
-    assert data["cache_size_mb"] == 0.0
-
-
-# ---------------------------------------------------------------------------
 # GET /api/reddit-feeds/status tests
 # ---------------------------------------------------------------------------
 

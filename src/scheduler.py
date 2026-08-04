@@ -6,7 +6,6 @@ so the reader is populated on first boot without waiting.
 """
 
 import asyncio
-import datetime
 import logging
 
 import aiosqlite
@@ -22,7 +21,6 @@ logger = logging.getLogger(__name__)
 class _State:
     scheduler: list[asyncio.Task] = []  # noqa: RUF012
     client: httpx.AsyncClient | None = None
-    last_opml_sync: datetime.datetime | None = None
     running: bool = False
 
 
@@ -36,11 +34,6 @@ def get_http_client() -> httpx.AsyncClient:
     return _state.client
 
 
-def get_last_opml_sync() -> datetime.datetime | None:
-    """Return the UTC timestamp of the most recent successful OPML sync, or None."""
-    return _state.last_opml_sync
-
-
 async def _opml_sync_loop(db: aiosqlite.Connection, client: httpx.AsyncClient) -> None:
     logger.debug(f"OPML sync loop started (interval={settings.opml_sync_interval}s)")
     while _state.running:
@@ -48,7 +41,6 @@ async def _opml_sync_loop(db: aiosqlite.Connection, client: httpx.AsyncClient) -
         try:
             logger.debug("Sync cycle starting")
             await sync_feeds(db, settings.feeds_dir, settings.opml_path, client)
-            _state.last_opml_sync = datetime.datetime.now(datetime.UTC)
         except Exception as exc:
             logger.warning("Sync failed (will retry on schedule): %s", exc)
 
@@ -69,7 +61,6 @@ async def _startup_sync(db: aiosqlite.Connection) -> None:
     logger.debug("Startup sync beginning")
     try:
         await sync_feeds(db, settings.feeds_dir, settings.opml_path, _state.client)
-        _state.last_opml_sync = datetime.datetime.now(datetime.UTC)
     except Exception as exc:
         logger.warning("Initial sync failed (will retry on schedule): %s", exc)
     try:

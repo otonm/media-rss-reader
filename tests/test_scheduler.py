@@ -1,4 +1,3 @@
-import asyncio
 from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -30,39 +29,11 @@ async def test_start_and_stop_scheduler(tmp_path: Path) -> None:
     await conn.close()
 
 
-async def test_get_last_opml_sync_none_before_start() -> None:
-    """get_last_opml_sync returns None when scheduler has not synced yet."""
-    sched_mod._state.last_opml_sync = None
-    assert sched_mod.get_last_opml_sync() is None
-
-
 async def test_stop_scheduler_noop_when_not_started() -> None:
     """stop_scheduler should not raise if called when already stopped."""
     sched_mod._state.scheduler = []
     sched_mod._state.client = None
     await sched_mod.stop_scheduler()
-
-
-async def test_start_scheduler_sets_last_opml_sync(tmp_path: Path) -> None:
-    """After start_scheduler, last_opml_sync is set when OPML sync succeeds."""
-    opml_file = tmp_path / "feeds.opml"
-    opml_file.write_text('<?xml version="1.0"?><opml version="2.0"><head/><body/></opml>')
-
-    conn = await open_db(":memory:")
-    await create_schema(conn)
-    await run_migrations(conn)
-
-    sched_mod._state.last_opml_sync = None
-
-    with patch.object(sched_mod.settings, "opml_path", str(opml_file)):
-        await sched_mod.start_scheduler(conn)
-        await asyncio.sleep(0.1)
-        sync_time = sched_mod.get_last_opml_sync()
-        await sched_mod.stop_scheduler()
-
-    assert sync_time is not None
-
-    await conn.close()
 
 
 async def test_start_scheduler_creates_background_tasks(tmp_path: Path) -> None:
