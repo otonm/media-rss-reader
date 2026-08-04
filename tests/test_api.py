@@ -616,6 +616,12 @@ async def test_items_interleaved_across_feeds(client: AsyncClient, db: aiosqlite
     assert ids == ["a1", "b1", "a2", "b2", "a3"]
 
 
+async def test_items_rejects_invalid_size(client: AsyncClient) -> None:
+    for bad in (0, -1, 201, 100000):
+        resp = await client.get("/api/items", params={"size": bad})
+        assert resp.status_code == 422, f"size={bad} should be rejected"
+
+
 async def test_items_report_whether_media_is_already_cached(
     client: AsyncClient, db: aiosqlite.Connection, tmp_path: object, monkeypatch: object
 ) -> None:

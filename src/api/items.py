@@ -5,7 +5,7 @@ import logging
 from typing import Annotated, Any
 
 import aiosqlite
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Query
 
 from src.db.connection import get_db
 from src.media.cache import cache_read
@@ -43,8 +43,8 @@ def _row_to_item(row: aiosqlite.Row) -> dict[str, Any]:
 async def list_items(
     unseen: bool = False,
     feed_id: str | None = None,
-    offset: int = 0,
-    size: int = 50,
+    offset: int = Query(0, ge=0),
+    size: int = Query(50, ge=1, le=200),
     db: _DbDep = None,  # type: ignore[assignment]
 ) -> list[dict[str, Any]]:
     """Return a paginated, interleaved list of media items.
