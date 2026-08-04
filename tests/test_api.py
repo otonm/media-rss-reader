@@ -374,6 +374,32 @@ async def test_proxy_image_passes_with_nosniff(
     assert resp.headers["content-type"].startswith("image/jpeg")
 
 
+async def test_proxy_octet_stream_upstream_passes(
+    client: AsyncClient,
+    tmp_path: object,
+    monkeypatch: object,
+) -> None:
+    """CDNs that don't declare a media type must not be rejected (F5)."""
+    import httpx
+    import respx
+
+    import src.media.cache as cache_mod
+
+    monkeypatch.setattr(cache_mod.settings, "cache_dir", str(tmp_path))
+    url = "http://example.com/unknown.jpg"
+    with respx.mock:
+        respx.get(url).mock(
+            return_value=httpx.Response(200, content=b"jpgdata", headers={"content-type": "application/octet-stream"})
+        )
+        real_client = httpx.AsyncClient()
+        monkeypatch.setattr("src.api.media.get_http_client", lambda: real_client)
+        resp = await client.get(f"/api/media/proxy?url={url}")
+        await real_client.aclose()
+    assert resp.status_code == 200
+    assert resp.headers["x-content-type-options"] == "nosniff"
+    assert resp.headers["content-type"].startswith("application/octet-stream")
+
+
 async def test_proxy_upstream_error(
     client: AsyncClient,
     tmp_path: object,
