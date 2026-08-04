@@ -984,3 +984,33 @@ async def test_prefetch_hint_logs_entry_and_queue_size(
     assert resp.status_code == 200
     assert any("i1" in m for m in caplog.messages)
     assert any("queued" in m for m in caplog.messages)
+
+
+async def test_reddit_feeds_status_passes_through_json_array(
+    client: AsyncClient, mock_http: respx.MockRouter, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """R4: FastAPI derives a response model from the `-> dict` annotation and
+    validates after the handler returns, outside the try. A companion answering
+    200 with [] became a 500 — the opposite of dadd0d6's whole purpose."""
+    mock_http.get("http://127.0.0.1:9090/status").mock(return_value=httpx.Response(200, json=[]))
+    real_client = httpx.AsyncClient()
+    monkeypatch.setattr("src.api.reddit_feeds.get_http_client", lambda: real_client)
+    resp = await client.get("/api/reddit-feeds/status")
+    await real_client.aclose()
+
+    assert resp.status_code == 200
+    assert resp.json() == []
+
+
+async def test_reddit_feeds_status_non_200_success_is_not_502(
+    client: AsyncClient, mock_http: respx.MockRouter, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A 202 from the companion is a success, not an error."""
+    mock_http.get("http://127.0.0.1:9090/status").mock(return_value=httpx.Response(202, json={"ok": True}))
+    real_client = httpx.AsyncClient()
+    monkeypatch.setattr("src.api.reddit_feeds.get_http_client", lambda: real_client)
+    resp = await client.get("/api/reddit-feeds/status")
+    await real_client.aclose()
+
+    assert resp.status_code == 200
+    assert resp.json() == {"ok": True}
