@@ -1040,3 +1040,50 @@ async def test_reddit_feeds_status_logs_the_exception(
     record = next(r for r in caplog.records if r.name == "src.api.reddit_feeds")
     assert "ConnectTimeout" in record.getMessage()
     assert record.exc_info is not None
+
+
+async def test_proxy_cache_hit_honours_range(
+    client: AsyncClient, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """R14: the hit path uses FileResponse specifically because it is
+    Range-capable — 'what makes a cached video seekable'. Nothing tested it, so
+    swapping in a plain Response kept the suite green and broke seeking."""
+    import hashlib
+
+    import src.media.cache as cache_mod
+
+    monkeypatch.setattr(cache_mod.settings, "cache_dir", str(tmp_path))
+    url = "http://example.com/clip.mp4"
+    filename = hashlib.sha256(url.encode()).hexdigest()
+    (tmp_path / filename).write_bytes(b"0123456789")
+    (tmp_path / f"{filename}.meta").write_text("video/mp4")
+
+    resp = await client.get(f"/api/media/proxy?url={url}", headers={"Range": "bytes=2-5"})
+    assert resp.status_code == 206
+    assert resp.headers["content-range"] == "bytes 2-5/10"
+    assert resp.content == b"2345"
+
+
+async def test_proxy_cache_miss_ignores_range(
+    client: AsyncClient,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    mock_http: respx.MockRouter,
+) -> None:
+    """The documented other half (F7): the miss path streams and deliberately
+    does not honour Range, because streaming misses through is what prevents
+    the black-screen stall on first paint."""
+    import src.media.cache as cache_mod
+
+    monkeypatch.setattr(cache_mod.settings, "cache_dir", str(tmp_path))
+    url = "http://example.com/fresh.mp4"
+    mock_http.get(url).mock(
+        return_value=httpx.Response(200, content=b"0123456789", headers={"content-type": "video/mp4"})
+    )
+    real_client = httpx.AsyncClient()
+    monkeypatch.setattr("src.api.media.get_http_client", lambda: real_client)
+    resp = await client.get(f"/api/media/proxy?url={url}", headers={"Range": "bytes=2-5"})
+    await real_client.aclose()
+
+    assert resp.status_code == 200
+    assert resp.content == b"0123456789"
