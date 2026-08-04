@@ -4,10 +4,9 @@ import html as _html
 import logging
 import secrets
 from pathlib import Path
-from typing import Annotated
 
 import aiosqlite
-from fastapi import APIRouter, Depends, Form, HTTPException, Request
+from fastapi import APIRouter, Form, HTTPException, Request
 from fastapi.responses import HTMLResponse, RedirectResponse, Response
 
 from src.auth import totp as totp_module
@@ -22,7 +21,7 @@ from src.auth.session import (
     verify_setup_cookie,
 )
 from src.config import settings
-from src.db.connection import get_db
+from src.db.connection import _DbDep
 
 logger = logging.getLogger(__name__)
 router = APIRouter()
@@ -37,8 +36,6 @@ _lockout = LockoutTracker(
     max_attempts=settings.auth_lockout_attempts,
     lockout_seconds=settings.auth_lockout_minutes * 60,
 )
-
-_DbDep = Annotated[aiosqlite.Connection, Depends(get_db)]
 
 
 def _client_ip(request: Request) -> str:
@@ -89,7 +86,8 @@ async def post_login(
     username: str = Form(...),
     password: str = Form(...),
     totp_code: str = Form(default=""),
-    db: _DbDep = None,  # type: ignore[assignment]
+    *,
+    db: _DbDep,
 ) -> Response:
     ip = _client_ip(request)
     logger.debug(f"post_login ip={ip} username_provided={bool(username)}")
@@ -128,7 +126,7 @@ async def post_login(
 
 
 @router.get("/setup")
-async def get_setup(request: Request, db: _DbDep = None) -> Response:  # type: ignore[assignment]
+async def get_setup(request: Request, db: _DbDep) -> Response:
     logger.debug("get_setup entered")
     if await _load_totp_secret(db) is not None:
         logger.debug("get_setup TOTP already configured, redirecting to /login")
@@ -154,7 +152,8 @@ async def get_setup(request: Request, db: _DbDep = None) -> Response:  # type: i
 async def post_setup(
     request: Request,
     totp_code: str = Form(...),
-    db: _DbDep = None,  # type: ignore[assignment]
+    *,
+    db: _DbDep,
 ) -> Response:
     ip = _client_ip(request)
     logger.debug(f"post_setup ip={ip}")

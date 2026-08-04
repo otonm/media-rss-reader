@@ -5,21 +5,19 @@ import datetime as dt
 import hashlib
 import json
 import logging
-from typing import Annotated, Any
+from typing import Any
 
 import aiosqlite
-from fastapi import APIRouter, Depends, HTTPException, Query
+from fastapi import APIRouter, HTTPException, Query
 
 from src.api.schemas import ItemOut, SeenResponse
-from src.db.connection import get_db
+from src.db.connection import _DbDep
 from src.db.queries import INTERLEAVE_ORDER_BY, RANKED_ITEMS_CTE
 from src.media.cache import cache_present_names
 from src.media.normalize import media_key
 
 logger = logging.getLogger(__name__)
 router = APIRouter()
-
-_DbDep = Annotated[aiosqlite.Connection, Depends(get_db)]
 
 
 def _row_to_item(row: aiosqlite.Row, cached_names: set[str]) -> dict[str, Any]:
@@ -54,7 +52,8 @@ async def list_items(
     after_pub_date: str | None = None,
     after_id: str | None = None,
     size: int = Query(50, ge=1, le=200),
-    db: _DbDep = None,  # type: ignore[assignment]
+    *,
+    db: _DbDep,
 ) -> list[ItemOut]:
     """Return a keyset-paginated, interleaved list of media items.
 
@@ -128,7 +127,7 @@ async def list_items(
 @router.post("/items/{item_id}/seen", response_model=None)
 async def mark_seen(
     item_id: str,
-    db: _DbDep = None,  # type: ignore[assignment]
+    db: _DbDep,
 ) -> SeenResponse:
     """Mark an item as seen and return the timestamp.
 

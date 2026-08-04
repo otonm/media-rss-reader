@@ -2,14 +2,12 @@
 
 import logging
 import os
-from typing import Annotated
 
-import aiosqlite
-from fastapi import APIRouter, Depends, HTTPException, Query, Response
+from fastapi import APIRouter, HTTPException, Query, Response
 from fastapi.responses import FileResponse, StreamingResponse
 
 from src.api.schemas import PrefetchHint, PrefetchHintResponse
-from src.db.connection import get_db
+from src.db.connection import _DbDep
 from src.media.availability import is_known_media_url
 from src.media.cache import cache_read, cache_read_meta
 from src.media.fetch import UpstreamError, open_upstream, tee_to_cache
@@ -20,14 +18,13 @@ router = APIRouter()
 
 logger = logging.getLogger(__name__)
 
-_DbDep = Annotated[aiosqlite.Connection, Depends(get_db)]
-
 
 @router.get("/media/proxy", response_model=None)
 async def proxy_media(
     url: str = Query(...),
     item_id: str | None = Query(None),
-    db: _DbDep = None,  # type: ignore[assignment]
+    *,
+    db: _DbDep,
 ) -> Response:
     """Cache-through proxy for media files.
 
@@ -99,7 +96,7 @@ async def proxy_media(
 @router.post("/prefetch/hint")
 async def prefetch_hint(
     body: PrefetchHint,
-    db: _DbDep = None,  # type: ignore[assignment]
+    db: _DbDep,
 ) -> PrefetchHintResponse:
     """Trigger background pre-fetching of items ahead of the given item.
 
