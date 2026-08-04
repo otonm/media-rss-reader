@@ -55,6 +55,7 @@ def mock_http() -> respx.MockRouter:
 @pytest.fixture
 async def client(db: aiosqlite.Connection) -> AsyncGenerator[HttpxAsyncClient]:
     test_app = FastAPI()
+    test_app.add_middleware(RequestIDMiddleware)
     test_app.include_router(feeds_router.router, prefix="/api")
     test_app.include_router(items_router.router, prefix="/api")
     test_app.include_router(media_router.router, prefix="/api")
@@ -73,6 +74,7 @@ import src.auth.routes as _auth_routes  # noqa: E402
 from src.auth.middleware import AuthMiddleware  # noqa: E402
 from src.auth.session import SESSION_COOKIE, sign_session  # noqa: E402
 from src.config import settings  # noqa: E402
+from src.request_id import RequestIDMiddleware  # noqa: E402
 
 
 @pytest.fixture
@@ -101,6 +103,7 @@ async def auth_client(
 
     test_app = FastAPI()
     test_app.add_middleware(AuthMiddleware)
+    test_app.add_middleware(RequestIDMiddleware)
     test_app.include_router(_auth_routes.router)
 
     @test_app.get("/")
