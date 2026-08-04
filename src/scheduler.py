@@ -13,7 +13,7 @@ import httpx
 
 from src.config import settings
 from src.feeds.sync import refresh_all_feeds, sync_feeds
-from src.media.prefetch import warm_startup_cache
+from src.media.prefetch import cancel_prefetch_tasks, warm_startup_cache
 
 logger = logging.getLogger(__name__)
 
@@ -91,6 +91,11 @@ async def stop_scheduler() -> None:
     for task in _state.scheduler:
         task.cancel()
     _state.scheduler = []
+    # The startup-sync task and the prefetcher's warm tasks are tracked
+    # elsewhere; both hold the client we are about to close (R6).
+    for task in list(_bg_tasks):
+        task.cancel()
+    await cancel_prefetch_tasks()
     if _state.client:
         await _state.client.aclose()
         _state.client = None

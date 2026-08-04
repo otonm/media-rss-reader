@@ -56,3 +56,24 @@ async def test_start_scheduler_creates_background_tasks(tmp_path: Path) -> None:
         await sched_mod.stop_scheduler()
 
     await conn.close()
+
+
+async def test_stop_scheduler_cancels_warm_tasks() -> None:
+    """R6: warm tasks lived in prefetch._bg_tasks and kept running against the
+    closed HTTP client after stop_scheduler, their failures reduced to a debug
+    line."""
+    import asyncio
+
+    import src.media.prefetch as prefetch_mod
+    from src.scheduler import stop_scheduler
+
+    async def _never() -> None:
+        await asyncio.sleep(3600)
+
+    task = asyncio.create_task(_never())
+    prefetch_mod._track(task)
+
+    await stop_scheduler()
+
+    assert task.cancelled() or task.done()
+    assert not prefetch_mod._bg_tasks

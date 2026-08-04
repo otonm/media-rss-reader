@@ -26,6 +26,12 @@ logger = logging.getLogger(__name__)
 
 _bg_tasks: set[asyncio.Task] = set()
 
+# One cap for both entry points. warm_startup_cache had its own Semaphore(10);
+# the request-driven path had none at all, so a fast scroll (a hint per scroll
+# snap) accumulated unbounded tasks and outbound connections — download_claim
+# only collapses duplicates of the *same* URL (R6).
+_sem = asyncio.Semaphore(10)
+
 
 def _track(task: asyncio.Task) -> None:
     """Keep a strong ref so the event loop's weak ref doesn't GC the task (F8)."""
@@ -33,24 +39,41 @@ def _track(task: asyncio.Task) -> None:
     task.add_done_callback(_bg_tasks.discard)
 
 
+async def cancel_prefetch_tasks() -> None:
+    """Cancel in-flight warm tasks. Called from stop_scheduler (R6).
+
+    Without this they outlive the shared HTTP client that stop_scheduler
+    closes, and keep running against it.
+    """
+    tasks = list(_bg_tasks)
+    for task in tasks:
+        task.cancel()
+    if tasks:
+        await asyncio.gather(*tasks, return_exceptions=True)
+    logger.debug(f"cancel_prefetch_tasks: cancelled {len(tasks)} warm task(s)")
+
+
 async def _warm(item_id: str, url: str, client: httpx.AsyncClient) -> None:
     """Fetch and cache one URL if it is not already cached.
 
     Caching, digest recording and dead-URL marking all live in src.media.fetch,
-    shared with the proxy, so both paths cannot drift apart.
+    shared with the proxy, so both paths cannot drift apart. The semaphore caps
+    in-flight warms across both entry points.
     """
-    if cache_read(url) is not None:
-        logger.debug(f"_warm: {url} already on disk, skipping")
-        return  # already cached — nothing to do
-    await fetch_to_cache(url, item_id, client)
+    async with _sem:
+        if cache_read(url) is not None:
+            logger.debug(f"_warm: {url} already on disk, skipping")
+            return  # already cached — nothing to do
+        await fetch_to_cache(url, item_id, client)
 
 
 async def warm_startup_cache(db: aiosqlite.Connection, client: httpx.AsyncClient) -> None:
     """Pre-warm the cache with the most recently published items.
 
     Runs as an asyncio background task (fire-and-forget from the lifespan hook).
-    The semaphore caps in-flight requests at 10, so upstream never sees a
-    thundering herd however many items are queued.
+    The shared semaphore caps in-flight requests at 10 across the startup warm
+    and the request-driven hint both, so upstream never sees a thundering herd
+    however many items are queued.
     """
     try:
         async with db.execute(
@@ -63,14 +86,8 @@ async def warm_startup_cache(db: aiosqlite.Connection, client: httpx.AsyncClient
         logger.warning("warm_startup_cache: DB query failed, skipping cache warm: %s", exc)
         return
 
-    sem = asyncio.Semaphore(10)
-
-    async def _bounded_warm(item_id: str, url: str) -> None:
-        async with sem:
-            await _warm(item_id, url, client)
-
     for row in rows:
-        t = asyncio.create_task(_bounded_warm(row["id"], row["media_url"]))
+        t = asyncio.create_task(_warm(row["id"], row["media_url"], client))
         _track(t)
 
 
