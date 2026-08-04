@@ -1373,3 +1373,95 @@ async def test_items_cursor_survives_pruned_anchor(client: AsyncClient, db: aios
     assert [i["id"] for i in page2] == ["item4", "item5"], (
         f"pruned-anchor cursor must not re-emit page-1 items or skip ahead; got {[i['id'] for i in page2]}"
     )
+
+
+async def test_proxy_upstream_error_detail(
+    client: AsyncClient, db: aiosqlite.Connection, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import httpx
+    import respx
+
+    import src.media.cache as cache_mod
+    import src.media.fetch as fetch_mod
+
+    monkeypatch.setattr(cache_mod.settings, "cache_dir", str(tmp_path))
+    url = "http://example.com/missing.jpg"
+    await db.execute("INSERT INTO feeds(id,url,title) VALUES ('f','http://x','X')")
+    await db.execute("INSERT INTO items(id,feed_id,guid,media_url,media_type) VALUES ('i','f','g',?, 'image')", (url,))
+    await db.commit()
+    with respx.mock:
+        respx.get(fetch_mod._pinned_url(url, "93.184.216.34")).mock(return_value=httpx.Response(404))
+        real = httpx.AsyncClient()
+        monkeypatch.setattr("src.api.media.get_http_client", lambda: real)
+        resp = await client.get(f"/api/media/proxy?url={url}")
+        await real.aclose()
+    assert resp.status_code == 502
+    assert resp.json()["detail"] == "upstream error"
+
+
+async def test_proxy_transport_error_detail(
+    client: AsyncClient, db: aiosqlite.Connection, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import httpx
+    import respx
+
+    import src.media.cache as cache_mod
+    import src.media.fetch as fetch_mod
+
+    monkeypatch.setattr(cache_mod.settings, "cache_dir", str(tmp_path))
+    url = "http://example.com/unreachable.jpg"
+    await db.execute("INSERT INTO feeds(id,url,title) VALUES ('f','http://x','X')")
+    await db.execute("INSERT INTO items(id,feed_id,guid,media_url,media_type) VALUES ('i','f','g',?, 'image')", (url,))
+    await db.commit()
+    with respx.mock:
+        respx.get(fetch_mod._pinned_url(url, "93.184.216.34")).mock(side_effect=httpx.ConnectError("boom"))
+        real = httpx.AsyncClient()
+        monkeypatch.setattr("src.api.media.get_http_client", lambda: real)
+        resp = await client.get(f"/api/media/proxy?url={url}")
+        await real.aclose()
+    assert resp.status_code == 502
+    assert resp.json()["detail"] == "upstream fetch failed"
+
+
+async def test_prefetch_hint_warms_cache(
+    client: AsyncClient, db: aiosqlite.Connection, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import asyncio
+
+    import httpx
+    import respx
+
+    import src.media.cache as cache_mod
+    import src.media.fetch as fetch_mod
+
+    monkeypatch.setattr(cache_mod.settings, "cache_dir", str(tmp_path))
+    await _insert_feed(db)
+    url = "http://example.com/img.jpg"
+    await db.execute(
+        """INSERT INTO items(id, feed_id, guid, title, media_url, media_type, pub_date, seen_at)
+           VALUES ('item1', 'feed1', 'g1', 'T', ?, 'image', ?, NULL)""",
+        (url, "2026-01-01T00:00:00"),
+    )
+    await db.execute(
+        """INSERT INTO items(id, feed_id, guid, title, media_url, media_type, pub_date, seen_at)
+           VALUES ('item2', 'feed1', 'g2', 'T', ?, 'image', ?, NULL)""",
+        (url, "2026-01-02T00:00:00"),
+    )
+    await db.commit()
+    with respx.mock:
+        respx.get(fetch_mod._pinned_url(url, "93.184.216.34")).mock(
+            return_value=httpx.Response(200, content=b"jpg", headers={"content-type": "image/jpeg"})
+        )
+        real = httpx.AsyncClient()
+        monkeypatch.setattr("src.api.media.get_http_client", lambda: real)
+        resp = await client.post("/api/prefetch/hint", json={"item_id": "item1", "unseen": True})
+        assert resp.status_code == 200
+        from src.media import prefetch as _pf
+
+        bg = getattr(_pf, "_bg_tasks", None) or getattr(_pf, "_tasks", None) or getattr(_pf, "background_tasks", None)
+        if bg:
+            await asyncio.gather(*list(bg), return_exceptions=True)
+        await real.aclose()
+    from src.media.cache import cache_read
+
+    assert cache_read(url) is not None, "prefetch_hint must actually warm the cache"
