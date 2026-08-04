@@ -167,6 +167,12 @@ async def open_upstream(url: str, item_id: str | None, client: httpx.AsyncClient
         await response.aclose()
         logger.warning(f"open_upstream: refusing non-media content-type {content_type} for {url}")
         raise NonMediaUpstreamError(f"upstream returned non-media content type {content_type} for {url}")
+    declared = response.headers.get("content-length", "")
+    if settings.media_max_bytes and declared.isdigit() and int(declared) > settings.media_max_bytes:
+        await response.aclose()
+        raise UpstreamError(
+            f"upstream declared {declared} bytes for {url}, over MEDIA_MAX_BYTES ({settings.media_max_bytes})"
+        )
     logger.debug(
         f"open_upstream: {url} -> {response.status_code} "
         f"type={response.headers.get('content-type', '?')} "
@@ -202,6 +208,14 @@ async def tee_to_cache(url: str, response: httpx.Response) -> AsyncIterator[byte
                 async for chunk in cached:
                     digest.update(chunk)
                     sent += len(chunk)
+                    if settings.media_max_bytes and sent > settings.media_max_bytes:
+                        # The response body has already started, so the client
+                        # sees a truncated file. That is the trade for not
+                        # letting an undeclared stream fill the volume (R7).
+                        raise UpstreamError(
+                            f"upstream body for {url} passed MEDIA_MAX_BYTES "
+                            f"({settings.media_max_bytes}) after {sent} bytes; aborting"
+                        )
                     yield chunk
             complete = True
         finally:

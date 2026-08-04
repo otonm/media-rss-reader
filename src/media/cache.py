@@ -169,7 +169,7 @@ def cache_present_names() -> set[str]:
         return set()
 
 
-def _evict_sync(cache_dir: Path, max_age_secs: float, max_items: int) -> None:
+def _evict_sync(cache_dir: Path, max_age_secs: float, max_items: int, max_bytes: int) -> None:
     """Blocking eviction logic — run via asyncio.to_thread to keep the event loop free.
 
     Each data file and its .meta sidecar share the same mtime (written
@@ -177,7 +177,8 @@ def _evict_sync(cache_dir: Path, max_age_secs: float, max_items: int) -> None:
     file only; .meta entries are skipped so the count matches what the
     proxy would actually serve. .tmp entries are skipped too — they are
     in-flight downloads, not cache entries, and unlinking one would break
-    the writer that owns it.
+    the writer that owns it. A third pass trims by total bytes: counting
+    files cannot bound a directory of multi-gigabyte videos.
     """
     if not cache_dir.exists():
         logger.debug(f"_evict_sync: cache dir {cache_dir} does not exist, nothing to do")
@@ -204,9 +205,20 @@ def _evict_sync(cache_dir: Path, max_age_secs: float, max_items: int) -> None:
         head.unlink(missing_ok=True)
         head.with_suffix(".meta").unlink(missing_ok=True)
         by_count += 1
+    by_bytes = 0
+    if max_bytes:
+        total = sum(f.stat().st_size for f in surviving)
+        while surviving and total > max_bytes:
+            head = surviving.pop(0)
+            total -= head.stat().st_size
+            logger.debug(f"Evicting cache file {head} due to byte budget")
+            head.unlink(missing_ok=True)
+            head.with_suffix(".meta").unlink(missing_ok=True)
+            by_bytes += 1
     logger.debug(
         f"_evict_sync: {len(surviving)} entries remain (limit {max_items}); "
-        f"evicted {by_age} by age, {by_count} by count; skipped {inflight} in-flight .tmp"
+        f"evicted {by_age} by age, {by_count} by count, {by_bytes} by bytes; "
+        f"skipped {inflight} in-flight .tmp"
     )
 
 
@@ -216,6 +228,8 @@ async def evict() -> None:
     Step 1: delete files older than CACHE_MAX_AGE_HOURS.
     Step 2: if the surviving count still exceeds CACHE_MAX_ITEMS,
             delete the oldest files (by mtime) until under the limit.
+    Step 3: if the surviving total still exceeds CACHE_MAX_BYTES, delete the
+            oldest files until under the budget.
     """
     cache_dir = Path(settings.cache_dir)
     await asyncio.to_thread(
@@ -223,4 +237,5 @@ async def evict() -> None:
         cache_dir,
         settings.cache_max_age_hours * 3600,
         settings.cache_max_items,
+        settings.cache_max_bytes,
     )

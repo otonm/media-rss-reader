@@ -1,4 +1,5 @@
 import asyncio
+import os
 from collections.abc import AsyncGenerator
 from pathlib import Path
 
@@ -167,3 +168,27 @@ async def test_evict_nonexistent_dir_is_noop(
 ) -> None:
     monkeypatch.setattr(cache_mod.settings, "cache_dir", "/nonexistent/cache")
     await cache_mod.evict()  # must not raise
+
+
+async def test_evict_drops_oldest_until_under_byte_budget(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """R7: eviction counted files, never bytes, so 500 multi-gigabyte entries
+    stayed under the limit while filling the volume."""
+    import time
+
+    monkeypatch.setattr(cache_mod.settings, "cache_dir", str(tmp_path))
+    monkeypatch.setattr(cache_mod.settings, "cache_max_items", 500)
+    monkeypatch.setattr(cache_mod.settings, "cache_max_age_hours", 48)
+    monkeypatch.setattr(cache_mod.settings, "cache_max_bytes", 1000)
+
+    now = time.time()
+    for n, size in enumerate([600, 600, 600]):
+        f = tmp_path / f"file{n}"
+        f.write_bytes(b"x" * size)
+        os.utime(f, (now - (10 - n), now - (10 - n)))
+
+    await cache_mod.evict()
+
+    remaining = sorted(p.name for p in tmp_path.iterdir())  # noqa: ASYNC240
+    assert remaining == ["file2"]

@@ -261,3 +261,45 @@ async def test_open_upstream_429_does_not_mark_dead(
         assert (await cur.fetchone())[0] == 0
     async with db.execute("SELECT COUNT(*) FROM items WHERE id = 'i1'") as cur:
         assert (await cur.fetchone())[0] == 1
+
+
+@respx.mock
+async def test_open_upstream_rejects_oversized_content_length(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """R7: Content-Length was logged and never checked."""
+    monkeypatch.setattr(cache_mod.settings, "cache_dir", str(tmp_path))
+    monkeypatch.setattr(fetch_mod.settings, "media_max_bytes", 100)
+    url = "http://example.com/huge.mp4"
+    respx.get(url).mock(
+        return_value=httpx.Response(
+            200, headers={"content-type": "video/mp4", "content-length": "999999"}, content=b"x"
+        )
+    )
+    async with httpx.AsyncClient() as client:
+        with pytest.raises(UpstreamError):
+            await open_upstream(url, None, client)
+
+
+@respx.mock
+async def test_tee_to_cache_aborts_past_the_byte_budget(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """R7: a server that declares no Content-Length could stream forever."""
+    monkeypatch.setattr(cache_mod.settings, "cache_dir", str(tmp_path))
+    monkeypatch.setattr(fetch_mod.settings, "media_max_bytes", 10)
+    url = "http://example.com/drip.mp4"
+    # A streaming body with no Content-Length: the declared-length check in
+    # open_upstream cannot trip, so the running budget in tee_to_cache is the
+    # only thing that can stop it (the scenario the test names).
+    respx.get(url).mock(
+        return_value=httpx.Response(
+            200, headers={"content-type": "video/mp4"}, stream=httpx.ByteStream(b"x" * 1000)
+        )
+    )
+    async with httpx.AsyncClient() as client:
+        response = await open_upstream(url, None, client)
+        with pytest.raises(UpstreamError):
+            async for _ in tee_to_cache(url, response):
+                pass
+    assert list(tmp_path.iterdir()) == []  # noqa: ASYNC240
