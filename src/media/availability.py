@@ -62,6 +62,30 @@ def _item_urls(row: aiosqlite.Row) -> list[str]:
     return [row["media_url"]]
 
 
+def _escape_like(value: str) -> str:
+    return value.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
+
+
+async def is_known_media_url(url: str, db: aiosqlite.Connection) -> bool:
+    """True if `url` is the primary media_url of some item, or any slide of a gallery.
+
+    Two-tier: the indexed primary lookup covers single-media items and a
+    gallery's primary URL; the media_json scan covers gallery slide URLs that
+    live only in the JSON array. Exact membership is verified in Python after
+    the LIKE prefilter, so LIKE special characters in `url` cannot cause a
+    false negative to slip past (the LIKE is a prefilter only).
+    """
+    async with db.execute("SELECT 1 FROM items WHERE media_url = ? LIMIT 1", (url,)) as cur:
+        if await cur.fetchone() is not None:
+            return True
+    pattern = f'%"{_escape_like(url)}"%'
+    async with db.execute("SELECT media_json FROM items WHERE media_json LIKE ? ESCAPE '\\'", (pattern,)) as cur:
+        for row in await cur.fetchall():
+            if url in _item_urls(row):
+                return True
+    return False
+
+
 async def _all_dead(db: aiosqlite.Connection, urls: list[str]) -> bool:
     """True if every URL in `urls` is recorded in dead_urls."""
     if not urls:

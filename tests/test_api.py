@@ -1087,3 +1087,18 @@ async def test_proxy_cache_miss_ignores_range(
 
     assert resp.status_code == 200
     assert resp.content == b"0123456789"
+
+
+async def test_is_known_media_url_primary_and_gallery(db: aiosqlite.Connection) -> None:
+    from src.media.availability import is_known_media_url
+
+    await db.execute("INSERT INTO feeds(id, url, title) VALUES ('f1', 'http://x', 'X')")
+    await db.execute(
+        "INSERT INTO items(id, feed_id, guid, media_url, media_type, media_json)"
+        " VALUES ('i1', 'f1', 'g1', 'http://primary.jpg', 'image',"
+        ' \'[{"url":"http://slide-a.jpg","type":"image"},{"url":"http://slide-b.jpg","type":"image"}]\')'
+    )
+    await db.commit()
+    assert await is_known_media_url("http://primary.jpg", db) is True
+    assert await is_known_media_url("http://slide-b.jpg", db) is True
+    assert await is_known_media_url("http://not-in-items.jpg", db) is False
