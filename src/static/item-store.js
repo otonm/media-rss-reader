@@ -84,6 +84,8 @@
     state.showSeen = !!on;
   }
 
+  function getShowSeen() { return state.showSeen; }
+
   // Called by scroll-controller after a successful POST /api/items/{id}/seen.
   // Updates the in-memory item so the next render (or live markSeen) reflects
   // the new state. No-op if the item isn't loaded.
@@ -110,6 +112,7 @@
     findIndexById,
     setCurrentIndex,
     setShowSeen,
+    getShowSeen,
     markSeen,
     resetForReload,
     fetchPage,

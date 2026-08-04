@@ -157,7 +157,7 @@
       fetch("/api/prefetch/hint", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ item_id: itemId }),
+        body: JSON.stringify({ item_id: itemId, unseen: !MRR.itemStore.getShowSeen() }),
       }).catch(() => {});
     }
   }

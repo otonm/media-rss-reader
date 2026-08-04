@@ -1,7 +1,7 @@
 """Media proxy and prefetch hint endpoints."""
 
 import logging
-from typing import Annotated
+from typing import Annotated, Any
 
 import aiosqlite
 from fastapi import APIRouter, Depends, HTTPException, Query, Response
@@ -73,7 +73,7 @@ async def proxy_media(
 
 @router.post("/prefetch/hint")
 async def prefetch_hint(
-    body: dict[str, str],
+    body: dict[str, Any],
     db: _DbDep = None,  # type: ignore[assignment]
 ) -> dict[str, str]:
     """Trigger background pre-fetching of items ahead of the given item.
@@ -82,12 +82,13 @@ async def prefetch_hint(
     new page of items. The hint launches asyncio background tasks; the
     response returns immediately.
     """
-    item_id = body.get("item_id", "")
+    item_id = str(body.get("item_id", ""))
     if not item_id:
         raise HTTPException(status_code=422, detail="item_id required")
     async with db.execute("SELECT 1 FROM items WHERE id = ?", (item_id,)) as cur:
         if await cur.fetchone() is None:
             raise HTTPException(status_code=404, detail="item not found")
     client = get_http_client()
-    await prefetch_ahead(item_id, db, client)
+    unseen = bool(body.get("unseen", True))
+    await prefetch_ahead(item_id, db, client, unseen=unseen)
     return {"status": "ok"}

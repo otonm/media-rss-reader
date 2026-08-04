@@ -74,15 +74,20 @@ async def warm_startup_cache(db: aiosqlite.Connection, client: httpx.AsyncClient
         _track(t)
 
 
-async def prefetch_ahead(item_id: str, db: aiosqlite.Connection, client: httpx.AsyncClient) -> None:
+async def prefetch_ahead(
+    item_id: str, db: aiosqlite.Connection, client: httpx.AsyncClient, unseen: bool = True
+) -> None:
     """Fire background warm tasks for the next PREFETCH_AHEAD items after item_id.
 
-    'After' means strictly greater in the (rn, feed_id, id) interleave key
-    that /api/items uses — i.e. items the client will request next as it
-    scrolls forward. Previously this queried pub_date < cursor, which under
-    the current ASC display order warmed items the user had already scrolled
-    past (F2). Also applies the unseen filter so we don't warm items the
-    client will never request.
+    'After' means strictly greater in the (rn, feed_id, id) interleave key that
+    /api/items uses — i.e. items the client will request next as it scrolls
+    forward. Previously this queried pub_date < cursor, which under the current
+    ASC display order warmed items the user had already scrolled past (F2).
+
+    `unseen` mirrors the filter the page itself used. It used to be hardcoded
+    to "seen_at IS NULL", so with the show-seen toggle on the client requested
+    unseen=false while the hint fired from the same scroll warmed only unseen
+    items — the items about to be displayed were never warmed (R12).
     """
     async with db.execute(
         f"{RANKED_ITEMS_CTE} SELECT rn, feed_id, id FROM ranked WHERE id = ?",
@@ -92,10 +97,11 @@ async def prefetch_ahead(item_id: str, db: aiosqlite.Connection, client: httpx.A
     if cursor is None:
         logger.debug(f"prefetch_ahead: item {item_id} not found, warming nothing")
         return
+    seen_filter = "seen_at IS NULL AND " if unseen else ""
     async with db.execute(
         f"""{RANKED_ITEMS_CTE}
             SELECT id, media_url FROM ranked
-            WHERE seen_at IS NULL AND (rn, feed_id, id) > (?, ?, ?)
+            WHERE {seen_filter}(rn, feed_id, id) > (?, ?, ?)
             {INTERLEAVE_ORDER_BY} LIMIT ?""",
         (cursor["rn"], cursor["feed_id"], cursor["id"], settings.prefetch_ahead),
     ) as cur:

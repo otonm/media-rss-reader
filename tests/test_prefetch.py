@@ -2,11 +2,13 @@ import asyncio
 from collections.abc import AsyncGenerator
 from pathlib import Path
 
+import aiosqlite
 import httpx
 import pytest
 import respx
 
 from src.media import cache as cache_mod
+from src.media import prefetch as prefetch_mod
 from src.media.prefetch import _warm, prefetch_ahead
 
 
@@ -160,3 +162,32 @@ async def test_prefetch_ahead_warms_items_ahead_not_behind(tmp_path: Path, monke
     assert cache_mod.cache_read("http://example.com/1.jpg") is not None
     assert cache_mod.cache_read("http://example.com/2.jpg") is not None
     await conn.close()
+
+
+async def test_prefetch_ahead_warms_seen_items_when_unseen_false(
+    db: aiosqlite.Connection, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """R12: with the show-seen toggle on, the page asks for unseen=false while
+    the hint warmed only unseen items — so the items the user is about to view
+    were never warmed."""
+    await db.execute("INSERT INTO feeds(id, url, title) VALUES ('f1', 'http://x.com/feed', 'F')")
+    for n in (1, 2):
+        await db.execute(
+            """INSERT INTO items(id, feed_id, guid, title, media_url, media_type, pub_date, seen_at)
+               VALUES (?, 'f1', ?, 'T', ?, 'image', ?, '2026-01-01T00:00:00')""",
+            (f"i{n}", f"g{n}", f"http://x.com/{n}.jpg", f"2026-01-0{n}T00:00:00"),
+        )
+    await db.commit()
+
+    warmed: list[str] = []
+
+    async def _fake_warm(item_id: str, url: str, client: object) -> None:
+        warmed.append(url)
+
+    monkeypatch.setattr("src.media.prefetch._warm", _fake_warm)
+
+    async with httpx.AsyncClient() as client:
+        await prefetch_ahead("i1", db, client, unseen=False)
+        await asyncio.gather(*list(prefetch_mod._bg_tasks))
+
+    assert warmed == ["http://x.com/2.jpg"]
