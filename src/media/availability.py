@@ -91,7 +91,8 @@ async def _all_dead(db: aiosqlite.Connection, urls: list[str]) -> bool:
     if not urls:
         return False
     placeholders = ",".join("?" * len(urls))
-    async with db.execute(f"SELECT url FROM dead_urls WHERE url IN ({placeholders})", urls) as cur:
+    # Only placeholder count is interpolated; URL values remain bound.
+    async with db.execute(f"SELECT url FROM dead_urls WHERE url IN ({placeholders})", urls) as cur:  # noqa: S608
         dead = {row["url"] for row in await cur.fetchall()}
     return dead.issuperset(urls)
 

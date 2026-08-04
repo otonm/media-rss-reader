@@ -101,6 +101,7 @@ async def list_items(
     where_clause = ("WHERE " + " AND ".join(conditions)) if conditions else ""
     params.append(size)
 
+    # SQL fragments are source-controlled; request values remain bound.
     query = f"""
         {RANKED_ITEMS_CTE}
         SELECT id, feed_id, title, media_url, media_type, media_json,
@@ -109,7 +110,7 @@ async def list_items(
         {where_clause}
         {INTERLEAVE_ORDER_BY}
         LIMIT ?
-    """
+    """  # noqa: S608
     logger.debug(f"list_items unseen={unseen} cursor=({after_feed_id},{after_pub_date},{after_id}) size={size}")
     async with db.execute(query, params) as cur:
         rows = await cur.fetchall()
