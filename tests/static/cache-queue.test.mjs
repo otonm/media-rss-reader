@@ -45,6 +45,7 @@ function makeContext(items) {
     getItems: () => items,
     getCurrentIndex: () => 0,
     getItemAt: (i) => items[i],
+    getShowSeen: () => false,
   };
   // config stub
   ctx.window.MRR.config = { feedInitialCount: 10 };
