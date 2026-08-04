@@ -106,7 +106,7 @@ async def list_items(
     query = f"""
         {RANKED_ITEMS_CTE}
         SELECT id, feed_id, title, media_url, media_type, media_json,
-               pub_date, fetched_at, seen_at, rn
+               pub_date, fetched_at, seen_at
         FROM ranked
         {where_clause}
         {INTERLEAVE_ORDER_BY}

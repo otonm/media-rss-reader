@@ -830,7 +830,6 @@ async def test_items_interleaved_across_feeds(client: AsyncClient, db: aiosqlite
     # Round 3: only feedA remains (rn=3)
     # Within each round, feedA < feedB alphabetically
     assert ids == ["a1", "b1", "a2", "b2", "a3"]
-    assert [item["rn"] for item in data] == [1, 1, 2, 2, 3]
 
 
 async def test_items_rejects_invalid_size(client: AsyncClient) -> None:
@@ -921,7 +920,6 @@ async def test_items_rank_ties_break_by_id(client: AsyncClient, db: aiosqlite.Co
     assert resp.status_code == 200
     data = resp.json()
     assert [i["id"] for i in data] == ["aa", "mm", "zz"]
-    assert [i["rn"] for i in data] == [1, 2, 3]
 
 
 async def test_items_cursor_survives_prune_beneath_it(client: AsyncClient, db: aiosqlite.Connection) -> None:
@@ -1207,3 +1205,10 @@ async def test_proxy_rejects_unknown_url(client: AsyncClient, tmp_path: object, 
     resp = await client.get(f"/api/media/proxy?url={url}")
     assert resp.status_code == 404
     assert resp.json()["detail"] == "not a known media url"
+
+
+async def test_items_response_omits_rn(client: AsyncClient, db: aiosqlite.Connection) -> None:
+    await _insert_feed(db)
+    await _insert_item(db, "item1", "feed1")
+    data = (await client.get("/api/items")).json()
+    assert data and "rn" not in data[0]
