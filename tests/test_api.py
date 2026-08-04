@@ -292,9 +292,10 @@ async def test_proxy_cache_hit_falls_back_when_sidecar_missing(
     resp = await client.get(f"/api/media/proxy?url={url}")
     assert resp.status_code == 200
     assert resp.content == b"GIF89a"
-    # No assertion on content-type here — the sidecar is missing, so the
-    # inferred type is used. The important contract is that the request
-    # succeeds.
+    # No sidecar → must NOT be served as text/plain (Starlette's guess on a
+    # bare-sha256 filename). octet-stream lets the browser sniff and render;
+    # no nosniff on this path (F5 scopes nosniff to the miss path).
+    assert resp.headers["content-type"].startswith("application/octet-stream")
 
 
 async def test_proxy_cache_miss(client: AsyncClient, tmp_path: object, monkeypatch: object) -> None:

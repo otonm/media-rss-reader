@@ -48,7 +48,7 @@ async def proxy_media(
     """
     path = cache_read(url)
     if path is not None:
-        media_type = cache_read_meta(url)
+        media_type = cache_read_meta(url) or "application/octet-stream"
         logger.debug(f"proxy_media: HIT {url} -> {path.name} (type={media_type})")
         return FileResponse(str(path), media_type=media_type)
 
