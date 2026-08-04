@@ -1,6 +1,7 @@
 """GET /api/items and POST /api/items/{id}/seen."""
 
 import asyncio
+import datetime as dt
 import hashlib
 import json
 import logging
@@ -109,34 +110,31 @@ async def mark_seen(
 ) -> dict[str, str]:
     """Mark an item as seen and return the timestamp.
 
-    Writes through to seen_media, which is what actually keeps the item out
-    of the feed: items.seen_at dies with the row when prune_items evicts it,
-    and the feed still lists the entry, so the next sync would re-insert it
-    unseen. seen_media is keyed on the normalised media URL, so the same
-    picture stays seen no matter which feed carries it.
+    Uses UPDATE ... RETURNING (SQLite >= 3.35) so the SELECT-before-UPDATE
+    and the trailing SELECT both go away: one statement both updates and
+    returns media_url + seen_at. A single Python timestamp is bound to both
+    items.seen_at and seen_media.seen_at so the two cannot diverge (F11).
 
-    The browser marks the item locally before firing this request, so the
-    response is only used to confirm the item existed.
+    The browser marks the item locally before firing this beacon request,
+    which it discards; the response shape is kept stable for symmetry with
+    the optimistic local mark (F20).
     """
     logger.debug(f"mark_seen item_id={item_id}")
-    async with db.execute("SELECT media_url FROM items WHERE id = ?", (item_id,)) as cur:
+    now = dt.datetime.now(dt.UTC).strftime("%Y-%m-%d %H:%M:%S")
+    async with db.execute(
+        "UPDATE items SET seen_at = ? WHERE id = ? RETURNING media_url, seen_at",
+        (now, item_id),
+    ) as cur:
         row = await cur.fetchone()
     if row is None:
         logger.debug(f"mark_seen item_id={item_id} not found")
         raise HTTPException(status_code=404, detail="Not found")
 
     await db.execute(
-        "UPDATE items SET seen_at = datetime('now') WHERE id = ?",
-        (item_id,),
-    )
-    await db.execute(
-        "INSERT OR REPLACE INTO seen_media (media_key, seen_at) VALUES (?, datetime('now'))",
-        (media_key(row["media_url"]),),
+        "INSERT OR REPLACE INTO seen_media (media_key, seen_at) VALUES (?, ?)",
+        (media_key(row["media_url"]), now),
     )
     await db.commit()
 
-    async with db.execute("SELECT seen_at FROM items WHERE id = ?", (item_id,)) as cur:
-        seen_row = await cur.fetchone()
-
-    logger.debug(f"mark_seen item_id={item_id} seen_at={seen_row[0]}")
-    return {"seen_at": seen_row[0]}
+    logger.debug(f"mark_seen item_id={item_id} seen_at={row['seen_at']}")
+    return {"seen_at": row["seen_at"]}

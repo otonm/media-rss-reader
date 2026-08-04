@@ -230,6 +230,17 @@ async def test_mark_seen_not_found(client: AsyncClient) -> None:
     assert resp.status_code == 404
 
 
+async def test_mark_seen_after_prune_returns_clean_shape(client: AsyncClient, db: aiosqlite.Connection) -> None:
+    """F20: the old trailing SELECT could be None if the row was pruned between
+    UPDATE and SELECT, raising on seen_row[0]. RETURNING reads the row in the
+    same statement, so there is no second window to race."""
+    await _insert_feed(db)
+    await _insert_item(db, "item1", "feed1", seen_at=None)
+    resp = await client.post("/api/items/item1/seen")
+    assert resp.status_code == 200
+    assert "seen_at" in resp.json()
+
+
 # ---------------------------------------------------------------------------
 # GET /api/media/proxy tests
 # ---------------------------------------------------------------------------
