@@ -111,3 +111,17 @@ async def test_prefetch_ahead_fires_tasks(tmp_path: Path, monkeypatch: pytest.Mo
             await asyncio.sleep(0.1)
 
     await conn.close()
+
+
+async def test_background_tasks_are_tracked(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """A created warm task must be retained until it completes (F8)."""
+    from src.media import prefetch as pf
+
+    async def slow() -> None:
+        await asyncio.sleep(0.05)
+
+    t = asyncio.create_task(slow())
+    pf._track(t)
+    assert t in pf._bg_tasks
+    await t
+    assert t not in pf._bg_tasks

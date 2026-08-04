@@ -17,6 +17,8 @@ from src.media.prefetch import warm_startup_cache
 
 logger = logging.getLogger(__name__)
 
+_bg_tasks: set[asyncio.Task] = set()  # noqa: RUF012
+
 
 class _State:
     scheduler: list[asyncio.Task] = []  # noqa: RUF012
@@ -67,7 +69,9 @@ async def _startup_sync(db: aiosqlite.Connection) -> None:
         await refresh_all_feeds(db, _state.client)
     except Exception as exc:
         logger.warning("Initial feed refresh failed (will retry on schedule): %s", exc)
-    asyncio.create_task(warm_startup_cache(db, _state.client))
+    t = asyncio.create_task(warm_startup_cache(db, _state.client))
+    _bg_tasks.add(t)
+    t.add_done_callback(_bg_tasks.discard)
 
 
 async def start_scheduler(db: aiosqlite.Connection) -> None:

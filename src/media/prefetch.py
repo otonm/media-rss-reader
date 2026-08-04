@@ -22,6 +22,14 @@ from src.media.fetch import fetch_to_cache
 
 logger = logging.getLogger(__name__)
 
+_bg_tasks: set[asyncio.Task] = set()
+
+
+def _track(task: asyncio.Task) -> None:
+    """Keep a strong ref so the event loop's weak ref doesn't GC the task (F8)."""
+    _bg_tasks.add(task)
+    task.add_done_callback(_bg_tasks.discard)
+
 
 async def _warm(item_id: str, url: str, client: httpx.AsyncClient) -> None:
     """Fetch and cache one URL if it is not already cached.
@@ -60,7 +68,8 @@ async def warm_startup_cache(db: aiosqlite.Connection, client: httpx.AsyncClient
             await _warm(item_id, url, client)
 
     for row in rows:
-        asyncio.create_task(_bounded_warm(row["id"], row["media_url"]))
+        t = asyncio.create_task(_bounded_warm(row["id"], row["media_url"]))
+        _track(t)
 
 
 async def prefetch_ahead(item_id: str, db: aiosqlite.Connection, client: httpx.AsyncClient) -> None:
@@ -80,4 +89,5 @@ async def prefetch_ahead(item_id: str, db: aiosqlite.Connection, client: httpx.A
         rows = await cur.fetchall()
     logger.debug(f"prefetch_ahead for {item_id}: {len(rows)} item(s)")
     for row in rows:
-        asyncio.create_task(_warm(row["id"], row["media_url"], client))
+        t = asyncio.create_task(_warm(row["id"], row["media_url"], client))
+        _track(t)
