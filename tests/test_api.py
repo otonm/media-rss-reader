@@ -229,9 +229,7 @@ async def test_mark_seen(client: AsyncClient, db: aiosqlite.Connection) -> None:
     assert row[0] is not None
 
 
-async def test_mark_seen_items_and_seen_media_share_timestamp(
-    client: AsyncClient, db: aiosqlite.Connection
-) -> None:
+async def test_mark_seen_items_and_seen_media_share_timestamp(client: AsyncClient, db: aiosqlite.Connection) -> None:
     """F11: items.seen_at and seen_media.seen_at are bound to one `now` so they
     cannot diverge. A refactor that binds a second dt.now() to the INSERT must
     fail this test.
@@ -242,9 +240,7 @@ async def test_mark_seen_items_and_seen_media_share_timestamp(
     assert resp.status_code == 200
     async with db.execute("SELECT seen_at FROM items WHERE id = 'item1'") as cur:
         items_seen = (await cur.fetchone())[0]
-    async with db.execute(
-        "SELECT seen_at FROM seen_media WHERE media_key = 'http://example.com/img.jpg'"
-    ) as cur:
+    async with db.execute("SELECT seen_at FROM seen_media WHERE media_key = 'http://example.com/img.jpg'") as cur:
         media_seen = (await cur.fetchone())[0]
     assert items_seen == media_seen, f"items.seen_at ({items_seen}) != seen_media.seen_at ({media_seen})"
 
@@ -1477,9 +1473,7 @@ async def test_feeds_zero_item_counts(client: AsyncClient, db: aiosqlite.Connect
 
 
 @pytest.mark.parametrize("size", [1, 200])
-async def test_items_accepts_size_boundaries(
-    client: AsyncClient, db: aiosqlite.Connection, size: int
-) -> None:
+async def test_items_accepts_size_boundaries(client: AsyncClient, db: aiosqlite.Connection, size: int) -> None:
     await _insert_feed(db)
     await _insert_item(db, "item1", "feed1")
     resp = await client.get("/api/items", params={"size": size})

@@ -91,9 +91,7 @@ def _load_settings() -> Settings:
     if not s.auth_secret_key:
         raise RuntimeError("AUTH_SECRET_KEY must be set; the session signer must not be empty")
     if (bool(s.auth_username)) != (bool(s.auth_password)):
-        raise RuntimeError(
-            "AUTH_USERNAME and AUTH_PASSWORD must both be set, or both empty (no-auth mode)"
-        )
+        raise RuntimeError("AUTH_USERNAME and AUTH_PASSWORD must both be set, or both empty (no-auth mode)")
     return s
 
 
