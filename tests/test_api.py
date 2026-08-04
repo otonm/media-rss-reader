@@ -1465,3 +1465,22 @@ async def test_prefetch_hint_warms_cache(
     from src.media.cache import cache_read
 
     assert cache_read(url) is not None, "prefetch_hint must actually warm the cache"
+
+
+async def test_feeds_zero_item_counts(client: AsyncClient, db: aiosqlite.Connection) -> None:
+    await db.execute("INSERT INTO feeds(id, url, title) VALUES ('f0', 'http://x', 'Empty')")
+    await db.commit()
+    data = (await client.get("/api/feeds")).json()
+    feed = next(f for f in data if f["id"] == "f0")
+    assert feed["item_count"] == 0
+    assert feed["unseen_count"] == 0
+
+
+@pytest.mark.parametrize("size", [1, 200])
+async def test_items_accepts_size_boundaries(
+    client: AsyncClient, db: aiosqlite.Connection, size: int
+) -> None:
+    await _insert_feed(db)
+    await _insert_item(db, "item1", "feed1")
+    resp = await client.get("/api/items", params={"size": size})
+    assert resp.status_code == 200
