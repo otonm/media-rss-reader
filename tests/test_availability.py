@@ -136,3 +136,24 @@ async def test_unknown_item_id_marks_dead_only(db: aiosqlite.Connection) -> None
     async with db.execute("SELECT url FROM dead_urls") as cur:
         rows = await cur.fetchall()
     assert [r[0] for r in rows] == ["http://x.com/a.jpg"]
+
+
+async def test_mark_dead_ignores_item_that_lacks_the_url(db: aiosqlite.Connection) -> None:
+    """R5: item_id is looked up on its own, so a caller could name any item id
+    alongside any URL and have that item deleted."""
+    await db.execute("INSERT INTO feeds(id, url, title) VALUES ('f1', 'http://x.com/feed', 'F')")
+    await db.execute(
+        """INSERT INTO items(id, feed_id, guid, title, media_url, media_type, pub_date)
+           VALUES ('victim', 'f1', 'g1', 'T', 'http://example.com/mine.jpg', 'image', '2026-01-01T00:00:00')"""
+    )
+    await db.commit()
+    # Its own URL is already dead, which is what used to make the cross-item
+    # deletion reachable.
+    await db.execute("INSERT INTO dead_urls (url) VALUES ('http://example.com/mine.jpg')")
+    await db.commit()
+
+    dropped = await mark_url_dead_and_maybe_drop("http://example.com/other.jpg", "victim", db)
+
+    assert dropped == []
+    async with db.execute("SELECT COUNT(*) FROM items WHERE id = 'victim'") as cur:
+        assert (await cur.fetchone())[0] == 1

@@ -22,7 +22,8 @@ async def _candidate_items(db: aiosqlite.Connection, url: str, item_id: str | No
     """Return item rows that may contain `url`, deduplicated by item id.
 
     Searches two ways and merges the results:
-    1. By item_id (given by the caller who observed the failure).
+    1. By item_id (given by the caller who observed the failure), but only
+       if that item actually contains `url`.
     2. By media_url (to find all items sharing the same primary URL).
 
     Non-primary gallery slide URLs are intentionally not scanned here —
@@ -37,7 +38,11 @@ async def _candidate_items(db: aiosqlite.Connection, url: str, item_id: str | No
             (item_id,),
         ) as cur:
             for row in await cur.fetchall():
-                seen[row["id"]] = row
+                # The caller supplies item_id and url independently — the proxy
+                # takes both from the query string — so an item that does not
+                # actually contain this URL must not be a deletion candidate (R5).
+                if url in _item_urls(row):
+                    seen[row["id"]] = row
 
     async with db.execute(
         "SELECT id, feed_id, guid, media_url, media_json FROM items WHERE media_url = ?",
