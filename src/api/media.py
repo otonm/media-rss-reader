@@ -1,6 +1,7 @@
 """Media proxy and prefetch hint endpoints."""
 
 import logging
+import time
 
 from fastapi import APIRouter, HTTPException, Query, Response
 from fastapi.responses import FileResponse, StreamingResponse
@@ -109,11 +110,13 @@ async def prefetch_hint(
     if not item_id:
         logger.debug("prefetch_hint: 422, no item_id in body")
         raise HTTPException(status_code=422, detail="item_id required")
+    t0 = time.perf_counter()
     async with db.execute("SELECT 1 FROM items WHERE id = ?", (item_id,)) as cur:
         if await cur.fetchone() is None:
             logger.debug(f"prefetch_hint: 404, item {item_id} not found")
             raise HTTPException(status_code=404, detail="item not found")
+    db_ms = (time.perf_counter() - t0) * 1000
     client = get_http_client()
     queued = await prefetch_ahead(item_id, db, client, unseen=unseen)
-    logger.debug(f"prefetch_hint item_id={item_id}: queued {queued} warm task(s)")
+    logger.debug(f"prefetch_hint item_id={item_id}: queued {queued} warm task(s); db={db_ms:.1f}ms")
     return {"status": "ok"}

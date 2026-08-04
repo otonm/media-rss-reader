@@ -1,4 +1,5 @@
 import logging
+import re
 from pathlib import Path
 
 import aiosqlite
@@ -692,9 +693,7 @@ async def test_reddit_feeds_status_redirects_become_502(
     assert resp.status_code == 502
 
 
-async def test_reddit_feeds_status_has_nosniff(
-    client: AsyncClient, monkeypatch: pytest.MonkeyPatch
-) -> None:
+async def test_reddit_feeds_status_has_nosniff(client: AsyncClient, monkeypatch: pytest.MonkeyPatch) -> None:
     """Task 6: proxied JSON must always carry X-Content-Type-Options: nosniff."""
     from src.config import settings
 
@@ -711,9 +710,7 @@ async def test_reddit_feeds_status_has_nosniff(
     assert resp.headers["x-content-type-options"] == "nosniff"
 
 
-async def test_reddit_feeds_status_redirect_is_502(
-    client: AsyncClient, monkeypatch: pytest.MonkeyPatch
-) -> None:
+async def test_reddit_feeds_status_redirect_is_502(client: AsyncClient, monkeypatch: pytest.MonkeyPatch) -> None:
     """Task 6: a 3xx from upstream must surface as 502, never be silently
     proxied through a rewritten Location header."""
     from src.config import settings
@@ -1212,3 +1209,15 @@ async def test_items_response_omits_rn(client: AsyncClient, db: aiosqlite.Connec
     await _insert_item(db, "item1", "feed1")
     data = (await client.get("/api/items")).json()
     assert data and "rn" not in data[0]
+
+
+async def test_list_items_logs_db_duration(
+    client: AsyncClient, db: aiosqlite.Connection, caplog: pytest.LogCaptureFixture
+) -> None:
+    await _insert_feed(db)
+    await _insert_item(db, "item1", "feed1")
+    caplog.set_level(logging.DEBUG, logger="src.api.items")
+    await client.get("/api/items")
+    assert any(re.search(r"db=\S*ms", r.getMessage()) and "list_items" in r.getMessage() for r in caplog.records), (
+        "list_items exit log must include the DB query duration"
+    )

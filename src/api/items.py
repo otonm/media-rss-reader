@@ -5,6 +5,7 @@ import datetime as dt
 import hashlib
 import json
 import logging
+import time
 from typing import Any
 
 import aiosqlite
@@ -112,15 +113,17 @@ async def list_items(
         LIMIT ?
     """  # noqa: S608
     logger.debug(f"list_items unseen={unseen} cursor=({after_feed_id},{after_pub_date},{after_id}) size={size}")
+    t0 = time.perf_counter()
     async with db.execute(query, params) as cur:
         rows = await cur.fetchall()
+    db_ms = (time.perf_counter() - t0) * 1000
     cached_names = await asyncio.to_thread(cache_present_names)
     items = [_row_to_item(row, cached_names) for row in rows]
     # The cached count is the number the browser can paint instantly; a low
     # ratio here is why a scroll feels slow, and it is what the UI_DEBUG
     # overlay's HIT/MISS line reflects.
     cached_count = sum(1 for i in items if i["cached"])
-    logger.debug(f"list_items returned {len(items)} item(s), {cached_count} already cached on disk")
+    logger.debug(f"list_items returned {len(items)} item(s), {cached_count} cached on disk; db={db_ms:.1f}ms")
     return items
 
 
@@ -142,20 +145,29 @@ async def mark_seen(
     """
     logger.debug(f"mark_seen item_id={item_id}")
     now = dt.datetime.now(dt.UTC).strftime("%Y-%m-%d %H:%M:%S")
+    t0 = time.perf_counter()
     async with db.execute(
         "UPDATE items SET seen_at = ? WHERE id = ? RETURNING media_url, seen_at",
         (now, item_id),
     ) as cur:
         row = await cur.fetchone()
+    update_ms = (time.perf_counter() - t0) * 1000
     if row is None:
         logger.debug(f"mark_seen item_id={item_id} not found")
         raise HTTPException(status_code=404, detail="Not found")
 
+    t0 = time.perf_counter()
     await db.execute(
         "INSERT OR REPLACE INTO seen_media (media_key, seen_at) VALUES (?, ?)",
         (media_key(row["media_url"]), now),
     )
+    insert_ms = (time.perf_counter() - t0) * 1000
+    t0 = time.perf_counter()
     await db.commit()
+    commit_ms = (time.perf_counter() - t0) * 1000
 
-    logger.debug(f"mark_seen item_id={item_id} seen_at={row['seen_at']}")
+    logger.debug(
+        f"mark_seen item_id={item_id} seen_at={row['seen_at']} "
+        f"update={update_ms:.1f}ms insert={insert_ms:.1f}ms commit={commit_ms:.1f}ms"
+    )
     return {"seen_at": row["seen_at"]}
