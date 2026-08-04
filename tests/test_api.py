@@ -31,6 +31,14 @@ async def test_feeds_returns_feed_with_counts(client: AsyncClient, db: aiosqlite
     assert data[0]["unseen_count"] == 1
 
 
+async def test_feeds_ordered_by_title(client: AsyncClient, db: aiosqlite.Connection) -> None:
+    for fid, title in (("f3", "Zeta"), ("fC", "Alpha"), ("f2", "Mid")):
+        await db.execute("INSERT INTO feeds(id, url, title) VALUES (?, ?, ?)", (fid, fid, title))
+    await db.commit()
+    resp = await client.get("/api/feeds")
+    assert [f["title"] for f in resp.json()] == ["Alpha", "Mid", "Zeta"]
+
+
 # ---------------------------------------------------------------------------
 # Helpers for items tests
 # ---------------------------------------------------------------------------

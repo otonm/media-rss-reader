@@ -26,7 +26,8 @@ async def list_feeds(db: Annotated[aiosqlite.Connection, Depends(get_db)]) -> li
                   COUNT(CASE WHEN i.seen_at IS NULL THEN i.id END) AS unseen_count
            FROM feeds f
            LEFT JOIN items i ON i.feed_id = f.id
-           GROUP BY f.id"""
+           GROUP BY f.id
+           ORDER BY f.title"""
     ) as cur:
         rows = await cur.fetchall()
     logger.debug(f"list_feeds returned {len(rows)} feed(s)")
