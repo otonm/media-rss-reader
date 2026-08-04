@@ -72,7 +72,11 @@ async def proxy_media(
     try:
         response = await open_upstream(url, item_id, client)
     except UpstreamError as exc:
-        logger.debug(f"proxy_media: 502 for {url} — {exc}")
+        # A failed user-visible request, and on 404/410 a destructive state
+        # change (the URL marked dead, a fully-dead item dropped). This used to
+        # be debug, invisible at the default info level, while the *less*
+        # consequential handler below logged at warning (R10).
+        logger.warning(f"proxy_media: 502 for {url} (item_id={item_id}) — {exc}")
         raise HTTPException(status_code=502, detail="upstream error") from exc
     except Exception as exc:
         logger.warning(f"proxy_media: upstream fetch failed for {url}: {type(exc).__name__}: {exc}")
@@ -98,12 +102,16 @@ async def prefetch_hint(
     response returns immediately.
     """
     item_id = str(body.get("item_id", ""))
+    unseen = bool(body.get("unseen", True))
+    logger.debug(f"prefetch_hint item_id={item_id} unseen={unseen}")
     if not item_id:
+        logger.debug("prefetch_hint: 422, no item_id in body")
         raise HTTPException(status_code=422, detail="item_id required")
     async with db.execute("SELECT 1 FROM items WHERE id = ?", (item_id,)) as cur:
         if await cur.fetchone() is None:
+            logger.debug(f"prefetch_hint: 404, item {item_id} not found")
             raise HTTPException(status_code=404, detail="item not found")
     client = get_http_client()
-    unseen = bool(body.get("unseen", True))
-    await prefetch_ahead(item_id, db, client, unseen=unseen)
+    queued = await prefetch_ahead(item_id, db, client, unseen=unseen)
+    logger.debug(f"prefetch_hint item_id={item_id}: queued {queued} warm task(s)")
     return {"status": "ok"}

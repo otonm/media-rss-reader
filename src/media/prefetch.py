@@ -76,7 +76,7 @@ async def warm_startup_cache(db: aiosqlite.Connection, client: httpx.AsyncClient
 
 async def prefetch_ahead(
     item_id: str, db: aiosqlite.Connection, client: httpx.AsyncClient, unseen: bool = True
-) -> None:
+) -> int:
     """Fire background warm tasks for the next PREFETCH_AHEAD items after item_id.
 
     'After' means strictly greater in the (rn, feed_id, id) interleave key that
@@ -88,6 +88,8 @@ async def prefetch_ahead(
     to "seen_at IS NULL", so with the show-seen toggle on the client requested
     unseen=false while the hint fired from the same scroll warmed only unseen
     items — the items about to be displayed were never warmed (R12).
+
+    Returns the number of warm tasks queued, which the hint endpoint logs (R9).
     """
     async with db.execute(
         f"{RANKED_ITEMS_CTE} SELECT rn, feed_id, id FROM ranked WHERE id = ?",
@@ -96,7 +98,7 @@ async def prefetch_ahead(
         cursor = await cur.fetchone()
     if cursor is None:
         logger.debug(f"prefetch_ahead: item {item_id} not found, warming nothing")
-        return
+        return 0
     seen_filter = "seen_at IS NULL AND " if unseen else ""
     async with db.execute(
         f"""{RANKED_ITEMS_CTE}
@@ -106,7 +108,8 @@ async def prefetch_ahead(
         (cursor["rn"], cursor["feed_id"], cursor["id"], settings.prefetch_ahead),
     ) as cur:
         rows = await cur.fetchall()
-    logger.debug(f"prefetch_ahead for {item_id}: {len(rows)} item(s) ahead")
+    logger.debug(f"prefetch_ahead for {item_id}: {len(rows)} item(s) ahead (unseen={unseen})")
     for row in rows:
         t = asyncio.create_task(_warm(row["id"], row["media_url"], client))
         _track(t)
+    return len(rows)

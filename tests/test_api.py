@@ -1,3 +1,4 @@
+import logging
 from pathlib import Path
 
 import aiosqlite
@@ -931,3 +932,55 @@ async def test_proxy_cache_hit_sets_nosniff(
     resp = await client.get(f"/api/media/proxy?url={url}")
     assert resp.status_code == 200
     assert resp.headers["x-content-type-options"] == "nosniff"
+
+
+async def test_proxy_upstream_error_logged_at_warning(
+    client: AsyncClient,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    mock_http: respx.MockRouter,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """R10: the 502 is raised only after a URL was marked dead and a fully-dead
+    item dropped. That was logged at DEBUG, and log_level defaults to info — so
+    in a default deployment the operator saw a 502, a vanished item, and no
+    explanation."""
+    import src.media.cache as cache_mod
+
+    monkeypatch.setattr(cache_mod.settings, "cache_dir", str(tmp_path))
+    url = "http://example.com/gone.jpg"
+    mock_http.get(url).mock(return_value=httpx.Response(404))
+    real_client = httpx.AsyncClient()
+    monkeypatch.setattr("src.api.media.get_http_client", lambda: real_client)
+
+    with caplog.at_level(logging.WARNING, logger="src.api.media"):
+        resp = await client.get(f"/api/media/proxy?url={url}&item_id=i1")
+    await real_client.aclose()
+
+    assert resp.status_code == 502
+    assert any("i1" in m and url in m for m in caplog.messages)
+
+
+async def test_prefetch_hint_logs_entry_and_queue_size(
+    client: AsyncClient,
+    db: aiosqlite.Connection,
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """R9: the endpoint logged nothing on any path, and the client discards the
+    response — so 'prefetch warms nothing' and 'the browser never called' were
+    indistinguishable."""
+    await db.execute("INSERT INTO feeds(id, url, title) VALUES ('f1', 'http://x.com/feed', 'F')")
+    await db.execute(
+        """INSERT INTO items(id, feed_id, guid, title, media_url, media_type, pub_date)
+           VALUES ('i1', 'f1', 'g1', 'T', 'http://example.com/1.jpg', 'image', '2026-01-01T00:00:00')"""
+    )
+    await db.commit()
+    monkeypatch.setattr("src.api.media.get_http_client", lambda: httpx.AsyncClient())
+
+    with caplog.at_level(logging.DEBUG, logger="src.api.media"):
+        resp = await client.post("/api/prefetch/hint", json={"item_id": "i1"})
+
+    assert resp.status_code == 200
+    assert any("i1" in m for m in caplog.messages)
+    assert any("queued" in m for m in caplog.messages)
