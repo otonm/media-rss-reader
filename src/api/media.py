@@ -12,6 +12,7 @@ from src.media.availability import is_known_media_url
 from src.media.cache import cache_read, cache_read_meta
 from src.media.fetch import UpstreamError, open_upstream, tee_to_cache
 from src.media.prefetch import prefetch_ahead
+from src.request_id import current_request_id
 from src.scheduler import get_http_client
 
 router = APIRouter()
@@ -59,7 +60,7 @@ async def proxy_media(
             # the miss path below would have refetched (R2).
             stat_result = path.stat()
         except FileNotFoundError:
-            logger.debug(f"proxy_media: {url} evicted between check and send, falling through to upstream")
+            logger.info(f"proxy_media: {url} evicted between check and send, falling through to upstream")
         else:
             media_type = cache_read_meta(url) or "application/octet-stream"
             logger.debug(f"proxy_media: HIT {url} -> {path.name} (type={media_type})")
@@ -73,7 +74,9 @@ async def proxy_media(
     logger.debug(f"proxy_media: MISS {url} (item_id={item_id}), streaming from upstream")
     client = get_http_client()
     try:
-        response = await open_upstream(url, item_id, client)
+        t_up = time.perf_counter()
+        response = await open_upstream(url, item_id, client, request_id=current_request_id())
+        upstream_ms = (time.perf_counter() - t_up) * 1000
     except UpstreamError as exc:
         # A failed user-visible request, and on 404/410 a destructive state
         # change (the URL marked dead, a fully-dead item dropped). This used to
@@ -82,12 +85,16 @@ async def proxy_media(
         logger.warning(f"proxy_media: 502 for {url} (item_id={item_id}) — {exc}")
         raise HTTPException(status_code=502, detail="upstream error") from exc
     except Exception as exc:
-        logger.warning(f"proxy_media: upstream fetch failed for {url}: {type(exc).__name__}: {exc}")
+        logger.exception(f"proxy_media: upstream fetch failed for {url}: {type(exc).__name__}: {exc}")
         raise HTTPException(status_code=502, detail="upstream fetch failed") from exc
 
     content_type = response.headers.get("content-type", "application/octet-stream")
+    logger.debug(
+        f"proxy_media: MISS ok {url} -> {response.status_code} type={content_type} "
+        f"upstream={upstream_ms:.1f}ms (request_id={current_request_id()})"
+    )
     return StreamingResponse(
-        tee_to_cache(url, response),
+        tee_to_cache(url, response, request_id=current_request_id()),
         media_type=content_type,
         headers={"X-Content-Type-Options": "nosniff"},
     )

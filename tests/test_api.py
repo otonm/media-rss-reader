@@ -1221,3 +1221,78 @@ async def test_list_items_logs_db_duration(
     assert any(re.search(r"db=\S*ms", r.getMessage()) and "list_items" in r.getMessage() for r in caplog.records), (
         "list_items exit log must include the DB query duration"
     )
+
+
+async def test_list_items_logs_partial_cursor_422(client: AsyncClient, caplog: pytest.LogCaptureFixture) -> None:
+    caplog.set_level(logging.DEBUG, logger="src.api.items")
+    resp = await client.get("/api/items", params={"after_feed_id": "f1"})
+    assert resp.status_code == 422
+    assert any("422" in r.getMessage() and "partial cursor" in r.getMessage() for r in caplog.records)
+
+
+async def test_proxy_eviction_fallthrough_logs_info(
+    client: AsyncClient,
+    db: aiosqlite.Connection,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    import hashlib
+
+    import src.api.media as media_mod
+    import src.media.cache as cache_mod
+    from src.media import fetch as fetch_mod
+
+    monkeypatch.setattr(cache_mod.settings, "cache_dir", str(tmp_path))
+    url = "http://example.com/evicted.jpg"
+    fname = hashlib.sha256(url.encode()).hexdigest()
+    (tmp_path / fname).write_bytes(b"")
+    await db.execute("INSERT INTO feeds(id,url,title) VALUES ('f','http://x','X')")
+    await db.execute("INSERT INTO items(id,feed_id,guid,media_url,media_type) VALUES ('i','f','g',?, 'image')", (url,))
+    await db.commit()
+    orig_read = media_mod.cache_read
+
+    def _vanish(u: str) -> Path | None:
+        p = orig_read(u)
+        if p:
+            p.unlink(missing_ok=True)
+        return p
+
+    monkeypatch.setattr(media_mod, "cache_read", _vanish)
+    with respx.mock:
+        respx.get(fetch_mod._pinned_url(url, "93.184.216.34")).mock(
+            return_value=httpx.Response(200, content=b"x", headers={"content-type": "image/jpeg"})
+        )
+        real = httpx.AsyncClient()
+        monkeypatch.setattr("src.api.media.get_http_client", lambda: real)
+        caplog.set_level(logging.INFO, logger="src.api.media")
+        await client.get(f"/api/media/proxy?url={url}")
+        await real.aclose()
+    assert any(r.levelno == logging.INFO and "evicted" in r.getMessage() for r in caplog.records)
+
+
+async def test_proxy_exception_uses_logger_exception(
+    client: AsyncClient,
+    db: aiosqlite.Connection,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    import src.media.cache as cache_mod
+    from src.media import fetch as fetch_mod
+
+    monkeypatch.setattr(cache_mod.settings, "cache_dir", str(tmp_path))
+    url = "http://example.com/transport.jpg"
+    await db.execute("INSERT INTO feeds(id,url,title) VALUES ('f','http://x','X')")
+    await db.execute("INSERT INTO items(id,feed_id,guid,media_url,media_type) VALUES ('i','f','g',?, 'image')", (url,))
+    await db.commit()
+    with respx.mock:
+        respx.get(fetch_mod._pinned_url(url, "93.184.216.34")).mock(side_effect=httpx.ConnectError("boom"))
+        real = httpx.AsyncClient()
+        monkeypatch.setattr("src.api.media.get_http_client", lambda: real)
+        caplog.set_level(logging.WARNING, logger="src.api.media")
+        await client.get(f"/api/media/proxy?url={url}")
+        await real.aclose()
+    assert any(r.levelno >= logging.WARNING and r.exc_info for r in caplog.records), (
+        "the generic except must use logger.exception (exc_info set)"
+    )

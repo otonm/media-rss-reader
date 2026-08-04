@@ -83,6 +83,10 @@ async def list_items(
     """
     cursor = (after_feed_id, after_pub_date, after_id)
     if any(part is not None for part in cursor) and not all(part is not None for part in cursor):
+        logger.debug(
+            f"list_items: 422, partial cursor after_feed_id={after_feed_id} "
+            f"after_pub_date={after_pub_date} after_id={after_id}"
+        )
         raise HTTPException(
             status_code=422,
             detail="after_feed_id, after_pub_date and after_id must be given together",
@@ -117,7 +121,10 @@ async def list_items(
     async with db.execute(query, params) as cur:
         rows = await cur.fetchall()
     db_ms = (time.perf_counter() - t0) * 1000
+    t_cache = time.perf_counter()
     cached_names = await asyncio.to_thread(cache_present_names)
+    cache_ms = (time.perf_counter() - t_cache) * 1000
+    logger.debug(f"list_items: cache_present_names returned {len(cached_names)} name(s) in {cache_ms:.1f}ms")
     items = [_row_to_item(row, cached_names) for row in rows]
     # The cached count is the number the browser can paint instantly; a low
     # ratio here is why a scroll feels slow, and it is what the UI_DEBUG
