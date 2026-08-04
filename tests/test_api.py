@@ -1014,3 +1014,25 @@ async def test_reddit_feeds_status_non_200_success_is_not_502(
 
     assert resp.status_code == 200
     assert resp.json() == {"ok": True}
+
+
+async def test_reddit_feeds_status_logs_the_exception(
+    client: AsyncClient,
+    mock_http: respx.MockRouter,
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """R11: httpx timeouts frequently stringify to empty, degrading the line to
+    'reddit_feeds_status unreachable:' with no exception type and no traceback."""
+    mock_http.get("http://127.0.0.1:9090/status").mock(side_effect=httpx.ConnectTimeout(""))
+    real_client = httpx.AsyncClient()
+    monkeypatch.setattr("src.api.reddit_feeds.get_http_client", lambda: real_client)
+
+    with caplog.at_level(logging.WARNING, logger="src.api.reddit_feeds"):
+        resp = await client.get("/api/reddit-feeds/status")
+    await real_client.aclose()
+
+    assert resp.status_code == 502
+    record = next(r for r in caplog.records if r.name == "src.api.reddit_feeds")
+    assert "ConnectTimeout" in record.getMessage()
+    assert record.exc_info is not None
