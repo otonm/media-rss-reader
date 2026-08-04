@@ -216,6 +216,7 @@ async def tee_to_cache(url: str, response: httpx.Response) -> AsyncIterator[byte
     digest = hashlib.sha256()
     sent = 0
     complete = False
+    server_abort = False
     # Held for the whole transfer so the prefetcher leaves this URL alone while
     # a client is already pulling it.
     with download_claim(url):
@@ -226,23 +227,37 @@ async def tee_to_cache(url: str, response: httpx.Response) -> AsyncIterator[byte
         cached = cache_stream_tee(url, response.aiter_bytes(CHUNK_SIZE), content_type)
         try:
             async with aclosing(cached):
-                async for chunk in cached:
-                    digest.update(chunk)
-                    sent += len(chunk)
-                    if settings.media_max_bytes and sent > settings.media_max_bytes:
-                        # The response body has already started, so the client
-                        # sees a truncated file. That is the trade for not
-                        # letting an undeclared stream fill the volume (R7).
-                        raise UpstreamError(
-                            f"upstream body for {url} passed MEDIA_MAX_BYTES "
-                            f"({settings.media_max_bytes}) after {sent} bytes; aborting"
-                        )
-                    yield chunk
-            complete = True
+                try:
+                    async for chunk in cached:
+                        digest.update(chunk)
+                        sent += len(chunk)
+                        if settings.media_max_bytes and sent > settings.media_max_bytes:
+                            # The response body has already started, so the client
+                            # sees a truncated file. That is the trade for not
+                            # letting an undeclared stream fill the volume (R7).
+                            server_abort = True
+                            logger.warning(
+                                f"tee_to_cache: server aborted {url} after {sent} bytes "
+                                f"(over MEDIA_MAX_BYTES={settings.media_max_bytes}); "
+                                "client sees a truncated file"
+                            )
+                            raise UpstreamError(
+                                f"upstream body for {url} passed MEDIA_MAX_BYTES "
+                                f"({settings.media_max_bytes}) after {sent} bytes; aborting"
+                            )
+                        yield chunk
+                except UpstreamError:
+                    raise
+                except Exception as exc:
+                    logger.warning(f"tee_to_cache: aborted {url} after {sent} bytes: {type(exc).__name__}: {exc}")
+                    raise
+                complete = True
         finally:
             await response.aclose()
             if complete:
                 logger.debug(f"tee_to_cache: streamed {sent} bytes of {url} to client and cache")
+            elif server_abort:
+                pass  # already logged at WARNING above
             else:
                 logger.debug(
                     f"tee_to_cache: client stopped reading {url} after {sent} bytes; "

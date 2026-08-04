@@ -1,5 +1,6 @@
 """Tests for the shared upstream-fetch path used by the proxy and the prefetcher."""
 
+import logging
 from pathlib import Path
 
 import aiosqlite
@@ -361,3 +362,73 @@ async def test_open_upstream_refuses_dns_rebinding(monkeypatch: pytest.MonkeyPat
     # (in an un-mocked world) would next resolve to a link-local address.
     assert calls["n"] == 1, "open_upstream must not let httpx re-resolve the host"
     assert seen_hosts == ["93.184.216.34"], f"request went to {seen_hosts}"
+
+
+async def test_tee_to_cache_server_abort_logs_warning(tmp_path: Path, caplog: pytest.LogCaptureFixture) -> None:
+    """A byte-budget abort is a lossy event: the client sees a truncated file.
+
+    It must log at WARNING and not be mislabelled as a client disconnect.
+    """
+    import httpx
+    import respx
+
+    import src.media.cache as cache_mod
+    from src.media import fetch as fetch_mod
+
+    monkeypatch_fetch = pytest.MonkeyPatch()
+    monkeypatch_fetch.setattr(cache_mod.settings, "cache_dir", str(tmp_path))
+    monkeypatch_fetch.setattr(fetch_mod.settings, "media_max_bytes", 4)
+    try:
+        url = "http://example.com/big.jpg"
+        body = b"0123456789"
+        with respx.mock:
+            # No Content-Length: open_upstream cannot pre-trip on the declared
+            # size, so the running budget inside tee_to_cache is what aborts.
+            respx.get(_pinned(url)).mock(
+                return_value=httpx.Response(
+                    200,
+                    headers={"content-type": "image/jpeg"},
+                    stream=httpx.ByteStream(body),
+                )
+            )
+            async with httpx.AsyncClient() as client:
+                resp = await fetch_mod.open_upstream(url, None, client)
+                caplog.set_level(logging.DEBUG)
+                with pytest.raises(fetch_mod.UpstreamError, match="MEDIA_MAX_BYTES"):
+                    async for _ in fetch_mod.tee_to_cache(url, resp):
+                        pass
+    finally:
+        monkeypatch_fetch.undo()
+
+    assert any(r.levelno == logging.WARNING and "server aborted" in r.getMessage() for r in caplog.records), (
+        "a size-check abort must log at WARNING, not be mislabelled a client disconnect"
+    )
+
+
+async def test_tee_to_cache_client_disconnect_logs_debug(tmp_path: Path, caplog: pytest.LogCaptureFixture) -> None:
+    """A real client disconnect is expected and stays at DEBUG."""
+    import httpx
+    import respx
+
+    import src.media.cache as cache_mod
+    from src.media import fetch as fetch_mod
+
+    monkeypatch_fetch = pytest.MonkeyPatch()
+    monkeypatch_fetch.setattr(cache_mod.settings, "cache_dir", str(tmp_path))
+    monkeypatch_fetch.setattr(fetch_mod.settings, "media_max_bytes", 0)
+    try:
+        url = "http://example.com/stream.jpg"
+        with respx.mock:
+            respx.get(_pinned(url)).mock(
+                return_value=httpx.Response(200, content=b"abcdefghij", headers={"content-type": "image/jpeg"})
+            )
+            async with httpx.AsyncClient() as client:
+                resp = await fetch_mod.open_upstream(url, None, client)
+                caplog.set_level(logging.DEBUG)
+                gen = fetch_mod.tee_to_cache(url, resp)
+                await gen.__anext__()  # pull one chunk then abandon
+                await gen.aclose()
+    finally:
+        monkeypatch_fetch.undo()
+
+    assert any(r.levelno == logging.DEBUG and "client stopped reading" in r.getMessage() for r in caplog.records)
