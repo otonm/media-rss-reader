@@ -138,24 +138,31 @@ async def mark_seen(
     returns media_url + seen_at. A single Python timestamp is bound to both
     items.seen_at and seen_media.seen_at so the two cannot diverge (F11).
 
+    The UPDATE sits outside the try: a not-found matched no row, so there is
+    nothing to roll back, and rolling back anyway would discard unrelated work
+    on the shared connection.
+
     The browser marks the item locally before firing this beacon request,
     which it discards; the response shape is kept stable for symmetry with
     the optimistic local mark (F20).
     """
     logger.debug(f"mark_seen item_id={item_id}")
     now = dt.datetime.now(dt.UTC).strftime("%Y-%m-%d %H:%M:%S")
-    try:
-        update_elapsed = timer()
-        async with db.execute(
-            "UPDATE items SET seen_at = ? WHERE id = ? RETURNING media_url, seen_at",
-            (now, item_id),
-        ) as cur:
-            row = await cur.fetchone()
-        update_ms = update_elapsed()
-        if row is None:
-            logger.debug(f"mark_seen item_id={item_id} not found")
-            raise HTTPException(status_code=404, detail="Not found")
+    update_elapsed = timer()
+    async with db.execute(
+        "UPDATE items SET seen_at = ? WHERE id = ? RETURNING media_url, seen_at",
+        (now, item_id),
+    ) as cur:
+        row = await cur.fetchone()
+    update_ms = update_elapsed()
+    if row is None:
+        # Outside the try: an ordinary not-found is not a failed write, and
+        # issuing a ROLLBACK for it discards whatever else the connection has
+        # open.
+        logger.debug(f"mark_seen item_id={item_id} not found")
+        raise HTTPException(status_code=404, detail="Not found")
 
+    try:
         insert_elapsed = timer()
         await db.execute(
             "INSERT OR REPLACE INTO seen_media (media_key, seen_at) VALUES (?, ?)",
@@ -166,7 +173,14 @@ async def mark_seen(
         await db.commit()
         commit_ms = commit_elapsed()
     except Exception:
-        await db.rollback()
+        logger.warning(f"mark_seen item_id={item_id}: write failed, rolling back the seen mark")
+        try:
+            await db.rollback()
+        except Exception:
+            # Rollback is I/O on a possibly-broken connection. Letting it
+            # propagate would replace the exception that describes what
+            # actually went wrong.
+            logger.exception(f"mark_seen item_id={item_id}: rollback failed as well")
         raise
 
     logger.debug(

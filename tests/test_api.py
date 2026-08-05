@@ -1678,3 +1678,50 @@ async def test_items_page_survives_one_unparseable_row(client: AsyncClient, db: 
     resp = await client.get("/api/items")
     assert resp.status_code == 200, "one bad row must not take the page down"
     assert {i["id"] for i in resp.json()} == {"good", "bad"}
+
+
+async def test_mark_seen_404_does_not_roll_back(
+    client: AsyncClient, db: aiosqlite.Connection, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The try spanned the 404 raise, so an ordinary not-found issued a
+    ROLLBACK — discarding whatever else the connection had open. With a shared
+    process-wide connection that is no longer hypothetical."""
+    rollbacks = {"n": 0}
+    real_rollback = db.rollback
+
+    async def _counting_rollback() -> None:
+        rollbacks["n"] += 1
+        await real_rollback()
+
+    monkeypatch.setattr(db, "rollback", _counting_rollback)
+    resp = await client.post("/api/items/nonexistent/seen")
+    assert resp.status_code == 404
+    assert rollbacks["n"] == 0, "a not-found is not a failed write"
+
+
+async def test_mark_seen_logs_when_it_rolls_back(
+    client: AsyncClient,
+    db: aiosqlite.Connection,
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """A locked writer discarding the user's mark-as-seen left no record that
+    a rollback ran — open_db sets a 30 s busy timeout precisely because
+    contention happens."""
+    caplog.set_level(logging.WARNING, logger="src.api.items")
+    await _insert_feed(db)
+    await _insert_item(db, "item1", "feed1", seen_at=None)
+
+    orig_execute = db.execute
+
+    def _flaky_execute(query: str, params: object = None) -> object:
+        if "INSERT OR REPLACE INTO seen_media" in query:
+            raise aiosqlite.OperationalError("database is locked")
+        return orig_execute(query, params)
+
+    monkeypatch.setattr(db, "execute", _flaky_execute)
+    monkeypatch.setattr(client._transport, "raise_app_exceptions", False)
+    resp = await client.post("/api/items/item1/seen")
+
+    assert resp.status_code == 500
+    assert any("roll" in r.getMessage().lower() and "item1" in r.getMessage() for r in caplog.records)
