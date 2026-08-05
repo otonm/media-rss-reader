@@ -48,10 +48,17 @@ CREATE TABLE IF NOT EXISTS items (
 
 # Indexes to support the common query patterns: filter by feed, sort by date,
 # filter unseen, and prune by fetched_at.
+#
+# idx_items_feed_pub matches src/db/queries.py's window exactly
+# (PARTITION BY feed_id ORDER BY pub_date, id), so ROW_NUMBER reads it in order
+# instead of sorting the whole table. /api/items materialises that CTE twice per
+# page — once to resolve the cursor anchor, once for the page itself — and it is
+# the endpoint every scroll hits.
 _CREATE_INDEXES = [
     "CREATE INDEX IF NOT EXISTS idx_items_feed_id  ON items(feed_id)",
     "CREATE INDEX IF NOT EXISTS idx_items_pub_date ON items(pub_date DESC)",
     "CREATE INDEX IF NOT EXISTS idx_items_seen_at  ON items(seen_at)",
+    "CREATE INDEX IF NOT EXISTS idx_items_feed_pub ON items(feed_id, pub_date, id)",
 ]
 
 

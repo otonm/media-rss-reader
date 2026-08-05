@@ -30,9 +30,12 @@ async def test_schema_creates_items_table() -> None:
 async def test_schema_creates_indexes() -> None:
     db = await aiosqlite.connect(":memory:")
     await create_schema(db)
-    async with db.execute("SELECT COUNT(*) FROM sqlite_master WHERE type='index' AND name LIKE 'idx_items_%'") as cur:
-        row = await cur.fetchone()
-    assert row[0] == 3
+    async with db.execute("SELECT name FROM sqlite_master WHERE type='index' AND name LIKE 'idx_items_%'") as cur:
+        names = {row[0] for row in await cur.fetchall()}
+    # Named, not counted: a count says nothing about which index went missing.
+    # idx_items_feed_pub matches src/db/queries.py's window exactly, so
+    # ROW_NUMBER reads it in order instead of sorting the whole table.
+    assert names == {"idx_items_feed_id", "idx_items_pub_date", "idx_items_seen_at", "idx_items_feed_pub"}
     await db.close()
 
 
