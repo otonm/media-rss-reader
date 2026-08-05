@@ -1,3 +1,4 @@
+import aiosqlite
 from pathlib import Path
 from unittest.mock import patch
 
@@ -76,3 +77,41 @@ async def test_env_values_reach_the_injected_css(monkeypatch: object) -> None:
     result = main_mod._build_html()
     assert "--ui-debug:1;" in result
     assert "--feed-initial-count:42;" in result
+
+
+async def test_api_items_requires_a_session(db: aiosqlite.Connection) -> None:
+    """The API test app in conftest builds a bare FastAPI() with the four
+    routers and RequestIDMiddleware — production wraps every route in
+    AuthMiddleware. All 60+ API tests therefore exercise a request shape
+    production rejects, and deleting add_middleware(AuthMiddleware) from
+    main.py left the whole suite green, including /api/media/proxy, the route
+    that makes outbound fetches on the caller's behalf.
+    """
+    from collections.abc import AsyncIterator
+
+    from src.auth.session import SESSION_COOKIE, sign_session
+    from src.config import settings
+    from src.db.connection import get_db
+    from src.main import app
+
+    async def _override_db() -> AsyncIterator[aiosqlite.Connection]:
+        yield db
+
+    app.dependency_overrides[get_db] = _override_db
+    try:
+        async with AsyncClient(
+            transport=ASGITransport(app=app),
+            base_url="https://test",
+            headers={"x-forwarded-proto": "https"},
+            follow_redirects=False,
+        ) as c:
+            anonymous = await c.get("/api/items")
+            assert anonymous.status_code == 302, "no cookie must not reach the router"
+            assert anonymous.headers["location"].startswith("/login")
+
+            c.cookies.set(SESSION_COOKIE, sign_session(settings.auth_secret_key))
+            authed = await c.get("/api/items")
+            assert authed.status_code == 200
+            assert authed.json() == []
+    finally:
+        app.dependency_overrides.pop(get_db, None)
