@@ -30,15 +30,22 @@
     return state.showSeen ? "false" : "true";
   }
 
-  // The cursor is the (feed_id, pub_date, id) of the last item we hold — three
-  // immutable column values. rn is NOT sent: the server recomputes it per
-  // request, so a pruned row beneath the cursor would shift it and we would
-  // skip exactly as many items as were pruned (R3). The server derives the
-  // anchor's rank from these three instead.
-  function nextCursor() {
-    if (state.items.length === 0) return null;
-    const last = state.items[state.items.length - 1];
-    return { feed_id: last.feed_id, pub_date: last.pub_date, id: last.id };
+  // The cursor is the id of an item we hold — one immutable column value. rn is
+  // NOT sent: the server recomputes it per request, so a pruned row beneath the
+  // cursor would shift it and we would skip exactly as many items as were
+  // pruned (R3). The server looks the id up in the same window that orders the
+  // page. pub_date is not sent either: an undated item serialised as the string
+  // "null", which the server compared as text against real dates.
+  //
+  // `back` steps the anchor towards items we received earlier. A 410 means that
+  // anchor row is gone — pruned, or its feed left the OPML — and the item
+  // before it is the next best anchor. Reloading from page one instead would
+  // clear state.items and drop the user back to the top of the scroll.
+  const MAX_CURSOR_WALKBACK = 5;
+
+  function cursorId(back) {
+    const idx = state.items.length - 1 - back;
+    return idx >= 0 ? state.items[idx].id : null;
   }
 
   async function fetchPage() {
@@ -46,23 +53,29 @@
     state.fetching = true;
     try {
       const cfg = MRR.config;
-      let url = `/api/items?unseen=${unseenParam()}&size=${cfg.feedInitialCount}`;
-      const c = nextCursor();
-      if (c) {
-        url += `&after_feed_id=${encodeURIComponent(c.feed_id)}&after_pub_date=${encodeURIComponent(c.pub_date)}&after_id=${encodeURIComponent(c.id)}`;
-      }
-      const resp = await fetch(url);
-      if (!resp.ok) return;
-      const newItems = await resp.json();
-      if (!newItems.length) {
-        state.hasMore = false;
+      const paginating = state.items.length > 0;
+      for (let back = 0; back <= MAX_CURSOR_WALKBACK; back++) {
+        const anchor = paginating ? cursorId(back) : null;
+        if (paginating && anchor === null) break; // walked past the oldest item we hold
+        let url = `/api/items?unseen=${unseenParam()}&size=${cfg.feedInitialCount}`;
+        if (anchor !== null) url += `&after_id=${encodeURIComponent(anchor)}`;
+        const resp = await fetch(url);
+        if (resp.status === 410) continue; // anchor gone, step back one
+        if (!resp.ok) return;
+        const newItems = await resp.json();
+        if (!newItems.length) {
+          state.hasMore = false;
+          return;
+        }
+        // Guard the append: a new feed appearing shifts the interleave and can
+        // hand back an item we already hold, which would give findIndexById two
+        // candidates and desync currentIndex from the DOM.
+        const known = new Set(state.items.map((i) => i.id));
+        state.items = state.items.concat(newItems.filter((i) => !known.has(i.id)));
         return;
       }
-      // Guard the append: a new feed appearing shifts the interleave and can
-      // hand back an item we already hold, which would give findIndexById two
-      // candidates and desync currentIndex from the DOM.
-      const known = new Set(state.items.map((i) => i.id));
-      state.items = state.items.concat(newItems.filter((i) => !known.has(i.id)));
+      state.hasMore = false;
+      console.warn("itemStore: every cursor anchor is gone (410), stopping pagination");
     } finally {
       state.fetching = false;
     }
