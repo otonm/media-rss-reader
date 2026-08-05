@@ -72,9 +72,11 @@ def test_one_empty_credential_raises(monkeypatch: pytest.MonkeyPatch, _clean_env
         _load_settings()
 
 
-def test_both_credentials_empty_with_key_loads(monkeypatch: pytest.MonkeyPatch, _clean_env: None) -> None:
+def test_both_credentials_empty_raises(monkeypatch: pytest.MonkeyPatch, _clean_env: None) -> None:
+    # Both-empty is not a safe "no-auth mode": /login then redirects to /setup
+    # with a setup cookie and any visitor can complete setup to become admin.
     monkeypatch.delenv("AUTH_USERNAME", raising=False)
     monkeypatch.delenv("AUTH_PASSWORD", raising=False)
     monkeypatch.setenv("AUTH_SECRET_KEY", "x" * 32)
-    s = _load_settings()
-    assert s.auth_username == "" and s.auth_password == ""
+    with pytest.raises(RuntimeError, match="AUTH_USERNAME and AUTH_PASSWORD"):
+        _load_settings()
