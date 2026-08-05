@@ -1,34 +1,33 @@
 """GET /api/reddit-feeds/status — proxy the Reddit Feeds status endpoint."""
 
 import logging
-import time
 
 from fastapi import APIRouter, HTTPException, Response
 
 from src.config import settings
 from src.scheduler import get_http_client
+from src.timing import timer
 
 logger = logging.getLogger(__name__)
 router = APIRouter()
 
 
-@router.get("/reddit-feeds/status")
+@router.get("/reddit-feeds/status", response_model=None)
 async def reddit_feeds_status() -> Response:
     client = get_http_client()
     url = f"{settings.reddit_feeds_api_url.rstrip('/')}/status"
     logger.debug(f"reddit_feeds_status fetching {url}")
-    started = time.perf_counter()
+    elapsed = timer()
     try:
         resp = await client.get(url, timeout=10, follow_redirects=False)
     except Exception as exc:
         # exception(), not warning(): httpx timeouts routinely stringify to
         # empty, which left the line with no exception type and no traceback
         # anywhere. from exc keeps __cause__ (R11).
-        logger.exception(f"reddit_feeds_status unreachable: {type(exc).__name__} for {url}")
+        logger.exception(f"reddit_feeds_status unreachable: {type(exc).__name__} for {url} after {elapsed():.0f}ms")
         raise HTTPException(status_code=502, detail="Reddit Feeds API unreachable") from exc
-    elapsed_ms = (time.perf_counter() - started) * 1000
     if not resp.is_success:
-        logger.warning(f"reddit_feeds_status upstream returned {resp.status_code} for {url} in {elapsed_ms:.0f}ms")
+        logger.warning(f"reddit_feeds_status upstream returned {resp.status_code} for {url} in {elapsed():.0f}ms")
         raise HTTPException(status_code=502, detail="Reddit Feeds API error")
     try:
         resp.json()
@@ -42,7 +41,7 @@ async def reddit_feeds_status() -> Response:
         )
         raise HTTPException(status_code=502, detail="Reddit Feeds API returned non-JSON body") from exc
     logger.debug(
-        f"reddit_feeds_status {resp.status_code} from {url} in {elapsed_ms:.0f}ms "
+        f"reddit_feeds_status {resp.status_code} from {url} in {elapsed():.0f}ms "
         f"bytes={len(resp.content)} type={resp.headers.get('content-type', '?')}"
     )
     # Pass the body through rather than returning a parsed value: a `-> dict`

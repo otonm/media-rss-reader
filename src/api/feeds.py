@@ -1,12 +1,12 @@
 """GET /api/feeds — list all feeds with item counts."""
 
 import logging
-import time
 
 from fastapi import APIRouter
 
 from src.api.schemas import FeedOut
 from src.db.connection import _DbDep
+from src.timing import timer
 
 logger = logging.getLogger(__name__)
 router = APIRouter()
@@ -20,7 +20,7 @@ async def list_feeds(db: _DbDep) -> list[FeedOut]:
     avoiding a second round-trip per feed.
     """
     logger.debug("list_feeds querying all feeds with counts")
-    t0 = time.perf_counter()
+    elapsed = timer()
     async with db.execute(
         """SELECT f.id, f.title, f.url, f.last_fetched_at,
                   COUNT(i.id)                                  AS item_count,
@@ -31,6 +31,5 @@ async def list_feeds(db: _DbDep) -> list[FeedOut]:
            ORDER BY f.title"""
     ) as cur:
         rows = await cur.fetchall()
-    db_ms = (time.perf_counter() - t0) * 1000
-    logger.debug(f"list_feeds returned {len(rows)} feed(s); db={db_ms:.1f}ms")
+    logger.debug(f"list_feeds returned {len(rows)} feed(s); db={elapsed():.1f}ms")
     return [dict(row) for row in rows]

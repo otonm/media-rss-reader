@@ -4,7 +4,6 @@ import asyncio
 import datetime as dt
 import json
 import logging
-import time
 from typing import Any
 
 import aiosqlite
@@ -15,6 +14,7 @@ from src.db.connection import _DbDep
 from src.db.queries import INTERLEAVE_ORDER_BY, RANKED_ITEMS_CTE
 from src.media.cache import cache_name, cache_present_names
 from src.media.normalize import media_key
+from src.timing import timer
 
 logger = logging.getLogger(__name__)
 router = APIRouter()
@@ -115,14 +115,13 @@ async def list_items(
         LIMIT ?
     """  # noqa: S608
     logger.debug(f"list_items unseen={unseen} after_id={after_id} size={size}")
-    t0 = time.perf_counter()
+    db_elapsed = timer()
     async with db.execute(query, params) as cur:
         rows = await cur.fetchall()
-    db_ms = (time.perf_counter() - t0) * 1000
-    t_cache = time.perf_counter()
+    db_ms = db_elapsed()
+    cache_elapsed = timer()
     cached_names = await asyncio.to_thread(cache_present_names)
-    cache_ms = (time.perf_counter() - t_cache) * 1000
-    logger.debug(f"list_items: cache_present_names returned {len(cached_names)} name(s) in {cache_ms:.1f}ms")
+    logger.debug(f"list_items: cache_present_names returned {len(cached_names)} name(s) in {cache_elapsed():.1f}ms")
     items = [_row_to_item(row, cached_names) for row in rows]
     # The cached count is the number the browser can paint instantly; a low
     # ratio here is why a scroll feels slow, and it is what the UI_DEBUG
@@ -151,26 +150,26 @@ async def mark_seen(
     logger.debug(f"mark_seen item_id={item_id}")
     now = dt.datetime.now(dt.UTC).strftime("%Y-%m-%d %H:%M:%S")
     try:
-        t0 = time.perf_counter()
+        update_elapsed = timer()
         async with db.execute(
             "UPDATE items SET seen_at = ? WHERE id = ? RETURNING media_url, seen_at",
             (now, item_id),
         ) as cur:
             row = await cur.fetchone()
-        update_ms = (time.perf_counter() - t0) * 1000
+        update_ms = update_elapsed()
         if row is None:
             logger.debug(f"mark_seen item_id={item_id} not found")
             raise HTTPException(status_code=404, detail="Not found")
 
-        t0 = time.perf_counter()
+        insert_elapsed = timer()
         await db.execute(
             "INSERT OR REPLACE INTO seen_media (media_key, seen_at) VALUES (?, ?)",
             (media_key(row["media_url"]), now),
         )
-        insert_ms = (time.perf_counter() - t0) * 1000
-        t0 = time.perf_counter()
+        insert_ms = insert_elapsed()
+        commit_elapsed = timer()
         await db.commit()
-        commit_ms = (time.perf_counter() - t0) * 1000
+        commit_ms = commit_elapsed()
     except Exception:
         await db.rollback()
         raise

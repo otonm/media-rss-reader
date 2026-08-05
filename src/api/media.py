@@ -1,7 +1,6 @@
 """Media proxy and prefetch hint endpoints."""
 
 import logging
-import time
 
 from fastapi import APIRouter, HTTPException, Query, Response
 from fastapi.responses import FileResponse, StreamingResponse
@@ -14,6 +13,7 @@ from src.media.fetch import UpstreamError, open_upstream, tee_to_cache
 from src.media.prefetch import prefetch_ahead
 from src.request_id import current_request_id
 from src.scheduler import get_http_client
+from src.timing import timer
 
 router = APIRouter()
 
@@ -48,8 +48,11 @@ async def proxy_media(
     streaming misses through is what prevents the black-screen stall on first
     paint (F7).
     """
-    if not await is_known_media_url(url, db):
-        logger.debug(f"proxy_media: refusing unknown url {url}")
+    gate_elapsed = timer()
+    known = await is_known_media_url(url, db)
+    logger.debug(f"proxy_media: url gate for {url} -> {known} in {gate_elapsed():.1f}ms")
+    if not known:
+        logger.info(f"proxy_media: refusing unknown url {url}")
         raise HTTPException(status_code=404, detail="not a known media url")
     path = cache_read(url)
     if path is not None:
@@ -74,9 +77,8 @@ async def proxy_media(
     logger.debug(f"proxy_media: MISS {url} (item_id={item_id}), streaming from upstream")
     client = get_http_client()
     try:
-        t_up = time.perf_counter()
+        upstream_elapsed = timer()
         response = await open_upstream(url, item_id, client, request_id=current_request_id())
-        upstream_ms = (time.perf_counter() - t_up) * 1000
     except UpstreamError as exc:
         # A failed user-visible request, and on 404/410 a destructive state
         # change (the URL marked dead, a fully-dead item dropped). This used to
@@ -90,7 +92,7 @@ async def proxy_media(
 
     content_type = response.headers.get("content-type", "application/octet-stream")
     logger.debug(
-        f"proxy_media: MISS ok {url} -> {response.status_code} type={content_type} upstream={upstream_ms:.1f}ms"
+        f"proxy_media: MISS ok {url} -> {response.status_code} type={content_type} upstream={upstream_elapsed():.1f}ms"
     )
     return StreamingResponse(
         tee_to_cache(url, response, request_id=current_request_id()),
@@ -116,13 +118,12 @@ async def prefetch_hint(
     if not item_id:
         logger.debug("prefetch_hint: 422, no item_id in body")
         raise HTTPException(status_code=422, detail="item_id required")
-    t0 = time.perf_counter()
+    elapsed = timer()
     async with db.execute("SELECT 1 FROM items WHERE id = ?", (item_id,)) as cur:
         if await cur.fetchone() is None:
             logger.debug(f"prefetch_hint: 404, item {item_id} not found")
             raise HTTPException(status_code=404, detail="item not found")
-    db_ms = (time.perf_counter() - t0) * 1000
     client = get_http_client()
     queued = await prefetch_ahead(item_id, db, client, unseen=unseen, request_id=current_request_id())
-    logger.debug(f"prefetch_hint item_id={item_id}: queued {queued} warm task(s); db={db_ms:.1f}ms")
+    logger.debug(f"prefetch_hint item_id={item_id}: queued {queued} warm task(s); db={elapsed():.1f}ms")
     return {"status": "ok"}
