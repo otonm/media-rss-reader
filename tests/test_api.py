@@ -1682,3 +1682,43 @@ async def test_mark_seen_logs_when_it_rolls_back(
 
     assert resp.status_code == 500
     assert any("roll" in r.getMessage().lower() and "item1" in r.getMessage() for r in caplog.records)
+
+
+async def test_reddit_feeds_status_caps_the_body(
+    client: AsyncClient, mock_http: respx.MockRouter, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The whole upstream body was buffered by a non-streaming client.get,
+    parsed once purely as a validity check, discarded, then echoed verbatim —
+    with no size cap anywhere. httpx's timeout=10 is per-operation, not a
+    whole-request budget, so a trickling companion can hold the connection and
+    grow the buffer."""
+    from src.config import settings
+
+    monkeypatch.setattr(settings, "reddit_feeds_api_url", "http://rf.local")
+    oversized = b'{"pad": "' + b"x" * (2 * 1024 * 1024) + b'"}'
+    mock_http.get("http://rf.local/status").mock(
+        return_value=httpx.Response(200, content=oversized, headers={"content-type": "application/json"})
+    )
+    real_client = httpx.AsyncClient()
+    monkeypatch.setattr("src.api.reddit_feeds.get_http_client", lambda: real_client)
+    resp = await client.get("/api/reddit-feeds/status")
+    await real_client.aclose()
+    assert resp.status_code == 502
+    assert resp.json()["detail"] == "Reddit Feeds API body too large"
+
+
+async def test_reddit_feeds_status_still_passes_a_normal_body_through(
+    client: AsyncClient, mock_http: respx.MockRouter, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from src.config import settings
+
+    monkeypatch.setattr(settings, "reddit_feeds_api_url", "http://rf.local")
+    mock_http.get("http://rf.local/status").mock(
+        return_value=httpx.Response(200, json={"feeds": []}, headers={"content-type": "application/json"})
+    )
+    real_client = httpx.AsyncClient()
+    monkeypatch.setattr("src.api.reddit_feeds.get_http_client", lambda: real_client)
+    resp = await client.get("/api/reddit-feeds/status")
+    await real_client.aclose()
+    assert resp.status_code == 200
+    assert resp.json() == {"feeds": []}
