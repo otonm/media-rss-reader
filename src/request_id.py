@@ -46,4 +46,10 @@ class RequestIDMiddleware(BaseHTTPMiddleware):
         finally:
             _request_id.reset(token)
         response.headers[HEADER] = rid
+        # nosniff rides along here rather than in a middleware of its own: this
+        # one already wraps AuthMiddleware, every router and the /static mount,
+        # and a third BaseHTTPMiddleware would put another task group around the
+        # proxy's StreamingResponse. setdefault, not assignment: a route with a
+        # reason to set its own value keeps it.
+        response.headers.setdefault("X-Content-Type-Options", "nosniff")
         return response

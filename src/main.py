@@ -2,14 +2,13 @@
 
 import logging
 import time
-from collections.abc import AsyncGenerator, Callable
+from collections.abc import AsyncGenerator
 from contextlib import asynccontextmanager
 from pathlib import Path
 
 from fastapi import FastAPI, Request
 from fastapi.responses import HTMLResponse
 from fastapi.staticfiles import StaticFiles
-from starlette.responses import Response
 
 from src.api import feeds, items, media, reddit_feeds
 from src.auth import routes as auth_routes
@@ -70,9 +69,15 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None]:
     await run_migrations(db)
     await backfill_seen_media(db)
     app.state.db = db
-    await start_scheduler(db)
+    # The scheduler gets its own connection. sqlite3's implicit transaction is
+    # per connection, not per coroutine, and sync.py writes many rows before it
+    # commits — sharing meant a mark_seen commit could land mid-refresh and
+    # commit a partial feed, or its rollback discard one.
+    scheduler_db = await open_db(settings.db_path)
+    await start_scheduler(scheduler_db)
     yield
     await stop_scheduler()
+    await scheduler_db.close()
     await db.close()
 
 
@@ -86,18 +91,6 @@ app.include_router(media.router, prefix="/api")
 app.include_router(reddit_feeds.router, prefix="/api")
 
 app.mount("/static", StaticFiles(directory=str(_static_dir)), name="static")
-
-
-@app.middleware("http")
-async def _security_headers(request: Request, call_next: Callable) -> Response:
-    """nosniff on everything, not only the three responses that remembered it.
-
-    setdefault, not assignment: a route that has a reason to set its own value
-    keeps it.
-    """
-    response = await call_next(request)
-    response.headers.setdefault("X-Content-Type-Options", "nosniff")
-    return response
 
 
 @app.get("/health")

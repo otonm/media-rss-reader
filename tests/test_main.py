@@ -137,7 +137,9 @@ async def test_nosniff_on_every_response(db: aiosqlite.Connection) -> None:
             cookies={SESSION_COOKIE: sign_session(settings.auth_secret_key)},
             follow_redirects=False,
         ) as c:
-            for path in ("/health", "/api/items", "/api/feeds"):
+            # /static is a mount, not a router route — the one path that is
+            # structurally different, and the one a router-level fix would miss.
+            for path in ("/health", "/api/items", "/static/style.css"):
                 resp = await c.get(path)
                 assert resp.headers.get("x-content-type-options") == "nosniff", path
     finally:
