@@ -98,3 +98,28 @@ test("exhausting the walk-back stops pagination instead of looping", async () =>
   assert.ok(store.hasMoreItems() === false, "hasMore must go false, not retry forever");
   assert.ok(calls <= 8, `walk-back must be bounded; made ${calls} requests`);
 });
+
+test("a long run of dead anchors is crossed in log(n) requests, not abandoned", async () => {
+  // 40 items held, the newest 20 all gone — a feed leaving the OPML cascades
+  // its whole item set, so the run is not small. The old fixed cap of 5 gave
+  // up here and stopped pagination for good; walking one at a time would cost
+  // 20 requests.
+  const held = Array.from({ length: 40 }, (_, i) => ({ id: `i${i}`, feed_id: "f", pub_date: null }));
+  const dead = new Set(held.slice(20).map((i) => i.id));
+
+  const anchors = [];
+  const store = makeStore((url) => {
+    const m = url.match(/after_id=([^&]+)/);
+    if (!m) return jsonResponse(held);
+    anchors.push(m[1]);
+    return dead.has(m[1]) ? goneResponse() : jsonResponse([{ id: "new", feed_id: "f", pub_date: null }]);
+  });
+
+  await store.fetchPage();
+  await store.fetchPage();
+
+  assert.deepEqual(anchors, ["i39", "i38", "i37", "i35", "i31", "i23", "i7"], "back doubles: 0,1,2,4,8,16,32");
+  assert.equal(anchors.length, 7, "log(n), not 21");
+  assert.ok(store.hasMoreItems(), "pagination must survive the dead run");
+  assert.equal(store.getItems().at(-1).id, "new");
+});

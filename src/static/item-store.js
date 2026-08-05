@@ -38,11 +38,15 @@
   // "null", which the server compared as text against real dates.
   //
   // `back` steps the anchor towards items we received earlier. A 410 means that
-  // anchor row is gone — pruned, or its feed left the OPML — and the item
-  // before it is the next best anchor. Reloading from page one instead would
-  // clear state.items and drop the user back to the top of the scroll.
-  const MAX_CURSOR_WALKBACK = 5;
-
+  // anchor row is gone — pruned, or its feed left the OPML — and an earlier
+  // item is the next best anchor. Reloading from page one instead would clear
+  // state.items and drop the user back to the top of the scroll.
+  //
+  // The step doubles rather than walking one at a time. A feed leaving the OPML
+  // cascades its whole item set, so the run of dead anchors is not small; a
+  // fixed cap stopped pagination for good once the run outgrew it, and walking
+  // one by one costs a request per dead row. Doubling finds a surviving anchor
+  // in log(n) requests whenever one exists at all.
   function cursorId(back) {
     const idx = state.items.length - 1 - back;
     return idx >= 0 ? state.items[idx].id : null;
@@ -54,13 +58,16 @@
     try {
       const cfg = MRR.config;
       const paginating = state.items.length > 0;
-      for (let back = 0; back <= MAX_CURSOR_WALKBACK; back++) {
+      for (let back = 0; ; back = back === 0 ? 1 : back * 2) {
         const anchor = paginating ? cursorId(back) : null;
         if (paginating && anchor === null) break; // walked past the oldest item we hold
         let url = `/api/items?unseen=${unseenParam()}&size=${cfg.feedInitialCount}`;
         if (anchor !== null) url += `&after_id=${encodeURIComponent(anchor)}`;
         const resp = await fetch(url);
-        if (resp.status === 410) continue; // anchor gone, step back one
+        if (resp.status === 410) {
+          if (!paginating) break; // page one cannot 410; nothing left to step back to
+          continue; // anchor gone, step further back
+        }
         if (!resp.ok) return;
         const newItems = await resp.json();
         if (!newItems.length) {
