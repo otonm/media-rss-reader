@@ -2,13 +2,14 @@
 
 import logging
 import time
-from collections.abc import AsyncGenerator
+from collections.abc import AsyncGenerator, Callable
 from contextlib import asynccontextmanager
 from pathlib import Path
 
 from fastapi import FastAPI, Request
 from fastapi.responses import HTMLResponse
 from fastapi.staticfiles import StaticFiles
+from starlette.responses import Response
 
 from src.api import feeds, items, media, reddit_feeds
 from src.auth import routes as auth_routes
@@ -85,6 +86,18 @@ app.include_router(media.router, prefix="/api")
 app.include_router(reddit_feeds.router, prefix="/api")
 
 app.mount("/static", StaticFiles(directory=str(_static_dir)), name="static")
+
+
+@app.middleware("http")
+async def _security_headers(request: Request, call_next: Callable) -> Response:
+    """nosniff on everything, not only the three responses that remembered it.
+
+    setdefault, not assignment: a route that has a reason to set its own value
+    keeps it.
+    """
+    response = await call_next(request)
+    response.headers.setdefault("X-Content-Type-Options", "nosniff")
+    return response
 
 
 @app.get("/health")

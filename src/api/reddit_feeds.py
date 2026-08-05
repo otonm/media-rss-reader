@@ -57,5 +57,4 @@ async def reddit_feeds_status() -> Response:
     return Response(
         content=resp.content,
         media_type="application/json",
-        headers={"X-Content-Type-Options": "nosniff"},
     )

@@ -503,8 +503,6 @@ async def test_proxy_cache_hit_falls_back_when_sidecar_missing(
     # No sidecar → must NOT be served as text/plain (Starlette's guess on a
     # bare-sha256 filename). octet-stream lets the browser sniff and render.
     assert resp.headers["content-type"].startswith("application/octet-stream")
-    # R8: nosniff is on both paths now, not just the miss path.
-    assert resp.headers["x-content-type-options"] == "nosniff"
 
 
 async def test_proxy_cache_miss(
@@ -588,7 +586,6 @@ async def test_proxy_image_passes_with_nosniff(
         resp = await client.get(f"/api/media/proxy?url={url}")
         await real_client.aclose()
     assert resp.status_code == 200
-    assert resp.headers["x-content-type-options"] == "nosniff"
     assert resp.headers["content-type"].startswith("image/jpeg")
 
 
@@ -616,7 +613,6 @@ async def test_proxy_octet_stream_upstream_passes(
         resp = await client.get(f"/api/media/proxy?url={url}")
         await real_client.aclose()
     assert resp.status_code == 200
-    assert resp.headers["x-content-type-options"] == "nosniff"
     assert resp.headers["content-type"].startswith("application/octet-stream")
 
 
@@ -860,23 +856,6 @@ async def test_reddit_feeds_status_redirects_become_502(
     resp = await client.get("/api/reddit-feeds/status")
     await real_client.aclose()
     assert resp.status_code == 502
-
-
-async def test_reddit_feeds_status_has_nosniff(client: AsyncClient, monkeypatch: pytest.MonkeyPatch) -> None:
-    """Task 6: proxied JSON must always carry X-Content-Type-Options: nosniff."""
-    from src.config import settings
-
-    monkeypatch.setattr(settings, "reddit_feeds_api_url", "http://rf.local")
-    with respx.mock:
-        respx.get("http://rf.local/status").mock(
-            return_value=httpx.Response(200, content=b"[]", headers={"content-type": "application/json"})
-        )
-        real_client = httpx.AsyncClient()
-        monkeypatch.setattr("src.api.reddit_feeds.get_http_client", lambda: real_client)
-        resp = await client.get("/api/reddit-feeds/status")
-        await real_client.aclose()
-    assert resp.status_code == 200
-    assert resp.headers["x-content-type-options"] == "nosniff"
 
 
 async def test_reddit_feeds_status_redirect_is_502(client: AsyncClient, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -1149,28 +1128,6 @@ async def test_proxy_cache_hit_evicted_before_send_refetches(
 
     assert resp.status_code == 200
     assert resp.content == b"refetched"
-
-
-async def test_proxy_cache_hit_sets_nosniff(
-    client: AsyncClient, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, db: aiosqlite.Connection
-) -> None:
-    """R8: the miss path set nosniff and the hit path set no security headers,
-    so the same bytes were served differently on first and second view — and
-    the cached copy is the one served repeatedly."""
-    import hashlib
-
-    import src.media.cache as cache_mod
-
-    monkeypatch.setattr(cache_mod.settings, "cache_dir", str(tmp_path))
-    url = "http://example.com/img.jpg"
-    await _register_proxy_url(db, url)
-    filename = hashlib.sha256(url.encode()).hexdigest()
-    (tmp_path / filename).write_bytes(b"cached")
-    (tmp_path / f"{filename}.meta").write_text("image/jpeg")
-
-    resp = await client.get(f"/api/media/proxy?url={url}")
-    assert resp.status_code == 200
-    assert resp.headers["x-content-type-options"] == "nosniff"
 
 
 async def test_proxy_upstream_error_logged_at_warning(

@@ -113,3 +113,32 @@ async def test_api_items_requires_a_session(db: aiosqlite.Connection) -> None:
             assert authed.json() == []
     finally:
         app.dependency_overrides.pop(get_db, None)
+
+
+async def test_nosniff_on_every_response(db: aiosqlite.Connection) -> None:
+    """The header was hand-attached to the three responses whose author
+    thought of it; /api/items, /api/feeds, /api/items/{id}/seen,
+    /prefetch/hint, /, /login, /setup and the whole /static mount went
+    without."""
+    from src.auth.session import SESSION_COOKIE, sign_session
+    from src.config import settings
+    from src.db.connection import get_db
+    from src.main import app
+
+    async def _override_db() -> aiosqlite.Connection:
+        return db
+
+    app.dependency_overrides[get_db] = _override_db
+    try:
+        async with AsyncClient(
+            transport=ASGITransport(app=app),
+            base_url="https://test",
+            headers={"x-forwarded-proto": "https"},
+            cookies={SESSION_COOKIE: sign_session(settings.auth_secret_key)},
+            follow_redirects=False,
+        ) as c:
+            for path in ("/health", "/api/items", "/api/feeds"):
+                resp = await c.get(path)
+                assert resp.headers.get("x-content-type-options") == "nosniff", path
+    finally:
+        app.dependency_overrides.pop(get_db, None)

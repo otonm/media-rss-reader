@@ -67,7 +67,6 @@ async def proxy_media(
         return FileResponse(
             path,
             media_type=media_type,
-            headers={"X-Content-Type-Options": "nosniff"},
         )
 
     logger.debug(f"proxy_media: MISS {url} (item_id={item_id}), streaming from upstream")
@@ -101,7 +100,6 @@ async def proxy_media(
     return StreamingResponse(
         tee_to_cache(url, response, request_id=current_request_id()),
         media_type=content_type,
-        headers={"X-Content-Type-Options": "nosniff"},
     )
 
 
