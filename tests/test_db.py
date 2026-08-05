@@ -2,8 +2,9 @@ import os
 import tempfile
 
 import aiosqlite
+import pytest
 
-from src.db.connection import get_db, open_db
+from src.db.connection import open_db
 from src.db.migrations import MIGRATIONS, run_migrations
 from src.db.schema import create_schema
 
@@ -102,18 +103,21 @@ async def test_open_db_sets_row_factory() -> None:
         os.unlink(path)
 
 
-async def test_get_db_yields_connection(tmp_path: object) -> None:
-    import pathlib
+async def test_get_db_returns_the_process_wide_connection(monkeypatch: pytest.MonkeyPatch) -> None:
+    """get_db opened a fresh connection per request: a blocking mkdir, an
+    aiosqlite.connect that starts an OS thread, and two PRAGMA round-trips —
+    50 of each for one page of media, to answer 50 existence lookups. A
+    long-lived connection already existed and was read by nothing.
+    """
+    from types import SimpleNamespace
 
     import src.db.connection as conn_mod
 
-    db_path = pathlib.Path(str(tmp_path)) / "test.db"
-    original = conn_mod.settings.db_path
-    conn_mod.settings.db_path = str(db_path)  # type: ignore[assignment]
-    try:
-        db_gen = get_db()
-        conn = await db_gen.__anext__()
-        assert isinstance(conn, aiosqlite.Connection)
-        await conn.close()
-    finally:
-        conn_mod.settings.db_path = original  # type: ignore[assignment]
+    async def _must_not_open(*a: object, **k: object) -> object:
+        raise AssertionError("get_db must not open a connection per request")
+
+    monkeypatch.setattr(conn_mod, "open_db", _must_not_open)
+
+    sentinel = object()
+    request = SimpleNamespace(app=SimpleNamespace(state=SimpleNamespace(db=sentinel)))
+    assert await conn_mod.get_db(request) is sentinel

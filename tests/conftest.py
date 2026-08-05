@@ -5,7 +5,7 @@ os.environ.setdefault("AUTH_USERNAME", "testuser")
 os.environ.setdefault("AUTH_PASSWORD", "testpassword")
 os.environ.setdefault("AUTH_SECRET_KEY", "test-secret-key-minimum-32-chars!!")
 
-from collections.abc import AsyncGenerator, AsyncIterator
+from collections.abc import AsyncGenerator
 
 import aiosqlite
 import pytest
@@ -61,8 +61,8 @@ async def client(db: aiosqlite.Connection) -> AsyncGenerator[HttpxAsyncClient]:
     test_app.include_router(media_router.router, prefix="/api")
     test_app.include_router(reddit_feeds_router.router, prefix="/api")
 
-    async def _override_db() -> AsyncIterator[aiosqlite.Connection]:
-        yield db
+    async def _override_db() -> aiosqlite.Connection:
+        return db
 
     test_app.dependency_overrides[get_db] = _override_db
 
@@ -110,8 +110,8 @@ async def auth_client(
     async def _root() -> dict[str, str]:
         return {"status": "ok"}
 
-    async def _override_db() -> AsyncIterator[aiosqlite.Connection]:
-        yield db
+    async def _override_db() -> aiosqlite.Connection:
+        return db
 
     test_app.dependency_overrides[get_db] = _override_db
 

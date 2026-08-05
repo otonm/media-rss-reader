@@ -1,17 +1,17 @@
 """Database connection factory.
 
 open_db() is used by the scheduler (persistent connection held for the process lifetime).
-get_db() is a FastAPI dependency that opens and closes a connection per request.
+get_db() is a FastAPI dependency returning the connection opened at startup.
 run_with_own_db() is for work that outlives the request that started it.
 """
 
 import logging
-from collections.abc import AsyncIterator, Awaitable, Callable
+from collections.abc import Awaitable, Callable
 from pathlib import Path
 from typing import Annotated
 
 import aiosqlite
-from fastapi import Depends
+from fastapi import Depends, Request
 
 from src.config import settings
 
@@ -40,15 +40,20 @@ async def open_db(path: str | None = None) -> aiosqlite.Connection:
     return db
 
 
-async def get_db() -> AsyncIterator[aiosqlite.Connection]:
-    """FastAPI dependency: yield a short-lived connection, close on request teardown."""
-    logger.debug("get_db opening request-scoped connection")
-    db = await open_db()
-    try:
-        yield db
-    finally:
-        logger.debug("get_db closing request-scoped connection")
-        await db.close()
+async def get_db(request: Request) -> aiosqlite.Connection:
+    """FastAPI dependency: the process-wide connection opened at startup.
+
+    Opening one per request cost a blocking mkdir, an aiosqlite.connect that
+    starts an OS thread and two PRAGMA round-trips, on every request including
+    the highest-rate route in the app. aiosqlite serialises statements on the
+    connection's worker thread, so DB access queues app-wide; with WAL and
+    queries this small that is cheaper than a thread per request.
+
+    Work that outlives the request still needs run_with_own_db — a streaming
+    body or a warm task running after the route returned must not borrow a
+    connection whose lifetime is the request's.
+    """
+    return request.app.state.db
 
 
 _DbDep = Annotated[aiosqlite.Connection, Depends(get_db)]

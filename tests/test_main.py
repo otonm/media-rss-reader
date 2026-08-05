@@ -87,15 +87,13 @@ async def test_api_items_requires_a_session(db: aiosqlite.Connection) -> None:
     main.py left the whole suite green, including /api/media/proxy, the route
     that makes outbound fetches on the caller's behalf.
     """
-    from collections.abc import AsyncIterator
-
     from src.auth.session import SESSION_COOKIE, sign_session
     from src.config import settings
     from src.db.connection import get_db
     from src.main import app
 
-    async def _override_db() -> AsyncIterator[aiosqlite.Connection]:
-        yield db
+    async def _override_db() -> aiosqlite.Connection:
+        return db
 
     app.dependency_overrides[get_db] = _override_db
     try:
