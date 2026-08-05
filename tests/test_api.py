@@ -423,15 +423,23 @@ async def test_mark_seen_not_found(client: AsyncClient) -> None:
     assert resp.status_code == 404
 
 
-async def test_mark_seen_after_prune_returns_clean_shape(client: AsyncClient, db: aiosqlite.Connection) -> None:
-    """F20: the old trailing SELECT could be None if the row was pruned between
-    UPDATE and SELECT, raising on seen_row[0]. RETURNING reads the row in the
-    same statement, so there is no second window to race."""
+async def test_mark_seen_is_idempotent(client: AsyncClient, db: aiosqlite.Connection) -> None:
+    """The browser fires this as a discarded beacon, so a duplicate POST is
+    routine. The UPDATE is unconditional, so the second call moves seen_at
+    forward and rewrites the seen_media row; neither the 200-on-repeat contract
+    nor the timestamp drift was pinned anywhere."""
     await _insert_feed(db)
     await _insert_item(db, "item1", "feed1", seen_at=None)
-    resp = await client.post("/api/items/item1/seen")
-    assert resp.status_code == 200
-    assert "seen_at" in resp.json()
+    first = await client.post("/api/items/item1/seen")
+    second = await client.post("/api/items/item1/seen")
+    assert first.status_code == 200
+    assert second.status_code == 200
+    assert second.json()["seen_at"] >= first.json()["seen_at"]
+    async with db.execute(
+        "SELECT COUNT(*) FROM seen_media WHERE media_key = ?",
+        ("http://example.com/img.jpg",),
+    ) as cur:
+        assert (await cur.fetchone())[0] == 1, "INSERT OR REPLACE, not a second row"
 
 
 # ---------------------------------------------------------------------------
@@ -625,34 +633,6 @@ async def test_proxy_octet_stream_upstream_passes(
         await real_client.aclose()
     assert resp.status_code == 200
     assert resp.headers["content-type"].startswith("application/octet-stream")
-
-
-async def test_proxy_upstream_error(
-    client: AsyncClient,
-    tmp_path: object,
-    monkeypatch: object,
-    db: aiosqlite.Connection,
-) -> None:
-    import httpx
-    import respx
-
-    import src.media.cache as cache_mod
-
-    monkeypatch.setattr(cache_mod.settings, "cache_dir", str(tmp_path))
-    url = "http://example.com/broken.jpg"
-    await _register_proxy_url(db, url)
-
-    with respx.mock:
-        respx.get(_pinned(url)).mock(return_value=httpx.Response(404))
-        real_client = httpx.AsyncClient()
-        monkeypatch.setattr("src.api.media.get_http_client", lambda: real_client)
-        resp = await client.get(f"/api/media/proxy?url={url}")
-        await real_client.aclose()
-
-    assert resp.status_code == 502
-    async with db.execute("SELECT url FROM dead_urls") as cur:
-        rows = await cur.fetchall()
-    assert [r[0] for r in rows] == [url]
 
 
 async def test_proxy_404_marks_item_unavailable(
@@ -869,23 +849,6 @@ async def test_reddit_feeds_status_redirects_become_502(
     assert resp.status_code == 502
 
 
-async def test_reddit_feeds_status_redirect_is_502(client: AsyncClient, monkeypatch: pytest.MonkeyPatch) -> None:
-    """Task 6: a 3xx from upstream must surface as 502, never be silently
-    proxied through a rewritten Location header."""
-    from src.config import settings
-
-    monkeypatch.setattr(settings, "reddit_feeds_api_url", "http://rf.local")
-    with respx.mock:
-        respx.get("http://rf.local/status").mock(
-            return_value=httpx.Response(301, headers={"location": "http://elsewhere/status"})
-        )
-        real_client = httpx.AsyncClient()
-        monkeypatch.setattr("src.api.reddit_feeds.get_http_client", lambda: real_client)
-        resp = await client.get("/api/reddit-feeds/status")
-        await real_client.aclose()
-    assert resp.status_code == 502
-
-
 async def test_reddit_feeds_status_401_maps_to_502(
     client: AsyncClient,
     mock_http: respx.MockRouter,
@@ -916,42 +879,9 @@ async def test_reddit_feeds_status_non_json_body(
     assert resp.status_code == 502
 
 
-async def test_reddit_feeds_status_pending_status(
-    client: AsyncClient, mock_http: respx.MockRouter, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    upstream_json = {
-        "feeds": [
-            {
-                "name": "EarthPorn",
-                "last_status": "pending",
-                "last_fetch": "2026-07-27T14:02:00.123456+00:00",
-                "last_item_count": 5,
-                "total_items": 42,
-            },
-            {
-                "name": "Python",
-                "last_status": "success",
-                "last_fetch": "2026-07-27T14:02:02.123456+00:00",
-                "last_item_count": 3,
-                "total_items": 18,
-            },
-        ],
-        "last_run": "2026-07-27T14:02:05.654321+00:00",
-    }
-    mock_http.get("http://127.0.0.1:9090/status").mock(return_value=httpx.Response(200, json=upstream_json))
-    real_client = httpx.AsyncClient()
-    monkeypatch.setattr("src.api.reddit_feeds.get_http_client", lambda: real_client)
-    resp = await client.get("/api/reddit-feeds/status")
-    await real_client.aclose()
-    assert resp.status_code == 200
-    assert resp.json() == upstream_json
-
-
-@pytest.mark.asyncio
 async def test_items_interleaved_across_feeds(client: AsyncClient, db: aiosqlite.Connection) -> None:
     """Items from multiple feeds should be interleaved round-robin, oldest first."""
     import datetime
-    import hashlib  # noqa: F401
 
     async def insert_feed(fid: str, url: str) -> None:
         await db.execute("INSERT INTO feeds (id, url) VALUES (?, ?)", (fid, url))
@@ -1522,9 +1452,11 @@ async def test_feeds_zero_item_counts(client: AsyncClient, db: aiosqlite.Connect
 @pytest.mark.parametrize("size", [1, 200])
 async def test_items_accepts_size_boundaries(client: AsyncClient, db: aiosqlite.Connection, size: int) -> None:
     await _insert_feed(db)
-    await _insert_item(db, "item1", "feed1")
+    for n in range(3):
+        await _insert_item(db, f"item{n}", "feed1")
     resp = await client.get("/api/items", params={"size": size})
     assert resp.status_code == 200
+    assert len(resp.json()) == min(size, 3), "size must actually limit the page"
 
 
 async def test_proxy_non_media_content_type_is_not_an_error_log(

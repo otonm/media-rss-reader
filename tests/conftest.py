@@ -152,3 +152,14 @@ def _stub_dns(monkeypatch: pytest.MonkeyPatch) -> None:
         return [host]
 
     monkeypatch.setattr(fetch_mod, "_resolve", _fake_resolve)
+
+
+@pytest.fixture(autouse=True)
+def _clear_prefetch_tasks() -> AsyncGenerator[None]:
+    """_bg_tasks is module state with no reset, so what a test gathers
+    otherwise depends on test ordering."""
+    from src.media import prefetch as prefetch_mod
+
+    prefetch_mod._bg_tasks.clear()
+    yield
+    prefetch_mod._bg_tasks.clear()
