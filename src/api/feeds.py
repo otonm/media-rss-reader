@@ -5,7 +5,7 @@ from typing import Any
 
 from fastapi import APIRouter
 
-from src.db.connection import _DbDep
+from src.db.connection import DbDep
 from src.timing import timer
 
 logger = logging.getLogger(__name__)
@@ -13,7 +13,7 @@ router = APIRouter()
 
 
 @router.get("/feeds", response_model=None)
-async def list_feeds(db: _DbDep) -> list[dict[str, Any]]:
+async def list_feeds(db: DbDep) -> list[dict[str, Any]]:
     """Return all feeds with total and unseen item counts.
 
     The LEFT JOIN + conditional COUNT gives both counts in one query,
@@ -28,7 +28,7 @@ async def list_feeds(db: _DbDep) -> list[dict[str, Any]]:
            FROM feeds f
            LEFT JOIN items i ON i.feed_id = f.id
            GROUP BY f.id
-           ORDER BY f.title"""
+           ORDER BY f.title COLLATE NOCASE"""
     ) as cur:
         rows = await cur.fetchall()
     logger.debug(f"list_feeds returned {len(rows)} feed(s); db={elapsed():.1f}ms")

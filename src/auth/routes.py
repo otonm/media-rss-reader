@@ -21,7 +21,7 @@ from src.auth.session import (
     verify_setup_cookie,
 )
 from src.config import settings
-from src.db.connection import _DbDep
+from src.db.connection import DbDep
 
 logger = logging.getLogger(__name__)
 router = APIRouter()
@@ -87,7 +87,7 @@ async def post_login(
     password: str = Form(...),
     totp_code: str = Form(default=""),
     *,
-    db: _DbDep,
+    db: DbDep,
 ) -> Response:
     ip = _client_ip(request)
     logger.debug(f"post_login ip={ip} username_provided={bool(username)}")
@@ -126,7 +126,7 @@ async def post_login(
 
 
 @router.get("/setup")
-async def get_setup(request: Request, db: _DbDep) -> Response:
+async def get_setup(request: Request, db: DbDep) -> Response:
     logger.debug("get_setup entered")
     if await _load_totp_secret(db) is not None:
         logger.debug("get_setup TOTP already configured, redirecting to /login")
@@ -153,7 +153,7 @@ async def post_setup(
     request: Request,
     totp_code: str = Form(...),
     *,
-    db: _DbDep,
+    db: DbDep,
 ) -> Response:
     ip = _client_ip(request)
     logger.debug(f"post_setup ip={ip}")

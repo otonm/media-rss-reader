@@ -7,7 +7,7 @@ from fastapi import APIRouter, HTTPException, Query, Response
 from fastapi.responses import FileResponse, StreamingResponse
 
 from src.api.schemas import PrefetchHint
-from src.db.connection import _DbDep
+from src.db.connection import DbDep
 from src.media.availability import is_known_media_url
 from src.media.cache import cache_lookup
 from src.media.fetch import NonMediaUpstreamError, UpstreamError, open_upstream, tee_to_cache
@@ -26,7 +26,7 @@ async def proxy_media(
     url: str = Query(...),
     item_id: str | None = Query(None),
     *,
-    db: _DbDep,
+    db: DbDep,
 ) -> Response:
     """Cache-through proxy for media files.
 
@@ -106,7 +106,7 @@ async def proxy_media(
 @router.post("/prefetch/hint", response_model=None)
 async def prefetch_hint(
     body: PrefetchHint,
-    db: _DbDep,
+    db: DbDep,
 ) -> dict[str, str]:
     """Trigger background pre-fetching of items ahead of the given item.
 

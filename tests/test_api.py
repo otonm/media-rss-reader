@@ -65,6 +65,17 @@ async def test_feeds_returns_a_null_title(client: AsyncClient, db: aiosqlite.Con
     assert titles[0] is None
 
 
+async def test_feeds_ordered_case_insensitively(client: AsyncClient, db: aiosqlite.Connection) -> None:
+    """BINARY collation sorts every uppercase title before every lowercase one,
+    and titles come from feed metadata or a filename, so mixed case is the
+    norm."""
+    for fid, title in (("f1", "apple"), ("f2", "Banana"), ("f3", "cherry")):
+        await db.execute("INSERT INTO feeds(id, url, title) VALUES (?, ?, ?)", (fid, fid, title))
+    await db.commit()
+    titles = [f["title"] for f in (await client.get("/api/feeds")).json()]
+    assert titles == ["apple", "Banana", "cherry"]
+
+
 # ---------------------------------------------------------------------------
 # Helpers for items tests
 # ---------------------------------------------------------------------------

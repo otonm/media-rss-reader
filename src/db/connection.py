@@ -3,6 +3,9 @@
 open_db() is used by the scheduler (persistent connection held for the process lifetime).
 get_db() is a FastAPI dependency returning the connection opened at startup.
 run_with_own_db() is for work that outlives the request that started it.
+
+DbDep is the annotated dependency four modules in two other packages import;
+it is deliberately public.
 """
 
 import logging
@@ -56,7 +59,7 @@ async def get_db(request: Request) -> aiosqlite.Connection:
     return request.app.state.db
 
 
-_DbDep = Annotated[aiosqlite.Connection, Depends(get_db)]
+DbDep = Annotated[aiosqlite.Connection, Depends(get_db)]
 
 
 async def run_with_own_db(
