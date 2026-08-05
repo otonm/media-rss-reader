@@ -53,7 +53,7 @@ async def cancel_prefetch_tasks() -> None:
     logger.debug(f"cancel_prefetch_tasks: cancelled {len(tasks)} warm task(s)")
 
 
-async def _warm(item_id: str, url: str, client: httpx.AsyncClient) -> None:
+async def _warm(item_id: str, url: str, client: httpx.AsyncClient, request_id: str | None = None) -> None:
     """Fetch and cache one URL if it is not already cached.
 
     Caching, digest recording and dead-URL marking all live in src.media.fetch,
@@ -64,7 +64,7 @@ async def _warm(item_id: str, url: str, client: httpx.AsyncClient) -> None:
         if cache_read(url) is not None:
             logger.debug(f"_warm: {url} already on disk, skipping")
             return  # already cached — nothing to do
-        await fetch_to_cache(url, item_id, client)
+        await fetch_to_cache(url, item_id, client, request_id=request_id)
 
 
 async def warm_startup_cache(db: aiosqlite.Connection, client: httpx.AsyncClient) -> None:
@@ -91,7 +91,13 @@ async def warm_startup_cache(db: aiosqlite.Connection, client: httpx.AsyncClient
         _track(t)
 
 
-async def prefetch_ahead(item_id: str, db: aiosqlite.Connection, client: httpx.AsyncClient, unseen: bool = True) -> int:
+async def prefetch_ahead(
+    item_id: str,
+    db: aiosqlite.Connection,
+    client: httpx.AsyncClient,
+    unseen: bool = True,
+    request_id: str | None = None,
+) -> int:
     """Fire background warm tasks for the next PREFETCH_AHEAD items after item_id.
 
     'After' means strictly greater in the (rn, feed_id, id) interleave key that
@@ -105,6 +111,11 @@ async def prefetch_ahead(item_id: str, db: aiosqlite.Connection, client: httpx.A
     items — the items about to be displayed were never warmed (R12).
 
     Returns the number of warm tasks queued, which the hint endpoint logs (R9).
+
+    request_id ties the warm tasks back to the hint that queued them. The tasks
+    outlive the request, so the contextvar is already reset by the time they
+    log — it has to be passed explicitly, exactly as open_upstream and
+    tee_to_cache already accept it.
     """
     # Interpolated SQL fragments are source-controlled; request values remain bound.
     async with db.execute(
@@ -126,6 +137,6 @@ async def prefetch_ahead(item_id: str, db: aiosqlite.Connection, client: httpx.A
         rows = await cur.fetchall()
     logger.debug(f"prefetch_ahead for {item_id}: {len(rows)} item(s) ahead (unseen={unseen})")
     for row in rows:
-        t = asyncio.create_task(_warm(row["id"], row["media_url"], client))
+        t = asyncio.create_task(_warm(row["id"], row["media_url"], client, request_id=request_id))
         _track(t)
     return len(rows)

@@ -17,10 +17,19 @@ from src.config import settings
 from src.db.connection import open_db
 from src.db.migrations import backfill_seen_media, run_migrations
 from src.db.schema import create_schema
-from src.request_id import RequestIDMiddleware
+from src.request_id import RequestIDFilter, RequestIDMiddleware
 from src.scheduler import start_scheduler, stop_scheduler
 
-logging.basicConfig(level=settings.log_level.upper())
+logging.basicConfig(
+    level=settings.log_level.upper(),
+    format="%(asctime)s %(levelname)s [%(request_id)s] %(name)s: %(message)s",
+)
+# basicConfig is a no-op if handlers already exist (pytest's logging plugin,
+# a previous import); set the filter and format on them regardless.
+_log_fmt = "%(asctime)s %(levelname)s [%(request_id)s] %(name)s: %(message)s"
+for _handler in logging.getLogger().handlers:
+    _handler.addFilter(RequestIDFilter())
+    _handler.setFormatter(logging.Formatter(_log_fmt))
 logging.getLogger("httpcore").setLevel(logging.WARNING)
 logging.getLogger("aiosqlite").setLevel(logging.WARNING)
 logger = logging.getLogger(__name__)

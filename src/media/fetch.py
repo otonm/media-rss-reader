@@ -284,7 +284,7 @@ async def tee_to_cache(url: str, response: httpx.Response, request_id: str | Non
     )
 
 
-async def fetch_to_cache(url: str, item_id: str, client: httpx.AsyncClient) -> None:
+async def fetch_to_cache(url: str, item_id: str, client: httpx.AsyncClient, request_id: str | None = None) -> None:
     """Download `url` into the cache, discarding the bytes. Never raises.
 
     Skips URLs another download already holds, which is the common case: the
@@ -293,13 +293,13 @@ async def fetch_to_cache(url: str, item_id: str, client: httpx.AsyncClient) -> N
     """
     with download_claim(url) as first:
         if not first:
-            logger.debug(f"fetch_to_cache: {url} already in flight, skipping (request_id=None)")
+            logger.debug(f"fetch_to_cache: {url} already in flight, skipping (request_id={request_id})")
             return
         try:
-            logger.debug(f"fetch_to_cache: warming {url} (item_id={item_id}, request_id=None)")
-            response = await open_upstream(url, item_id, client, request_id=None)
-            async for _ in tee_to_cache(url, response, request_id=None):
+            logger.debug(f"fetch_to_cache: warming {url} (item_id={item_id}, request_id={request_id})")
+            response = await open_upstream(url, item_id, client, request_id=request_id)
+            async for _ in tee_to_cache(url, response, request_id=request_id):
                 pass
-            logger.debug(f"fetch_to_cache: warmed {url} (request_id=None)")
+            logger.debug(f"fetch_to_cache: warmed {url} (request_id={request_id})")
         except Exception as exc:
-            logger.debug(f"fetch_to_cache failed for {url}: {type(exc).__name__}: {exc} (request_id=None)")
+            logger.debug(f"fetch_to_cache failed for {url}: {type(exc).__name__}: {exc} (request_id={request_id})")

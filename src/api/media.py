@@ -90,8 +90,7 @@ async def proxy_media(
 
     content_type = response.headers.get("content-type", "application/octet-stream")
     logger.debug(
-        f"proxy_media: MISS ok {url} -> {response.status_code} type={content_type} "
-        f"upstream={upstream_ms:.1f}ms (request_id={current_request_id()})"
+        f"proxy_media: MISS ok {url} -> {response.status_code} type={content_type} upstream={upstream_ms:.1f}ms"
     )
     return StreamingResponse(
         tee_to_cache(url, response, request_id=current_request_id()),
@@ -124,6 +123,6 @@ async def prefetch_hint(
             raise HTTPException(status_code=404, detail="item not found")
     db_ms = (time.perf_counter() - t0) * 1000
     client = get_http_client()
-    queued = await prefetch_ahead(item_id, db, client, unseen=unseen)
+    queued = await prefetch_ahead(item_id, db, client, unseen=unseen, request_id=current_request_id())
     logger.debug(f"prefetch_hint item_id={item_id}: queued {queued} warm task(s); db={db_ms:.1f}ms")
     return {"status": "ok"}

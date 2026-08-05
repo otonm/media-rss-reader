@@ -187,7 +187,7 @@ async def test_prefetch_ahead_warms_seen_items_when_unseen_false(
 
     warmed: list[str] = []
 
-    async def _fake_warm(item_id: str, url: str, client: object) -> None:
+    async def _fake_warm(item_id: str, url: str, client: object, request_id: str | None = None) -> None:
         warmed.append(url)
 
     monkeypatch.setattr("src.media.prefetch._warm", _fake_warm)
