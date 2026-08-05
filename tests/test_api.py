@@ -325,12 +325,7 @@ async def test_mark_seen_items_and_seen_media_share_timestamp(
 
     import src.api.items as items_mod
 
-    ticks = iter(
-        [
-            real_dt.datetime(2026, 1, 1, 0, 0, s, tzinfo=real_dt.UTC)
-            for s in range(1, 10)
-        ]
-    )
+    ticks = iter([real_dt.datetime(2026, 1, 1, 0, 0, s, tzinfo=real_dt.UTC) for s in range(1, 10)])
 
     class _TickingClock(real_dt.datetime):
         @classmethod
@@ -345,13 +340,9 @@ async def test_mark_seen_items_and_seen_media_share_timestamp(
     assert resp.status_code == 200
     async with db.execute("SELECT seen_at FROM items WHERE id = 'item1'") as cur:
         items_seen = (await cur.fetchone())[0]
-    async with db.execute(
-        "SELECT seen_at FROM seen_media WHERE media_key = 'http://example.com/img.jpg'"
-    ) as cur:
+    async with db.execute("SELECT seen_at FROM seen_media WHERE media_key = 'http://example.com/img.jpg'") as cur:
         media_seen = (await cur.fetchone())[0]
-    assert items_seen == media_seen, (
-        f"one now() must be bound to both writes; got {items_seen} vs {media_seen}"
-    )
+    assert items_seen == media_seen, f"one now() must be bound to both writes; got {items_seen} vs {media_seen}"
 
 
 async def test_mark_seen_writes_seen_media(client: AsyncClient, db: aiosqlite.Connection) -> None:
@@ -1356,7 +1347,7 @@ async def test_list_items_logs_db_duration(
     )
 
 
-async def test_proxy_eviction_fallthrough_logs_info(
+async def test_proxy_eviction_fallthrough_logs_debug(
     client: AsyncClient,
     db: aiosqlite.Connection,
     tmp_path: Path,
@@ -1391,10 +1382,10 @@ async def test_proxy_eviction_fallthrough_logs_info(
         )
         real = httpx.AsyncClient()
         monkeypatch.setattr("src.api.media.get_http_client", lambda: real)
-        caplog.set_level(logging.INFO, logger="src.api.media")
+        caplog.set_level(logging.DEBUG, logger="src.api.media")
         await client.get(f"/api/media/proxy?url={url}")
         await real.aclose()
-    assert any(r.levelno == logging.INFO and "evicted" in r.getMessage() for r in caplog.records)
+    assert any(r.levelno == logging.DEBUG and "evicted" in r.getMessage() for r in caplog.records)
 
 
 async def test_proxy_exception_uses_logger_exception(
@@ -1550,3 +1541,78 @@ async def test_items_accepts_size_boundaries(client: AsyncClient, db: aiosqlite.
     await _insert_item(db, "item1", "feed1")
     resp = await client.get("/api/items", params={"size": size})
     assert resp.status_code == 200
+
+
+async def test_proxy_non_media_content_type_is_not_an_error_log(
+    client: AsyncClient,
+    db: aiosqlite.Connection,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """NonMediaUpstreamError is deliberately not a subclass of UpstreamError:
+    nothing is cached, nothing is marked dead, and the condition can flip back.
+    media.py imported only UpstreamError, so a WAF page or a login interstitial
+    fell into the catch-all and produced logger.exception — ERROR with a full
+    traceback, once per affected image — while open_upstream had already logged
+    the same event at WARNING with the real content type.
+    """
+    import httpx
+    import respx
+
+    import src.media.cache as cache_mod
+    import src.media.fetch as fetch_mod
+
+    monkeypatch.setattr(cache_mod.settings, "cache_dir", str(tmp_path))
+    url = "http://example.com/challenge.jpg"
+    await _register_proxy_url(db, url)
+    caplog.set_level(logging.DEBUG, logger="src.api.media")
+
+    with respx.mock:
+        respx.get(fetch_mod._pinned_url(url, "93.184.216.34")).mock(
+            return_value=httpx.Response(200, content=b"<html>go away</html>", headers={"content-type": "text/html"})
+        )
+        real = httpx.AsyncClient()
+        monkeypatch.setattr("src.api.media.get_http_client", lambda: real)
+        resp = await client.get(f"/api/media/proxy?url={url}")
+        await real.aclose()
+
+    assert resp.status_code == 502
+    assert resp.json()["detail"] == "upstream content type not media", (
+        "the fetch did not fail — the content type was refused"
+    )
+    media_records = [r for r in caplog.records if r.name == "src.api.media"]
+    assert not any(r.levelno >= logging.ERROR for r in media_records), (
+        "an expected, reversible outcome must not log at ERROR"
+    )
+    assert not any(r.exc_info for r in media_records), "and must not carry a traceback"
+
+
+async def test_reddit_feeds_unreachable_logs_warning_with_traceback(
+    client: AsyncClient, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+) -> None:
+    """The status modal polls at 1 Hz for as long as it is open, and the
+    default target is a companion service many deployments will not run.
+    logger.exception emitted one ERROR with a full httpx traceback every
+    second, forever, for an outcome the frontend renders as ordinary."""
+    import httpx
+
+    from src.config import settings
+
+    monkeypatch.setattr(settings, "reddit_feeds_api_url", "http://rf.local")
+    caplog.set_level(logging.DEBUG, logger="src.api.reddit_feeds")
+
+    class _Boom:
+        async def get(self, *a: object, **k: object) -> object:
+            raise httpx.ConnectError("nope")
+
+    monkeypatch.setattr("src.api.reddit_feeds.get_http_client", lambda: _Boom())
+    resp = await client.get("/api/reddit-feeds/status")
+
+    assert resp.status_code == 502
+    records = [r for r in caplog.records if r.name == "src.api.reddit_feeds"]
+    assert records, "the failure must still be logged"
+    assert all(r.levelno < logging.ERROR for r in records), "an absent optional service is recoverable"
+    assert any(r.levelno == logging.WARNING and r.exc_info for r in records), (
+        "the traceback is the point — httpx timeouts stringify to empty"
+    )

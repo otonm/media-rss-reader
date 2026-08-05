@@ -21,10 +21,14 @@ async def reddit_feeds_status() -> Response:
     try:
         resp = await client.get(url, timeout=10, follow_redirects=False)
     except Exception as exc:
-        # exception(), not warning(): httpx timeouts routinely stringify to
-        # empty, which left the line with no exception type and no traceback
-        # anywhere. from exc keeps __cause__ (R11).
-        logger.exception(f"reddit_feeds_status unreachable: {type(exc).__name__} for {url} after {elapsed():.0f}ms")
+        # warning, not exception(): an absent optional service is a recoverable
+        # condition, and the frontend already renders it as one. exc_info keeps
+        # the traceback, which matters because httpx timeouts routinely
+        # stringify to empty. from exc keeps __cause__ (R11).
+        logger.warning(
+            f"reddit_feeds_status unreachable: {type(exc).__name__} for {url} after {elapsed():.0f}ms",
+            exc_info=True,
+        )
         raise HTTPException(status_code=502, detail="Reddit Feeds API unreachable") from exc
     if not resp.is_success:
         logger.warning(f"reddit_feeds_status upstream returned {resp.status_code} for {url} in {elapsed():.0f}ms")
@@ -34,10 +38,12 @@ async def reddit_feeds_status() -> Response:
     except Exception as exc:
         # An HTML login page from a reverse proxy, a truncated body and a gzip
         # mismatch used to produce one identical line with no status, no
-        # content-type and no bound exception (R11).
-        logger.exception(
+        # content-type and no bound exception (R11). exc_info keeps the
+        # traceback at the level CLAUDE.md prescribes for recoverable errors.
+        logger.warning(
             f"reddit_feeds_status non-JSON body from {url}: {type(exc).__name__} "
-            f"status={resp.status_code} type={resp.headers.get('content-type', '?')}"
+            f"status={resp.status_code} type={resp.headers.get('content-type', '?')}",
+            exc_info=True,
         )
         raise HTTPException(status_code=502, detail="Reddit Feeds API returned non-JSON body") from exc
     logger.debug(
