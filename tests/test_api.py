@@ -50,6 +50,21 @@ async def test_feeds_ordered_by_title(client: AsyncClient, db: aiosqlite.Connect
     assert [f["title"] for f in resp.json()] == ["Alpha", "Mid", "Zeta"]
 
 
+async def test_feeds_returns_a_null_title(client: AsyncClient, db: aiosqlite.Connection) -> None:
+    """feeds.title is nullable and the codebase inserts such feeds, while
+    FeedOut declared title: str — a contract checked by nothing in either
+    direction, since response_model=None removes the runtime check and no type
+    checker is configured. SQLite sorts NULL first, so the feed also leads the
+    list."""
+    await db.execute("INSERT INTO feeds(id, url, title) VALUES ('f0', 'http://x', NULL)")
+    await db.execute("INSERT INTO feeds(id, url, title) VALUES ('f1', 'http://y', 'Alpha')")
+    await db.commit()
+    data = (await client.get("/api/feeds")).json()
+    titles = [f["title"] for f in data]
+    assert None in titles, "a title-less feed must still be returned"
+    assert titles[0] is None
+
+
 # ---------------------------------------------------------------------------
 # Helpers for items tests
 # ---------------------------------------------------------------------------

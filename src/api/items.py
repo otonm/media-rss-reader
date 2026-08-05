@@ -9,7 +9,6 @@ from typing import Any
 import aiosqlite
 from fastapi import APIRouter, HTTPException, Query
 
-from src.api.schemas import ItemOut, SeenResponse
 from src.db.connection import _DbDep
 from src.db.queries import INTERLEAVE_ORDER_BY, RANKED_ITEMS_CTE
 from src.media.cache import cache_name, cache_present_names
@@ -52,7 +51,7 @@ async def list_items(
     size: int = Query(50, ge=1, le=200),
     *,
     db: _DbDep,
-) -> list[ItemOut]:
+) -> list[dict[str, Any]]:
     """Return a keyset-paginated, interleaved list of media items.
 
     The window function assigns rn per feed over the FULL items set (seen
@@ -135,7 +134,7 @@ async def list_items(
 async def mark_seen(
     item_id: str,
     db: _DbDep,
-) -> SeenResponse:
+) -> dict[str, str]:
     """Mark an item as seen and return the timestamp.
 
     Uses UPDATE ... RETURNING (SQLite >= 3.35) so the SELECT-before-UPDATE
