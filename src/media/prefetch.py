@@ -97,7 +97,7 @@ async def prefetch_ahead(
     client: httpx.AsyncClient,
     unseen: bool = True,
     request_id: str | None = None,
-) -> int:
+) -> int | None:
     """Fire background warm tasks for the next PREFETCH_AHEAD items after item_id.
 
     'After' means strictly greater in the (rn, feed_id, id) interleave key that
@@ -110,7 +110,9 @@ async def prefetch_ahead(
     unseen=false while the hint fired from the same scroll warmed only unseen
     items — the items about to be displayed were never warmed (R12).
 
-    Returns the number of warm tasks queued, which the hint endpoint logs (R9).
+    Returns the number of warm tasks queued, which the hint endpoint logs (R9),
+    or None when item_id names no row — the hint turns that into F16's 404
+    rather than running a second lookup of its own.
 
     request_id ties the warm tasks back to the hint that queued them. The tasks
     outlive the request, so the contextvar is already reset by the time they
@@ -125,7 +127,7 @@ async def prefetch_ahead(
         cursor = await cur.fetchone()
     if cursor is None:
         logger.debug(f"prefetch_ahead: item {item_id} not found, warming nothing")
-        return 0
+        return None
     seen_filter = "seen_at IS NULL AND " if unseen else ""
     async with db.execute(
         f"""{RANKED_ITEMS_CTE}

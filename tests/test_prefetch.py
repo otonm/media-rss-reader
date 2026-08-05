@@ -197,3 +197,18 @@ async def test_prefetch_ahead_warms_seen_items_when_unseen_false(
         await asyncio.gather(*list(prefetch_mod._bg_tasks))
 
     assert warmed == ["http://x.com/2.jpg"]
+
+
+async def test_prefetch_ahead_returns_none_for_an_unknown_item(
+    db: aiosqlite.Connection, mock_http: respx.MockRouter
+) -> None:
+    """The hint endpoint ran its own SELECT to produce F16's 404, duplicating
+    the lookup prefetch_ahead already opens with — and timing only that
+    duplicate, while the two ROW_NUMBER scans that are the endpoint's actual
+    cost were excluded from the number the log called db=."""
+    import httpx
+
+    from src.media.prefetch import prefetch_ahead
+
+    async with httpx.AsyncClient() as client:
+        assert await prefetch_ahead("nonexistent", db, client) is None

@@ -6,7 +6,7 @@ import logging
 from fastapi import APIRouter, HTTPException, Query, Response
 from fastapi.responses import FileResponse, StreamingResponse
 
-from src.api.schemas import PrefetchHint, PrefetchHintResponse
+from src.api.schemas import PrefetchHint
 from src.db.connection import _DbDep
 from src.media.availability import is_known_media_url
 from src.media.cache import cache_lookup
@@ -105,29 +105,29 @@ async def proxy_media(
     )
 
 
-@router.post("/prefetch/hint")
+@router.post("/prefetch/hint", response_model=None)
 async def prefetch_hint(
     body: PrefetchHint,
     db: _DbDep,
-) -> PrefetchHintResponse:
+) -> dict[str, str]:
     """Trigger background pre-fetching of items ahead of the given item.
 
-    The browser calls this as a fire-and-forget POST whenever it loads a
-    new page of items. The hint launches asyncio background tasks; the
-    response returns immediately.
+    The browser calls this as a fire-and-forget POST whenever it loads a new
+    page of items. The hint launches asyncio background tasks and does not wait
+    for them, but it does await prefetch_ahead's two window-function queries
+    over the items table, which are the cost of this endpoint and what db=
+    measures.
+
+    response_model=None matters here as everywhere else: with a return
+    annotation and no override, FastAPI validates the returned value after this
+    function exits, outside its own error handling (R4).
     """
-    item_id = body.item_id
-    unseen = body.unseen
-    logger.debug(f"prefetch_hint item_id={item_id} unseen={unseen}")
-    if not item_id:
-        logger.debug("prefetch_hint: 422, no item_id in body")
-        raise HTTPException(status_code=422, detail="item_id required")
-    elapsed = timer()
-    async with db.execute("SELECT 1 FROM items WHERE id = ?", (item_id,)) as cur:
-        if await cur.fetchone() is None:
-            logger.debug(f"prefetch_hint: 404, item {item_id} not found")
-            raise HTTPException(status_code=404, detail="item not found")
+    logger.debug(f"prefetch_hint item_id={body.item_id} unseen={body.unseen}")
     client = get_http_client()
-    queued = await prefetch_ahead(item_id, db, client, unseen=unseen, request_id=current_request_id())
-    logger.debug(f"prefetch_hint item_id={item_id}: queued {queued} warm task(s); db={elapsed():.1f}ms")
+    elapsed = timer()
+    queued = await prefetch_ahead(body.item_id, db, client, unseen=body.unseen, request_id=current_request_id())
+    if queued is None:
+        logger.debug(f"prefetch_hint: 404, item {body.item_id} not found")
+        raise HTTPException(status_code=404, detail="item not found")
+    logger.debug(f"prefetch_hint item_id={body.item_id}: queued {queued} warm task(s); db={elapsed():.1f}ms")
     return {"status": "ok"}

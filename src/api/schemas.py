@@ -7,9 +7,9 @@ column would otherwise 500). PrefetchHint is a pydantic BaseModel because
 it crosses the trust boundary and must be validated on input.
 """
 
-from typing import TypedDict
+from typing import Annotated, TypedDict
 
-from pydantic import BaseModel, StrictBool
+from pydantic import BaseModel, Field, StrictBool
 
 
 class MediaSlide(TypedDict):
@@ -48,5 +48,9 @@ class PrefetchHintResponse(TypedDict):
 
 
 class PrefetchHint(BaseModel):
-    item_id: str
-    unseen: StrictBool = True
+    item_id: Annotated[str, Field(min_length=1)]
+    # Defaults to False to match /api/items. prefetch_ahead's docstring says
+    # `unseen` "mirrors the filter the page itself used" and documents R12, the
+    # bug where the two disagreed; opposite defaults re-armed it. The browser
+    # always sends the field, which is why nothing is broken today.
+    unseen: StrictBool = False

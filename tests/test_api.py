@@ -734,13 +734,23 @@ async def test_prefetch_hint(client: AsyncClient, db: aiosqlite.Connection, monk
     assert resp.json() == {"status": "ok"}
 
 
-async def test_prefetch_hint_missing_item_id(client: AsyncClient) -> None:
-    resp = await client.post("/api/prefetch/hint", json={})
-    assert resp.status_code == 422
+async def test_prefetch_hint_rejects_absent_or_empty_item_id(client: AsyncClient) -> None:
+    """The hand-rolled `if not item_id` guard answered
+    {"detail": "item_id required"} while pydantic's 422 for the same endpoint
+    gives detail as a list of error objects, so a client could not parse both
+    with one code path. min_length=1 makes it one shape — and those two lines
+    were the only unexecuted lines in the package."""
+    for body in ({}, {"item_id": ""}):
+        resp = await client.post("/api/prefetch/hint", json=body)
+        assert resp.status_code == 422, body
+        assert isinstance(resp.json()["detail"], list), body
 
 
-async def test_prefetch_hint_unknown_item_404(client: AsyncClient, db: aiosqlite.Connection) -> None:
+async def test_prefetch_hint_unknown_item_404(
+    client: AsyncClient, db: aiosqlite.Connection, monkeypatch: pytest.MonkeyPatch
+) -> None:
     """F16: a typo'd item_id must be 404, not indistinguishable from ok."""
+    monkeypatch.setattr("src.api.media.get_http_client", lambda: httpx.AsyncClient())
     resp = await client.post("/api/prefetch/hint", json={"item_id": "nonexistent"})
     assert resp.status_code == 404
 
