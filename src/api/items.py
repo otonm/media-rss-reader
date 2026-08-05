@@ -48,8 +48,6 @@ def _row_to_item(row: aiosqlite.Row, cached_names: set[str]) -> dict[str, Any]:
 @router.get("/items", response_model=None)
 async def list_items(
     unseen: bool = False,
-    after_feed_id: str | None = None,
-    after_pub_date: str | None = None,
     after_id: str | None = None,
     size: int = Query(50, ge=1, le=200),
     *,
@@ -62,46 +60,47 @@ async def list_items(
     items seen: marking item X seen removes it from the result but does not
     renumber any other item.
 
-    The cursor is the last item's (feed_id, pub_date, id) — three immutable
-    column values. rn itself is NOT a cursor: it is recomputed per request, so
+    The cursor is the id of the last item the client holds — one immutable
+    column value. rn itself is NOT a cursor: it is recomputed per request, so
     every prune_items cycle shifts it down under an outstanding client cursor
-    and the client skips exactly as many items as were pruned beneath it (R3).
-    Instead the anchor's rank is derived here by counting the rows of its feed
-    at or before it, which moves in lockstep with the ranks of the rows after
-    it. The count also resolves correctly when the anchor row was itself
-    pruned: it yields the position of the last surviving row at or before it.
+    and the client would skip exactly as many items as were pruned beneath it
+    (R3). Instead the anchor's (rn, feed_id, id) is looked up in the same CTE
+    that orders this page, which is what src/media/prefetch.py does with the
+    same cursor — the two sides of the interleave contract now use one
+    derivation rather than two.
+
+    Reading rn from the window rather than reconstructing it by counting is
+    what makes a NULL pub_date harmless: ROW_NUMBER sorts NULLs first and ranks
+    them 1..k, while a row-value comparison with a NULL member evaluates to
+    NULL in SQLite, so any count-based derivation drops exactly those rows.
 
     A count-based OFFSET cannot be correct here either: the set the client is
     counting over ceases to be a prefix of the server's ranking the moment any
     item changes seen state (F17).
 
-    Limitation: a newly inserted item with an older pub_date shifts its feed's
-    rn values and can invalidate an outstanding cursor. Rare in practice (new
-    feed entries vs. per-scroll mark-seen); the client's known-set guard dedups
-    the duplicate side.
+    An anchor that no longer exists — pruned, or its feed left the OPML and the
+    rows cascaded — answers 410. Resolving it to a position instead is what
+    produced a rank of 0, and `(rn, feed_id, id) > (0, ...)` admits the whole
+    table: page one of the global interleave, which the client's known-set
+    filter discards, leaving a cursor that never advances.
     """
-    cursor = (after_feed_id, after_pub_date, after_id)
-    if any(part is not None for part in cursor) and not all(part is not None for part in cursor):
-        logger.debug(
-            f"list_items: 422, partial cursor after_feed_id={after_feed_id} "
-            f"after_pub_date={after_pub_date} after_id={after_id}"
-        )
-        raise HTTPException(
-            status_code=422,
-            detail="after_feed_id, after_pub_date and after_id must be given together",
-        )
-
     conditions: list[str] = []
     params: list[str | int] = []
     if unseen:
         conditions.append("seen_at IS NULL")
-    if all(part is not None for part in cursor):
-        # The anchor's rank, derived from immutable values rather than echoed
-        # back by the client. Same partition, same tiebreak as the CTE window.
-        conditions.append(
-            "(rn, feed_id, id) > ((SELECT COUNT(*) FROM items WHERE feed_id = ? AND (pub_date, id) <= (?, ?)), ?, ?)"
-        )
-        params.extend([after_feed_id, after_pub_date, after_id, after_feed_id, after_id])
+    if after_id is not None:
+        # Same CTE, same partition, same tiebreak as the page query below.
+        async with db.execute(
+            f"{RANKED_ITEMS_CTE} SELECT rn, feed_id, id FROM ranked WHERE id = ?",  # noqa: S608
+            (after_id,),
+        ) as cur:
+            anchor = await cur.fetchone()
+        if anchor is None:
+            logger.info(f"list_items: 410, cursor anchor {after_id} no longer exists")
+            raise HTTPException(status_code=410, detail="cursor expired")
+        logger.debug(f"list_items: anchor {after_id} resolved to rn={anchor['rn']} feed_id={anchor['feed_id']}")
+        conditions.append("(rn, feed_id, id) > (?, ?, ?)")
+        params.extend([anchor["rn"], anchor["feed_id"], anchor["id"]])
     where_clause = ("WHERE " + " AND ".join(conditions)) if conditions else ""
     params.append(size)
 
@@ -115,7 +114,7 @@ async def list_items(
         {INTERLEAVE_ORDER_BY}
         LIMIT ?
     """  # noqa: S608
-    logger.debug(f"list_items unseen={unseen} cursor=({after_feed_id},{after_pub_date},{after_id}) size={size}")
+    logger.debug(f"list_items unseen={unseen} after_id={after_id} size={size}")
     t0 = time.perf_counter()
     async with db.execute(query, params) as cur:
         rows = await cur.fetchall()

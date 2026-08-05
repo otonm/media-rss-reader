@@ -133,15 +133,105 @@ async def test_items_keyset_cursor(client: AsyncClient, db: aiosqlite.Connection
     last = page1[-1]
     resp2 = await client.get(
         "/api/items",
-        params={
-            "after_feed_id": last["feed_id"],
-            "after_pub_date": last["pub_date"],
-            "after_id": last["id"],
-            "size": 2,
-        },
+        params={"size": 2, "after_id": last["id"]},
     )
     assert resp2.status_code == 200
     assert [i["id"] for i in resp2.json()] == ["item3"]
+
+
+async def test_items_cursor_paginates_feed_with_undated_items(client: AsyncClient, db: aiosqlite.Connection) -> None:
+    """The blocker: ROW_NUMBER sorts NULL pub_date first and ranks those rows
+    1..k, but a row-value comparison with a NULL member evaluates to NULL in
+    SQLite, so the old COUNT(*) derivation dropped them and produced rn - k.
+    Paginating a feed with undated items lost some and repeated others.
+    """
+    await _insert_feed(db)
+    for n in range(3):
+        await db.execute(
+            """INSERT INTO items(id, feed_id, guid, title, media_url, media_type, pub_date)
+               VALUES (?, 'feed1', ?, 'T', 'http://example.com/img.jpg', 'image', NULL)""",
+            (f"n{n}", f"gn{n}"),
+        )
+    for n in range(5):
+        await db.execute(
+            """INSERT INTO items(id, feed_id, guid, title, media_url, media_type, pub_date)
+               VALUES (?, 'feed1', ?, 'T', 'http://example.com/img.jpg', 'image', ?)""",
+            (f"d{n}", f"gd{n}", f"2026-01-0{n + 1}T00:00:00"),
+        )
+    await db.commit()
+
+    collected: list[str] = []
+    params: dict[str, object] = {"size": 2}
+    for _ in range(10):
+        resp = await client.get("/api/items", params=params)
+        assert resp.status_code == 200, resp.text
+        page = resp.json()
+        if not page:
+            break
+        collected += [i["id"] for i in page]
+        params = {"size": 2, "after_id": page[-1]["id"]}
+
+    assert collected == ["n0", "n1", "n2", "d0", "d1", "d2", "d3", "d4"], (
+        f"every item exactly once, in rn order; got {collected}"
+    )
+
+
+async def test_items_cursor_interleaves_two_feeds(client: AsyncClient, db: aiosqlite.Connection) -> None:
+    """The feed_id tiebreak in (rn, feed_id, id) is load-bearing: with two
+    feeds, rn collides across partitions on every page boundary. Every cursor
+    test used to insert into feed1 only, so removing feed_id from the tuple
+    kept them all green while breaking interleaved pagination.
+    """
+    await _insert_feed(db, feed_id="feedA", url="http://example.com/a.xml")
+    await _insert_feed(db, feed_id="feedB", url="http://example.com/b.xml")
+    for n in range(3):
+        for fid in ("feedA", "feedB"):
+            await db.execute(
+                """INSERT INTO items(id, feed_id, guid, title, media_url, media_type, pub_date)
+                   VALUES (?, ?, ?, 'T', 'http://example.com/img.jpg', 'image', ?)""",
+                (f"{fid}-{n}", fid, f"g-{fid}-{n}", f"2026-01-0{n + 1}T00:00:00"),
+            )
+    await db.commit()
+
+    collected: list[str] = []
+    params: dict[str, object] = {"size": 2}
+    for _ in range(10):
+        page = (await client.get("/api/items", params=params)).json()
+        if not page:
+            break
+        collected += [i["id"] for i in page]
+        params = {"size": 2, "after_id": page[-1]["id"]}
+
+    assert collected == [
+        "feedA-0",
+        "feedB-0",
+        "feedA-1",
+        "feedB-1",
+        "feedA-2",
+        "feedB-2",
+    ], f"interleaved order, no repeats, nothing skipped; got {collected}"
+
+
+async def test_items_cursor_anchor_gone_is_410(client: AsyncClient, db: aiosqlite.Connection) -> None:
+    """A rank of 0 used to admit the entire table (every row has rn >= 1), so
+    the client silently received page one of the global interleave, filtered it
+    all out against its known set, and re-issued the same request forever.
+    """
+    await _insert_feed(db)
+    await _insert_item(db, "item1", "feed1")
+    resp = await client.get("/api/items", params={"after_id": "never-existed", "size": 5})
+    assert resp.status_code == 410
+    assert resp.json()["detail"] == "cursor expired"
+
+
+async def test_items_cursor_anchor_gone_logs_the_id(
+    client: AsyncClient, db: aiosqlite.Connection, caplog: pytest.LogCaptureFixture
+) -> None:
+    """'Scrolling stopped working' has to be diagnosable from a log file."""
+    caplog.set_level(logging.INFO, logger="src.api.items")
+    await _insert_feed(db)
+    await client.get("/api/items", params={"after_id": "ghost"})
+    assert any("410" in r.getMessage() and "ghost" in r.getMessage() for r in caplog.records)
 
 
 async def test_items_keyset_no_skip_after_mark_seen(client: AsyncClient, db: aiosqlite.Connection) -> None:
@@ -167,13 +257,7 @@ async def test_items_keyset_no_skip_after_mark_seen(client: AsyncClient, db: aio
     last = first.json()[-1]
     second = await client.get(
         "/api/items",
-        params={
-            "unseen": "true",
-            "after_feed_id": last["feed_id"],
-            "after_pub_date": last["pub_date"],
-            "after_id": last["id"],
-            "size": 2,
-        },
+        params={"unseen": "true", "after_id": last["id"], "size": 2},
     )
     assert [i["id"] for i in second.json()] == ["item3", "item4"]
 
@@ -990,28 +1074,9 @@ async def test_items_cursor_survives_prune_beneath_it(client: AsyncClient, db: a
 
     page2 = await client.get(
         "/api/items",
-        params={
-            "after_feed_id": last["feed_id"],
-            "after_pub_date": last["pub_date"],
-            "after_id": last["id"],
-            "size": 4,
-        },
+        params={"after_id": last["id"], "size": 4},
     )
     assert [i["id"] for i in page2.json()] == ["item5", "item6", "item7", "item8"]
-
-
-async def test_items_partial_cursor_rejected(client: AsyncClient, db: aiosqlite.Connection) -> None:
-    """R3: a partial cursor must 422, not be silently dropped back to page 1."""
-    await _insert_feed(db)
-    await _insert_item(db, "item1", "feed1")
-    for params in (
-        {"after_feed_id": "feed1"},
-        {"after_id": "item1"},
-        {"after_feed_id": "feed1", "after_id": "item1"},
-        {"after_pub_date": "2026-01-01T00:00:00", "after_id": "item1"},
-    ):
-        resp = await client.get("/api/items", params=params)
-        assert resp.status_code == 422, f"{params} should be rejected"
 
 
 async def test_proxy_cache_hit_evicted_before_send_refetches(
@@ -1267,13 +1332,6 @@ async def test_list_items_logs_db_duration(
     )
 
 
-async def test_list_items_logs_partial_cursor_422(client: AsyncClient, caplog: pytest.LogCaptureFixture) -> None:
-    caplog.set_level(logging.DEBUG, logger="src.api.items")
-    resp = await client.get("/api/items", params={"after_feed_id": "f1"})
-    assert resp.status_code == 422
-    assert any("422" in r.getMessage() and "partial cursor" in r.getMessage() for r in caplog.records)
-
-
 async def test_proxy_eviction_fallthrough_logs_info(
     client: AsyncClient,
     db: aiosqlite.Connection,
@@ -1342,33 +1400,23 @@ async def test_proxy_exception_uses_logger_exception(
     )
 
 
-async def test_items_cursor_survives_pruned_anchor(client: AsyncClient, db: aiosqlite.Connection) -> None:
-    """The docstring's central edge case: the anchor row itself is pruned
-    between page-1 and page-2. The COUNT(*)-derived rank must still place the
-    cursor at the anchor's position, so page-2 returns exactly the post-anchor
-    items with no duplicates of page-1."""
+async def test_items_cursor_pruned_anchor_is_410(client: AsyncClient, db: aiosqlite.Connection) -> None:
+    """The anchor row is pruned between page-1 and page-2. The old COUNT(*)
+    derivation guessed a position from surviving rows and, when none survived,
+    guessed 0 and restarted the global ordering. An anchor that is gone is now
+    reported, not guessed at; the browser walks back to an older anchor."""
     await _insert_feed(db)
     for i in range(1, 6):
         await _insert_item(db, f"item{i}", "feed1")
     page1 = (await client.get("/api/items", params={"size": 3})).json()
     assert [i["id"] for i in page1] == ["item1", "item2", "item3"]
-    anchor = page1[-1]
     await db.execute("DELETE FROM items WHERE id = 'item3'")
     await db.commit()
-    page2 = (
-        await client.get(
-            "/api/items",
-            params={
-                "after_feed_id": anchor["feed_id"],
-                "after_pub_date": anchor["pub_date"],
-                "after_id": anchor["id"],
-                "size": 10,
-            },
-        )
-    ).json()
-    assert [i["id"] for i in page2] == ["item4", "item5"], (
-        f"pruned-anchor cursor must not re-emit page-1 items or skip ahead; got {[i['id'] for i in page2]}"
-    )
+    resp = await client.get("/api/items", params={"after_id": "item3", "size": 10})
+    assert resp.status_code == 410
+    # The next-best anchor still works, which is what the client falls back to.
+    page2 = (await client.get("/api/items", params={"after_id": "item2", "size": 10})).json()
+    assert [i["id"] for i in page2] == ["item4", "item5"]
 
 
 async def test_proxy_upstream_error_detail(

@@ -5,9 +5,9 @@ and the prefetcher warms the next items in the same order. They used to be
 three separate copies (items.py, prefetch.py twice) and had already drifted,
 so both import from here.
 
-The window orders by id as well as pub_date. That is not cosmetic: the
-/api/items cursor derives an anchor's rank by counting rows <= (pub_date, id),
-and that count only equals ROW_NUMBER if ties break by id.
+The window orders by id as well as pub_date. That is not cosmetic: /api/items
+resolves a cursor anchor with one statement and reads the page with another,
+and two statements can only agree on a rank if ties break deterministically.
 
 This module lives in src/db/ rather than src/api/ because src/media/prefetch.py
 imports it, and src/media must not depend on src/api.
