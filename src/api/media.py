@@ -1,5 +1,6 @@
 """Media proxy and prefetch hint endpoints."""
 
+import asyncio
 import logging
 
 from fastapi import APIRouter, HTTPException, Query, Response
@@ -8,7 +9,7 @@ from fastapi.responses import FileResponse, StreamingResponse
 from src.api.schemas import PrefetchHint, PrefetchHintResponse
 from src.db.connection import _DbDep
 from src.media.availability import is_known_media_url
-from src.media.cache import cache_read, cache_read_meta
+from src.media.cache import cache_lookup
 from src.media.fetch import NonMediaUpstreamError, UpstreamError, open_upstream, tee_to_cache
 from src.media.prefetch import prefetch_ahead
 from src.request_id import current_request_id
@@ -54,25 +55,20 @@ async def proxy_media(
     if not known:
         logger.info(f"proxy_media: refusing unknown url {url}")
         raise HTTPException(status_code=404, detail="not a known media url")
-    path = cache_read(url)
-    if path is not None:
-        try:
-            # cache_read only checks existence; FileResponse opens the file when
-            # the response is *sent*, after this function returned. evict() runs
-            # after every refresh cycle, and losing that race was a 500 for media
-            # the miss path below would have refetched (R2).
-            stat_result = path.stat()
-        except FileNotFoundError:
-            logger.debug(f"proxy_media: {url} evicted between check and send, falling through to upstream")
-        else:
-            media_type = cache_read_meta(url) or "application/octet-stream"
-            logger.debug(f"proxy_media: HIT {url} -> {path.name} (type={media_type})")
-            return FileResponse(
-                path,
-                media_type=media_type,
-                stat_result=stat_result,
-                headers={"X-Content-Type-Options": "nosniff"},
-            )
+    hit = await asyncio.to_thread(cache_lookup, url)
+    if hit is not None:
+        path, _stat_result, media_type = hit
+        logger.debug(f"proxy_media: HIT {url} -> {path.name} (type={media_type})")
+        # stat_result is deliberately NOT forwarded: passing it suppresses
+        # Starlette's own os.stat inside FileResponse.__call__, which is the
+        # check that fails before any bytes go out. evict() runs after every
+        # refresh cycle, and with the stat suppressed the client received a 200
+        # with a correct Content-Length and a body that died mid-flight (R2).
+        return FileResponse(
+            path,
+            media_type=media_type,
+            headers={"X-Content-Type-Options": "nosniff"},
+        )
 
     logger.debug(f"proxy_media: MISS {url} (item_id={item_id}), streaming from upstream")
     client = get_http_client()

@@ -167,6 +167,22 @@ def cache_read_meta(url: str) -> str | None:
     return meta.read_text(encoding="ascii").strip() or None
 
 
+def cache_lookup(url: str) -> tuple[Path, os.stat_result, str] | None:
+    """Return (path, stat, content_type) for a cached URL, or None on a miss.
+
+    One blocking call for the proxy's hit path instead of three. The stat is
+    also what makes a miss unambiguous: cache_read only checked existence, so a
+    file evicted between the check and the stat was a separate race the caller
+    had to handle.
+    """
+    path = _cache_path(url)
+    try:
+        stat_result = path.stat()
+    except FileNotFoundError:
+        return None
+    return path, stat_result, cache_read_meta(url) or "application/octet-stream"
+
+
 def cache_present_names() -> set[str]:
     """Return the set of cached data filenames (sha256 hex, no extension).
 

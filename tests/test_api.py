@@ -1101,17 +1101,18 @@ async def test_proxy_cache_hit_evicted_before_send_refetches(
     mock_http: respx.MockRouter,
     db: aiosqlite.Connection,
 ) -> None:
-    """R2: cache_read only stats for existence; FileResponse opens the file
-    after the handler returned. evict() runs after every refresh cycle while
-    the browser pulls several proxy requests, and losing that race raised
-    RuntimeError -> 500 for media the miss path would have refetched."""
+    """R2: cache_lookup stats the file itself, so a path that does not exist
+    is a miss and the request falls through to upstream — the outcome this test
+    has always wanted, now without a window in between."""
     import src.media.cache as cache_mod
 
     monkeypatch.setattr(cache_mod.settings, "cache_dir", str(tmp_path))
     url = "http://example.com/gone.jpg"
     await _register_proxy_url(db, url)
-    # cache_read says hit; the file is already gone by the time we serve it.
-    monkeypatch.setattr("src.api.media.cache_read", lambda _url: tmp_path / "evicted")
+    # cache_lookup stats the file itself, so a path that does not exist is a
+    # miss and the request falls through to upstream — the outcome this test
+    # has always wanted, now without a window in between.
+    monkeypatch.setattr(cache_mod, "_cache_path", lambda _url: tmp_path / "evicted")
 
     mock_http.get(_pinned(url)).mock(
         return_value=httpx.Response(200, content=b"refetched", headers={"content-type": "image/jpeg"})
@@ -1347,45 +1348,35 @@ async def test_list_items_logs_db_duration(
     )
 
 
-async def test_proxy_eviction_fallthrough_logs_debug(
+async def test_proxy_eviction_fallthrough_refetches(
     client: AsyncClient,
     db: aiosqlite.Connection,
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
-    caplog: pytest.LogCaptureFixture,
 ) -> None:
-    import hashlib
-
-    import src.api.media as media_mod
+    """R2: cache_lookup stats the file itself, so a file evicted between the
+    cache lookup and FileResponse is a miss by construction. The request falls
+    through to upstream and refetches, rather than raising RuntimeError."""
     import src.media.cache as cache_mod
     from src.media import fetch as fetch_mod
 
     monkeypatch.setattr(cache_mod.settings, "cache_dir", str(tmp_path))
     url = "http://example.com/evicted.jpg"
-    fname = hashlib.sha256(url.encode()).hexdigest()
-    (tmp_path / fname).write_bytes(b"")
-    await db.execute("INSERT INTO feeds(id,url,title) VALUES ('f','http://x','X')")
-    await db.execute("INSERT INTO items(id,feed_id,guid,media_url,media_type) VALUES ('i','f','g',?, 'image')", (url,))
-    await db.commit()
-    orig_read = media_mod.cache_read
+    await _register_proxy_url(db, url)
+    # _cache_path returns a path that does not exist → cache_lookup returns None
+    monkeypatch.setattr(cache_mod, "_cache_path", lambda _url: tmp_path / "evicted")
 
-    def _vanish(u: str) -> Path | None:
-        p = orig_read(u)
-        if p:
-            p.unlink(missing_ok=True)
-        return p
-
-    monkeypatch.setattr(media_mod, "cache_read", _vanish)
     with respx.mock:
         respx.get(fetch_mod._pinned_url(url, "93.184.216.34")).mock(
-            return_value=httpx.Response(200, content=b"x", headers={"content-type": "image/jpeg"})
+            return_value=httpx.Response(200, content=b"refetched", headers={"content-type": "image/jpeg"})
         )
         real = httpx.AsyncClient()
         monkeypatch.setattr("src.api.media.get_http_client", lambda: real)
-        caplog.set_level(logging.DEBUG, logger="src.api.media")
-        await client.get(f"/api/media/proxy?url={url}")
+        resp = await client.get(f"/api/media/proxy?url={url}")
         await real.aclose()
-    assert any(r.levelno == logging.DEBUG and "evicted" in r.getMessage() for r in caplog.records)
+
+    assert resp.status_code == 200
+    assert resp.content == b"refetched"
 
 
 async def test_proxy_exception_uses_logger_exception(
@@ -1615,4 +1606,36 @@ async def test_reddit_feeds_unreachable_logs_warning_with_traceback(
     assert all(r.levelno < logging.ERROR for r in records), "an absent optional service is recoverable"
     assert any(r.levelno == logging.WARNING and r.exc_info for r in records), (
         "the traceback is the point — httpx timeouts stringify to empty"
+    )
+
+
+async def test_proxy_hit_does_not_pass_stat_result_to_fileresponse(
+    client: AsyncClient, db: aiosqlite.Connection, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Passing stat_result suppresses Starlette's own os.stat inside
+    FileResponse.__call__ — the check that fails *before* any bytes go out.
+    With it suppressed, an eviction between the route and the send sends
+    http.response.start with a correct Content-Length and then a body that
+    dies mid-flight, instead of failing cleanly."""
+    import src.api.media as media_mod
+    import src.media.cache as cache_mod
+
+    monkeypatch.setattr(cache_mod.settings, "cache_dir", str(tmp_path))
+    url = "http://example.com/warm.jpg"
+    await _register_proxy_url(db, url)
+    (tmp_path / cache_mod.cache_name(url)).write_bytes(b"bytes")
+
+    captured: dict[str, object] = {}
+    real_file_response = media_mod.FileResponse
+
+    def _spy(*args: object, **kwargs: object) -> object:
+        captured.update(kwargs)
+        return real_file_response(*args, **kwargs)
+
+    monkeypatch.setattr(media_mod, "FileResponse", _spy)
+    resp = await client.get(f"/api/media/proxy?url={url}")
+
+    assert resp.status_code == 200
+    assert "stat_result" not in captured, (
+        "Starlette must re-stat at send time so a vanished file fails before headers go out"
     )
