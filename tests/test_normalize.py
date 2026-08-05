@@ -53,3 +53,46 @@ def test_media_key_passes_through_non_urls(url: str) -> None:
     """Input without a scheme+host is returned verbatim, so malformed URLs get
     a stable key of their own rather than all colliding on one empty key."""
     assert media_key(url) == url
+
+
+def test_item_slides_reads_the_media_json_array() -> None:
+    from src.media.normalize import item_slides
+
+    row = {
+        "id": "i1",
+        "media_url": "http://x/a.jpg",
+        "media_type": "image",
+        "media_json": '[{"url": "http://x/a.jpg", "type": "image"}, {"url": "http://x/b.jpg", "type": "image"}]',
+    }
+    assert item_slides(row) == [
+        {"url": "http://x/a.jpg", "type": "image"},
+        {"url": "http://x/b.jpg", "type": "image"},
+    ]
+
+
+def test_item_slides_falls_back_for_pre_v5_rows() -> None:
+    from src.media.normalize import item_slides
+
+    row = {"id": "i1", "media_url": "http://x/a.jpg", "media_type": "image", "media_json": None}
+    assert item_slides(row) == [{"url": "http://x/a.jpg", "type": "image"}]
+
+
+def test_item_slides_survives_truncated_media_json(caplog: pytest.LogCaptureFixture) -> None:
+    """json.loads ran unguarded inside a list comprehension over the whole
+    page, so one row with truncated media_json turned a 50-item page into a
+    500 — and the traceback named the line, never the id."""
+    import logging
+
+    from src.media.normalize import item_slides
+
+    caplog.set_level(logging.WARNING, logger="src.media.normalize")
+    row = {
+        "id": "broken-1",
+        "media_url": "http://x/a.jpg",
+        "media_type": "image",
+        "media_json": '[{"url": "http://x/a.jp',
+    }
+    assert item_slides(row) == [{"url": "http://x/a.jpg", "type": "image"}]
+    assert any("broken-1" in r.getMessage() for r in caplog.records), (
+        "the offending id must be in the log, not just the line number"
+    )

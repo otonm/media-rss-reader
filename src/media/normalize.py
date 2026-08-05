@@ -15,10 +15,39 @@ before they can be trusted, and a wrong rule collapses two distinct
 images into one.
 """
 
+import json
 import logging
+from collections.abc import Mapping
+from typing import Any
 from urllib.parse import urlsplit, urlunsplit
 
 logger = logging.getLogger(__name__)
+
+
+def item_slides(row: Mapping[str, Any]) -> list[dict[str, str]]:
+    """The media slides of an items row: the media_json array, or a 1-element
+    fallback built from media_url/media_type.
+
+    This shape — a JSON array of {url, type}, NULL meaning "fall back to the
+    primary columns" — was decoded independently in src/api/items.py and
+    src/media/availability.py. It lives here because both sides already import
+    this module and src/media must not depend on src/api, which is where the
+    type that could have been shared lived.
+
+    Rows predating migration v5 have media_json NULL. A truncated or otherwise
+    unparseable value falls back the same way rather than taking the caller
+    down: the decode used to run unguarded inside a list comprehension over a
+    whole page.
+    """
+    raw = row["media_json"]
+    if not raw:
+        logger.debug(f"item_slides: item {row['id']} has no media_json (pre-v5 row), using media_url")
+        return [{"url": row["media_url"], "type": row["media_type"]}]
+    try:
+        return json.loads(raw)
+    except (json.JSONDecodeError, TypeError) as exc:
+        logger.warning(f"item_slides: item {row['id']} has unusable media_json ({exc}), using media_url")
+        return [{"url": row["media_url"], "type": row["media_type"]}]
 
 
 def media_key(url: str) -> str:

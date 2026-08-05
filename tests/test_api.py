@@ -1664,3 +1664,17 @@ async def test_proxy_hit_does_not_pass_stat_result_to_fileresponse(
     assert "stat_result" not in captured, (
         "Starlette must re-stat at send time so a vanished file fails before headers go out"
     )
+
+
+async def test_items_page_survives_one_unparseable_row(client: AsyncClient, db: aiosqlite.Connection) -> None:
+    await _insert_feed(db)
+    await _insert_item(db, "good", "feed1")
+    await db.execute(
+        """INSERT INTO items(id, feed_id, guid, title, media_url, media_type, pub_date, media_json)
+           VALUES ('bad', 'feed1', 'gbad', 'T', 'http://example.com/img.jpg', 'image',
+                   datetime('now'), '[{"url": "trunc')"""
+    )
+    await db.commit()
+    resp = await client.get("/api/items")
+    assert resp.status_code == 200, "one bad row must not take the page down"
+    assert {i["id"] for i in resp.json()} == {"good", "bad"}

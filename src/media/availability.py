@@ -10,10 +10,11 @@ feed poll.
 
 from __future__ import annotations
 
-import json
 import logging
 
 import aiosqlite
+
+from src.media.normalize import item_slides
 
 logger = logging.getLogger(__name__)
 
@@ -34,7 +35,7 @@ async def _candidate_items(db: aiosqlite.Connection, url: str, item_id: str | No
 
     if item_id is not None:
         async with db.execute(
-            "SELECT id, feed_id, guid, media_url, media_json FROM items WHERE id = ?",
+            "SELECT id, feed_id, guid, media_url, media_type, media_json FROM items WHERE id = ?",
             (item_id,),
         ) as cur:
             for row in await cur.fetchall():
@@ -45,7 +46,7 @@ async def _candidate_items(db: aiosqlite.Connection, url: str, item_id: str | No
                     seen[row["id"]] = row
 
     async with db.execute(
-        "SELECT id, feed_id, guid, media_url, media_json FROM items WHERE media_url = ?",
+        "SELECT id, feed_id, guid, media_url, media_type, media_json FROM items WHERE media_url = ?",
         (url,),
     ) as cur:
         for row in await cur.fetchall():
@@ -56,10 +57,7 @@ async def _candidate_items(db: aiosqlite.Connection, url: str, item_id: str | No
 
 def _item_urls(row: aiosqlite.Row) -> list[str]:
     """Return the full media URL list for an item row (primary + gallery)."""
-    raw = row["media_json"]
-    if raw:
-        return [slide["url"] for slide in json.loads(raw)]
-    return [row["media_url"]]
+    return [slide["url"] for slide in item_slides(row)]
 
 
 def _escape_like(value: str) -> str:
@@ -79,7 +77,10 @@ async def is_known_media_url(url: str, db: aiosqlite.Connection) -> bool:
         if await cur.fetchone() is not None:
             return True
     pattern = f'%"{_escape_like(url)}"%'
-    async with db.execute("SELECT media_json FROM items WHERE media_json LIKE ? ESCAPE '\\'", (pattern,)) as cur:
+    async with db.execute(
+        "SELECT id, media_url, media_type, media_json FROM items WHERE media_json LIKE ? ESCAPE '\\'",
+        (pattern,),
+    ) as cur:
         for row in await cur.fetchall():
             if url in _item_urls(row):
                 return True

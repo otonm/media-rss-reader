@@ -2,7 +2,6 @@
 
 import asyncio
 import datetime as dt
-import json
 import logging
 from typing import Any
 
@@ -12,7 +11,7 @@ from fastapi import APIRouter, HTTPException, Query
 from src.db.connection import _DbDep
 from src.db.queries import INTERLEAVE_ORDER_BY, RANKED_ITEMS_CTE
 from src.media.cache import cache_name, cache_present_names
-from src.media.normalize import media_key
+from src.media.normalize import item_slides, media_key
 from src.timing import timer
 
 logger = logging.getLogger(__name__)
@@ -35,11 +34,8 @@ def _row_to_item(row: aiosqlite.Row, cached_names: set[str]) -> dict[str, Any]:
     # full-gallery warmth (F9). Checking all slides would mark a gallery whose
     # first slide is on disk as a miss, so the queue would re-download it.
     item = dict(row)
-    raw = item.pop("media_json")
-    if raw:
-        item["media"] = json.loads(raw)
-    else:
-        item["media"] = [{"url": item["media_url"], "type": item["media_type"]}]
+    item.pop("media_json")
+    item["media"] = item_slides(row)
     item["cached"] = cache_name(item["media_url"]) in cached_names
     return item
 
