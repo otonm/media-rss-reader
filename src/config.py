@@ -85,7 +85,19 @@ def _load_settings() -> Settings:
             kwargs[f.name] = int(env_val)
         else:
             kwargs[f.name] = env_val
-    return Settings(**kwargs)
+    s = Settings(**kwargs)
+    # Fail fast at startup: an empty session signer is forgeable, and a single
+    # empty credential silently turns compare_digest("", "") into a free login.
+    # Both-empty is NOT a safe "no-auth mode": /login then accepts empty creds,
+    # redirects to /setup with a setup cookie, and any visitor becomes admin.
+    if not s.auth_secret_key:
+        raise RuntimeError("AUTH_SECRET_KEY must be set; the session signer must not be empty")
+    if not (s.auth_username and s.auth_password):
+        raise RuntimeError(
+            "AUTH_USERNAME and AUTH_PASSWORD must both be set; empty credentials "
+            "are not safe with the /setup flow (any visitor becomes admin)"
+        )
+    return s
 
 
 settings = _load_settings()

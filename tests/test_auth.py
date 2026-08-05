@@ -50,7 +50,7 @@ def test_verify_session_tampered_token() -> None:
 
 def test_sign_and_verify_setup_cookie() -> None:
     key = "test-key"
-    secret = "JBSWY3DPEHPK3PXP"
+    secret = "JBSWY3DPEHPK3PXP"  # noqa: S105  # Fixed test TOTP secret.
     token = sign_setup_cookie(secret, key)
     result = verify_setup_cookie(token, key)
     assert result == secret
@@ -133,7 +133,7 @@ def test_generate_secret_is_unique() -> None:
 
 
 def test_build_uri_contains_secret_and_issuer() -> None:
-    secret = "JBSWY3DPEHPK3PXP"
+    secret = "JBSWY3DPEHPK3PXP"  # noqa: S105  # Fixed test TOTP secret.
     uri = totp_module.build_uri(secret, "admin")
     assert "otpauth://totp/" in uri
     assert secret in uri

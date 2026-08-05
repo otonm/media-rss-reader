@@ -8,8 +8,10 @@ run_with_own_db() is for work that outlives the request that started it.
 import logging
 from collections.abc import AsyncIterator, Awaitable, Callable
 from pathlib import Path
+from typing import Annotated
 
 import aiosqlite
+from fastapi import Depends
 
 from src.config import settings
 
@@ -47,6 +49,9 @@ async def get_db() -> AsyncIterator[aiosqlite.Connection]:
     finally:
         logger.debug("get_db closing request-scoped connection")
         await db.close()
+
+
+_DbDep = Annotated[aiosqlite.Connection, Depends(get_db)]
 
 
 async def run_with_own_db(

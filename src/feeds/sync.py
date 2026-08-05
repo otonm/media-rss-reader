@@ -264,7 +264,8 @@ async def sync_feeds(
 
     if union:
         placeholders = ",".join("?" * len(union))
-        await db.execute(f"DELETE FROM feeds WHERE url NOT IN ({placeholders})", list(union))
+        # Only placeholder count is interpolated; URL values remain bound.
+        await db.execute(f"DELETE FROM feeds WHERE url NOT IN ({placeholders})", list(union))  # noqa: S608
     else:
         # An empty union is almost always a missing mount or a companion
         # service mid-restart, not an instruction to drop every feed — and the

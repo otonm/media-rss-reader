@@ -8,8 +8,14 @@ import pytest
 import respx
 
 from src.media import cache as cache_mod
+from src.media import fetch as fetch_mod
 from src.media import prefetch as prefetch_mod
 from src.media.prefetch import _warm, prefetch_ahead
+
+
+def _pinned(url: str) -> str:
+    """The url as open_upstream now sends it: host replaced by the stubbed IP."""
+    return fetch_mod._pinned_url(url, "93.184.216.34")
 
 
 async def test_warm_on_cache_miss(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -18,7 +24,7 @@ async def test_warm_on_cache_miss(tmp_path: Path, monkeypatch: pytest.MonkeyPatc
     url = "http://example.com/img.jpg"
 
     with respx.mock:
-        respx.get(url).mock(
+        respx.get(_pinned(url)).mock(
             return_value=httpx.Response(200, content=b"imgbytes", headers={"content-type": "image/jpeg"})
         )
         async with httpx.AsyncClient() as client:
@@ -74,7 +80,7 @@ async def test_warm_non_success_response(tmp_path: Path, monkeypatch: pytest.Mon
     await run_migrations(conn)
 
     with respx.mock:
-        respx.get(url).mock(return_value=httpx.Response(404))
+        respx.get(_pinned(url)).mock(return_value=httpx.Response(404))
         async with httpx.AsyncClient() as client:
             await _warm("item1", url, client)
 
@@ -106,7 +112,7 @@ async def test_prefetch_ahead_fires_tasks(tmp_path: Path, monkeypatch: pytest.Mo
     await conn.commit()
 
     with respx.mock:
-        respx.get("http://example.com/img.jpg").mock(return_value=httpx.Response(200, content=b"data"))
+        respx.get(_pinned("http://example.com/img.jpg")).mock(return_value=httpx.Response(200, content=b"data"))
         async with httpx.AsyncClient() as client:
             await prefetch_ahead("item0", conn, client)
             # Allow tasks to run
@@ -151,8 +157,8 @@ async def test_prefetch_ahead_warms_items_ahead_not_behind(tmp_path: Path, monke
     await conn.commit()
 
     with respx.mock:
-        respx.get("http://example.com/1.jpg").mock(return_value=httpx.Response(200, content=b"d"))
-        respx.get("http://example.com/2.jpg").mock(return_value=httpx.Response(200, content=b"d"))
+        respx.get(_pinned("http://example.com/1.jpg")).mock(return_value=httpx.Response(200, content=b"d"))
+        respx.get(_pinned("http://example.com/2.jpg")).mock(return_value=httpx.Response(200, content=b"d"))
         async with httpx.AsyncClient() as client:
             await prefetch_ahead("i0", conn, client)
             await asyncio.sleep(0.1)

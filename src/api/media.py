@@ -1,30 +1,31 @@
 """Media proxy and prefetch hint endpoints."""
 
 import logging
-import os
-from typing import Annotated, Any
+import time
 
-import aiosqlite
-from fastapi import APIRouter, Depends, HTTPException, Query, Response
+from fastapi import APIRouter, HTTPException, Query, Response
 from fastapi.responses import FileResponse, StreamingResponse
 
-from src.db.connection import get_db
+from src.api.schemas import PrefetchHint, PrefetchHintResponse
+from src.db.connection import _DbDep
+from src.media.availability import is_known_media_url
 from src.media.cache import cache_read, cache_read_meta
 from src.media.fetch import UpstreamError, open_upstream, tee_to_cache
 from src.media.prefetch import prefetch_ahead
+from src.request_id import current_request_id
 from src.scheduler import get_http_client
 
 router = APIRouter()
 
 logger = logging.getLogger(__name__)
 
-_DbDep = Annotated[aiosqlite.Connection, Depends(get_db)]
-
 
 @router.get("/media/proxy", response_model=None)
 async def proxy_media(
     url: str = Query(...),
     item_id: str | None = Query(None),
+    *,
+    db: _DbDep,
 ) -> Response:
     """Cache-through proxy for media files.
 
@@ -47,6 +48,9 @@ async def proxy_media(
     streaming misses through is what prevents the black-screen stall on first
     paint (F7).
     """
+    if not await is_known_media_url(url, db):
+        logger.debug(f"proxy_media: refusing unknown url {url}")
+        raise HTTPException(status_code=404, detail="not a known media url")
     path = cache_read(url)
     if path is not None:
         try:
@@ -54,9 +58,9 @@ async def proxy_media(
             # the response is *sent*, after this function returned. evict() runs
             # after every refresh cycle, and losing that race was a 500 for media
             # the miss path below would have refetched (R2).
-            stat_result = os.stat(path)
+            stat_result = path.stat()
         except FileNotFoundError:
-            logger.debug(f"proxy_media: {url} evicted between check and send, falling through to upstream")
+            logger.info(f"proxy_media: {url} evicted between check and send, falling through to upstream")
         else:
             media_type = cache_read_meta(url) or "application/octet-stream"
             logger.debug(f"proxy_media: HIT {url} -> {path.name} (type={media_type})")
@@ -70,7 +74,9 @@ async def proxy_media(
     logger.debug(f"proxy_media: MISS {url} (item_id={item_id}), streaming from upstream")
     client = get_http_client()
     try:
-        response = await open_upstream(url, item_id, client)
+        t_up = time.perf_counter()
+        response = await open_upstream(url, item_id, client, request_id=current_request_id())
+        upstream_ms = (time.perf_counter() - t_up) * 1000
     except UpstreamError as exc:
         # A failed user-visible request, and on 404/410 a destructive state
         # change (the URL marked dead, a fully-dead item dropped). This used to
@@ -79,12 +85,16 @@ async def proxy_media(
         logger.warning(f"proxy_media: 502 for {url} (item_id={item_id}) — {exc}")
         raise HTTPException(status_code=502, detail="upstream error") from exc
     except Exception as exc:
-        logger.warning(f"proxy_media: upstream fetch failed for {url}: {type(exc).__name__}: {exc}")
+        logger.exception(f"proxy_media: upstream fetch failed for {url}: {type(exc).__name__}: {exc}")
         raise HTTPException(status_code=502, detail="upstream fetch failed") from exc
 
     content_type = response.headers.get("content-type", "application/octet-stream")
+    logger.debug(
+        f"proxy_media: MISS ok {url} -> {response.status_code} type={content_type} "
+        f"upstream={upstream_ms:.1f}ms (request_id={current_request_id()})"
+    )
     return StreamingResponse(
-        tee_to_cache(url, response),
+        tee_to_cache(url, response, request_id=current_request_id()),
         media_type=content_type,
         headers={"X-Content-Type-Options": "nosniff"},
     )
@@ -92,26 +102,28 @@ async def proxy_media(
 
 @router.post("/prefetch/hint")
 async def prefetch_hint(
-    body: dict[str, Any],
-    db: _DbDep = None,  # type: ignore[assignment]
-) -> dict[str, str]:
+    body: PrefetchHint,
+    db: _DbDep,
+) -> PrefetchHintResponse:
     """Trigger background pre-fetching of items ahead of the given item.
 
     The browser calls this as a fire-and-forget POST whenever it loads a
     new page of items. The hint launches asyncio background tasks; the
     response returns immediately.
     """
-    item_id = str(body.get("item_id", ""))
-    unseen = bool(body.get("unseen", True))
+    item_id = body.item_id
+    unseen = body.unseen
     logger.debug(f"prefetch_hint item_id={item_id} unseen={unseen}")
     if not item_id:
         logger.debug("prefetch_hint: 422, no item_id in body")
         raise HTTPException(status_code=422, detail="item_id required")
+    t0 = time.perf_counter()
     async with db.execute("SELECT 1 FROM items WHERE id = ?", (item_id,)) as cur:
         if await cur.fetchone() is None:
             logger.debug(f"prefetch_hint: 404, item {item_id} not found")
             raise HTTPException(status_code=404, detail="item not found")
+    db_ms = (time.perf_counter() - t0) * 1000
     client = get_http_client()
     queued = await prefetch_ahead(item_id, db, client, unseen=unseen)
-    logger.debug(f"prefetch_hint item_id={item_id}: queued {queued} warm task(s)")
+    logger.debug(f"prefetch_hint item_id={item_id}: queued {queued} warm task(s); db={db_ms:.1f}ms")
     return {"status": "ok"}

@@ -25,7 +25,7 @@ import logging
 import socket
 from collections.abc import AsyncIterator
 from contextlib import aclosing
-from urllib.parse import urlsplit
+from urllib.parse import urljoin, urlsplit
 
 import httpx
 
@@ -72,14 +72,20 @@ def _resolve(host: str) -> list[str]:
     return [host]
 
 
-async def _check_url(url: str) -> None:
-    """Raise UpstreamError unless `url` is an http(s) URL on a public address.
+def _pinned_url(original: str, ip: str) -> str:
+    """Return `original` with its host replaced by the literal IP `ip`."""
+    parts = urlsplit(original)
+    port = parts.port
+    netloc = (f"[{ip}]:{port}" if port else f"[{ip}]") if ":" in ip else f"{ip}:{port}" if port else ip
+    return parts._replace(netloc=netloc).geturl()
 
-    This is the only place that sees every fetch target: the proxy passes a
-    client-supplied `url` and the prefetcher passes URLs taken straight from
-    third-party feed content, with no session involved at all. Without it the
-    reader will fetch anything on the Docker network, or a cloud metadata
-    endpoint, and stream the body back (R1).
+
+async def _check_url(url: str) -> list[str]:
+    """Return the validated public IP(s) for `url`, or raise UpstreamError.
+
+    The caller pins the httpx request to one of these IPs (with the original
+    Host header + SNI) so httpx cannot re-resolve the host and reach a
+    different address than the one validated here (DNS-rebinding TOCTOU).
     """
     parts = urlsplit(url)
     if parts.scheme not in ("http", "https"):
@@ -88,28 +94,37 @@ async def _check_url(url: str) -> None:
     if not host:
         raise UpstreamError(f"refusing URL with no host: {url}")
     if settings.allow_private_media_hosts:
-        return
-    try:
         addrs = await asyncio.to_thread(_resolve, host)
-    except OSError as exc:
-        raise UpstreamError(f"cannot resolve {host} for {url}: {exc}") from exc
-    for addr in addrs:
-        ip = ipaddress.ip_address(addr)
-        # ::ffff:127.0.0.1 is loopback wearing an IPv6 hat.
-        ip = getattr(ip, "ipv4_mapped", None) or ip
-        if (
-            ip.is_private
-            or ip.is_loopback
-            or ip.is_link_local
-            or ip.is_multicast
-            or ip.is_reserved
-            or ip.is_unspecified
-        ):
-            logger.warning(f"_check_url: refusing {url} — {host} resolves to non-public address {ip}")
-            raise UpstreamError(f"refusing non-public address {ip} for {url}")
+    else:
+        try:
+            addrs = await asyncio.to_thread(_resolve, host)
+        except OSError as exc:
+            raise UpstreamError(f"cannot resolve {host} for {url}: {exc}") from exc
+        validated: list[str] = []
+        for addr in addrs:
+            ip = ipaddress.ip_address(addr)
+            # ::ffff:127.0.0.1 is loopback wearing an IPv6 hat.
+            ip = getattr(ip, "ipv4_mapped", None) or ip
+            if (
+                ip.is_private
+                or ip.is_loopback
+                or ip.is_link_local
+                or ip.is_multicast
+                or ip.is_reserved
+                or ip.is_unspecified
+            ):
+                logger.warning(f"_check_url: refusing {url} — {host} resolves to non-public address {ip}")
+                raise UpstreamError(f"refusing non-public address {ip} for {url}")
+            validated.append(str(ip))
+        addrs = validated
+    if not addrs:
+        raise UpstreamError(f"cannot resolve {host} for {url}")
+    return addrs
 
 
-async def open_upstream(url: str, item_id: str | None, client: httpx.AsyncClient) -> httpx.Response:
+async def open_upstream(
+    url: str, item_id: str | None, client: httpx.AsyncClient, request_id: str | None = None
+) -> httpx.Response:
     """Open a streaming upstream response, or raise UpstreamError.
 
     The body is left unread so the caller can tee it. Ownership of the response
@@ -125,21 +140,30 @@ async def open_upstream(url: str, item_id: str | None, client: httpx.AsyncClient
     non-media content type raises NonMediaUpstreamError instead: the URL is
     NOT marked dead, but the response is closed and nothing is cached (F5).
     """
-    logger.debug(f"open_upstream: GET {url} (item_id={item_id}, timeout={UPSTREAM_TIMEOUT_S}s)")
-    target = url
+    logger.debug(
+        f"open_upstream: GET {url} (item_id={item_id}, timeout={UPSTREAM_TIMEOUT_S}s, request_id={request_id})"
+    )
+    logical = url
     for _ in range(MAX_REDIRECTS + 1):
-        await _check_url(target)
-        response = await client.send(
-            client.build_request("GET", target, timeout=UPSTREAM_TIMEOUT_S),
-            stream=True,
-            follow_redirects=False,
+        validated = await _check_url(logical)
+        pinned = _pinned_url(logical, validated[0])
+        host = urlsplit(logical).hostname or ""
+        request = client.build_request(
+            "GET",
+            pinned,
+            timeout=UPSTREAM_TIMEOUT_S,
+            headers={"Host": host} if host else None,
+            extensions={"sni_hostname": host} if host else None,
         )
+        response = await client.send(request, stream=True, follow_redirects=False)
         if not response.has_redirect_location:
             break
         location = response.headers["location"]
         await response.aclose()
-        target = str(response.url.join(location))
-        logger.debug(f"open_upstream: {url} redirected to {target}")
+        # Join the location against the LOGICAL url (original host), not the
+        # pinned IP, so the original hostname survives relative redirects.
+        logical = urljoin(logical, location)
+        logger.debug(f"open_upstream: {url} redirected to {logical} (request_id={request_id})")
     else:
         raise UpstreamError(f"more than {MAX_REDIRECTS} redirects for {url}")
     if not response.is_success:
@@ -150,13 +174,15 @@ async def open_upstream(url: str, item_id: str | None, client: httpx.AsyncClient
         # re-insert it. A 429 or 503 from a busy CDN is transient, and marking
         # dead on those erased posts permanently (R5).
         if status in (404, 410):
-            logger.debug(f"open_upstream: {url} returned {status}, marking dead")
+            logger.debug(f"open_upstream: {url} returned {status}, marking dead (request_id={request_id})")
             await run_with_own_db(
                 f"mark_url_dead_and_maybe_drop for {url}",
                 lambda db: mark_url_dead_and_maybe_drop(url, item_id, db),
             )
         else:
-            logger.debug(f"open_upstream: {url} returned {status}; transient, not marking dead")
+            logger.debug(
+                f"open_upstream: {url} returned {status}; transient, not marking dead (request_id={request_id})"
+            )
         raise UpstreamError(f"upstream returned {status} for {url}")
     content_type = response.headers.get("content-type", "application/octet-stream")
     media_type = content_type.split(";")[0].strip().lower()
@@ -177,12 +203,13 @@ async def open_upstream(url: str, item_id: str | None, client: httpx.AsyncClient
     logger.debug(
         f"open_upstream: {url} -> {response.status_code} "
         f"type={response.headers.get('content-type', '?')} "
-        f"length={response.headers.get('content-length', 'unknown')}"
+        f"length={response.headers.get('content-length', 'unknown')} "
+        f"request_id={request_id}"
     )
     return response
 
 
-async def tee_to_cache(url: str, response: httpx.Response) -> AsyncIterator[bytes]:
+async def tee_to_cache(url: str, response: httpx.Response, request_id: str | None = None) -> AsyncIterator[bytes]:
     """Yield the response body onward while writing it into the cache.
 
     A client that disconnects mid-stream cancels this generator, so the partial
@@ -196,6 +223,8 @@ async def tee_to_cache(url: str, response: httpx.Response) -> AsyncIterator[byte
     digest = hashlib.sha256()
     sent = 0
     complete = False
+    server_abort = False
+    non_client_abort = False
     # Held for the whole transfer so the prefetcher leaves this URL alone while
     # a client is already pulling it.
     with download_claim(url):
@@ -206,27 +235,47 @@ async def tee_to_cache(url: str, response: httpx.Response) -> AsyncIterator[byte
         cached = cache_stream_tee(url, response.aiter_bytes(CHUNK_SIZE), content_type)
         try:
             async with aclosing(cached):
-                async for chunk in cached:
-                    digest.update(chunk)
-                    sent += len(chunk)
-                    if settings.media_max_bytes and sent > settings.media_max_bytes:
-                        # The response body has already started, so the client
-                        # sees a truncated file. That is the trade for not
-                        # letting an undeclared stream fill the volume (R7).
-                        raise UpstreamError(
-                            f"upstream body for {url} passed MEDIA_MAX_BYTES "
-                            f"({settings.media_max_bytes}) after {sent} bytes; aborting"
-                        )
-                    yield chunk
-            complete = True
+                try:
+                    async for chunk in cached:
+                        digest.update(chunk)
+                        sent += len(chunk)
+                        if settings.media_max_bytes and sent > settings.media_max_bytes:
+                            # The response body has already started, so the client
+                            # sees a truncated file. That is the trade for not
+                            # letting an undeclared stream fill the volume (R7).
+                            server_abort = True
+                            logger.warning(
+                                f"tee_to_cache: server aborted {url} after {sent} bytes "
+                                f"(over MEDIA_MAX_BYTES={settings.media_max_bytes}); client sees a truncated file "
+                                f"(request_id={request_id})"
+                            )
+                            raise UpstreamError(
+                                f"upstream body for {url} passed MEDIA_MAX_BYTES "
+                                f"({settings.media_max_bytes}) after {sent} bytes; aborting"
+                            )
+                        yield chunk
+                except UpstreamError:
+                    raise
+                except Exception as exc:
+                    logger.warning(
+                        f"tee_to_cache: aborted {url} after {sent} bytes: {type(exc).__name__}: {exc} "
+                        f"(request_id={request_id})"
+                    )
+                    non_client_abort = True
+                    raise
+                complete = True
         finally:
             await response.aclose()
             if complete:
-                logger.debug(f"tee_to_cache: streamed {sent} bytes of {url} to client and cache")
+                logger.debug(
+                    f"tee_to_cache: streamed {sent} bytes of {url} to client and cache (request_id={request_id})"
+                )
+            elif server_abort or non_client_abort:
+                pass  # already logged at WARNING above
             else:
                 logger.debug(
                     f"tee_to_cache: client stopped reading {url} after {sent} bytes; "
-                    "nothing cached, the prefetcher will warm it later"
+                    f"nothing cached, the prefetcher will warm it later (request_id={request_id})"
                 )
 
     await run_with_own_db(
@@ -244,13 +293,13 @@ async def fetch_to_cache(url: str, item_id: str, client: httpx.AsyncClient) -> N
     """
     with download_claim(url) as first:
         if not first:
-            logger.debug(f"fetch_to_cache: {url} already in flight, skipping")
+            logger.debug(f"fetch_to_cache: {url} already in flight, skipping (request_id=None)")
             return
         try:
-            logger.debug(f"fetch_to_cache: warming {url} (item_id={item_id})")
-            response = await open_upstream(url, item_id, client)
-            async for _ in tee_to_cache(url, response):
+            logger.debug(f"fetch_to_cache: warming {url} (item_id={item_id}, request_id=None)")
+            response = await open_upstream(url, item_id, client, request_id=None)
+            async for _ in tee_to_cache(url, response, request_id=None):
                 pass
-            logger.debug(f"fetch_to_cache: warmed {url}")
+            logger.debug(f"fetch_to_cache: warmed {url} (request_id=None)")
         except Exception as exc:
-            logger.debug(f"fetch_to_cache failed for {url}: {type(exc).__name__}: {exc}")
+            logger.debug(f"fetch_to_cache failed for {url}: {type(exc).__name__}: {exc} (request_id=None)")

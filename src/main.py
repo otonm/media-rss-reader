@@ -17,6 +17,7 @@ from src.config import settings
 from src.db.connection import open_db
 from src.db.migrations import backfill_seen_media, run_migrations
 from src.db.schema import create_schema
+from src.request_id import RequestIDMiddleware
 from src.scheduler import start_scheduler, stop_scheduler
 
 logging.basicConfig(level=settings.log_level.upper())
@@ -67,6 +68,7 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None]:
 
 app = FastAPI(lifespan=lifespan)
 app.add_middleware(AuthMiddleware)
+app.add_middleware(RequestIDMiddleware)
 app.include_router(auth_routes.router)
 app.include_router(feeds.router, prefix="/api")
 app.include_router(items.router, prefix="/api")

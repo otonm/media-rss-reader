@@ -1,5 +1,6 @@
 """Tests for the shared upstream-fetch path used by the proxy and the prefetcher."""
 
+import logging
 from pathlib import Path
 
 import aiosqlite
@@ -20,11 +21,18 @@ def _tmp_files(d: Path) -> list[Path]:
     return [p for p in d.iterdir() if p.suffix == ".tmp"]
 
 
+def _pinned(url: str) -> str:
+    """The url as open_upstream now sends it: host replaced by the stubbed IP."""
+    return fetch_mod._pinned_url(url, "93.184.216.34")
+
+
 async def test_tee_streams_bytes_and_fills_cache(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(cache_mod.settings, "cache_dir", str(tmp_path))
 
     with respx.mock:
-        respx.get(URL).mock(return_value=httpx.Response(200, content=PAYLOAD, headers={"content-type": "image/jpeg"}))
+        respx.get(_pinned(URL)).mock(
+            return_value=httpx.Response(200, content=PAYLOAD, headers={"content-type": "image/jpeg"})
+        )
         async with httpx.AsyncClient() as client:
             response = await open_upstream(URL, None, client)
             received = b"".join([chunk async for chunk in tee_to_cache(URL, response)])
@@ -46,7 +54,9 @@ async def test_abandoned_stream_leaves_no_cache_entry(tmp_path: Path, monkeypatc
     monkeypatch.setattr(cache_mod.settings, "cache_dir", str(tmp_path))
 
     with respx.mock:
-        respx.get(URL).mock(return_value=httpx.Response(200, content=PAYLOAD, headers={"content-type": "image/jpeg"}))
+        respx.get(_pinned(URL)).mock(
+            return_value=httpx.Response(200, content=PAYLOAD, headers={"content-type": "image/jpeg"})
+        )
         async with httpx.AsyncClient() as client:
             response = await open_upstream(URL, None, client)
             stream = tee_to_cache(URL, response)
@@ -64,7 +74,7 @@ async def test_open_upstream_marks_dead_on_error_status(
     monkeypatch.setattr(cache_mod.settings, "cache_dir", str(tmp_path))
 
     with respx.mock:
-        respx.get(URL).mock(return_value=httpx.Response(404))
+        respx.get(_pinned(URL)).mock(return_value=httpx.Response(404))
         async with httpx.AsyncClient() as client:
             with pytest.raises(UpstreamError):
                 await open_upstream(URL, None, client)
@@ -84,7 +94,7 @@ async def test_fetch_to_cache_skips_url_already_in_flight(tmp_path: Path, monkey
     monkeypatch.setattr(cache_mod.settings, "cache_dir", str(tmp_path))
 
     with respx.mock:
-        route = respx.get(URL).mock(return_value=httpx.Response(200, content=PAYLOAD))
+        route = respx.get(_pinned(URL)).mock(return_value=httpx.Response(200, content=PAYLOAD))
         async with httpx.AsyncClient() as client:
             with download_claim(URL):  # someone else is downloading it
                 await fetch_to_cache(URL, "item-1", client)
@@ -98,7 +108,9 @@ async def test_open_upstream_refuses_non_media(tmp_path: Path, monkeypatch: pyte
     monkeypatch.setattr(cache_mod.settings, "cache_dir", str(tmp_path))
 
     with respx.mock:
-        respx.get(URL).mock(return_value=httpx.Response(200, content=b"<html/>", headers={"content-type": "text/html"}))
+        respx.get(_pinned(URL)).mock(
+            return_value=httpx.Response(200, content=b"<html/>", headers={"content-type": "text/html"})
+        )
         async with httpx.AsyncClient() as client:
             with pytest.raises(NonMediaUpstreamError):
                 await open_upstream(URL, "item-1", client)
@@ -112,7 +124,9 @@ async def test_fetch_to_cache_html_not_cached(tmp_path: Path, monkeypatch: pytes
     monkeypatch.setattr(cache_mod.settings, "cache_dir", str(tmp_path))
 
     with respx.mock:
-        respx.get(URL).mock(return_value=httpx.Response(200, content=b"<html/>", headers={"content-type": "text/html"}))
+        respx.get(_pinned(URL)).mock(
+            return_value=httpx.Response(200, content=b"<html/>", headers={"content-type": "text/html"})
+        )
         async with httpx.AsyncClient() as client:
             await fetch_to_cache(URL, "item-1", client)  # never raises
 
@@ -143,7 +157,7 @@ async def test_fetch_to_cache_dedupes_concurrent_same_url(tmp_path: Path, monkey
         return httpx.Response(200, content=b"bytes", headers={"content-type": "image/jpeg"})
 
     with respx.mock:
-        respx.get(url).mock(side_effect=handler)
+        respx.get(_pinned(url)).mock(side_effect=handler)
         async with httpx.AsyncClient() as client:
             await asyncio.gather(
                 fetch_to_cache(url, "i1", client),
@@ -193,7 +207,7 @@ async def test_open_upstream_refuses_redirect_into_private(tmp_path: Path, monke
     """follow_redirects used to be True, so a public host could bounce the
     fetch into the Docker network on the second hop."""
     monkeypatch.setattr(cache_mod.settings, "cache_dir", str(tmp_path))
-    respx.get("http://example.com/x.jpg").mock(
+    respx.get(_pinned("http://example.com/x.jpg")).mock(
         return_value=httpx.Response(302, headers={"location": "http://127.0.0.1:9090/status"})
     )
     async with httpx.AsyncClient() as client:
@@ -205,10 +219,12 @@ async def test_open_upstream_refuses_redirect_into_private(tmp_path: Path, monke
 async def test_open_upstream_follows_public_redirect(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     """The manual redirect loop must still follow an ordinary CDN redirect."""
     monkeypatch.setattr(cache_mod.settings, "cache_dir", str(tmp_path))
-    respx.get("http://example.com/x.jpg").mock(
+    # Both example.com and cdn.example.com pin to the same stubbed IP, so the
+    # routes are told apart by the Host header the request carries.
+    respx.get(_pinned("http://example.com/x.jpg"), headers={"Host": "example.com"}).mock(
         return_value=httpx.Response(302, headers={"location": "http://cdn.example.com/x.jpg"})
     )
-    respx.get("http://cdn.example.com/x.jpg").mock(
+    respx.get(_pinned("http://cdn.example.com/x.jpg"), headers={"Host": "cdn.example.com"}).mock(
         return_value=httpx.Response(200, content=b"bytes", headers={"content-type": "image/jpeg"})
     )
     async with httpx.AsyncClient() as client:
@@ -248,7 +264,7 @@ async def test_open_upstream_429_does_not_mark_dead(
     )
     await db.commit()
 
-    respx.get(url).mock(return_value=httpx.Response(429))
+    respx.get(_pinned(url)).mock(return_value=httpx.Response(429))
     async with httpx.AsyncClient() as client:
         with pytest.raises(UpstreamError):
             await open_upstream(url, "i1", client)
@@ -265,7 +281,7 @@ async def test_open_upstream_rejects_oversized_content_length(tmp_path: Path, mo
     monkeypatch.setattr(cache_mod.settings, "cache_dir", str(tmp_path))
     monkeypatch.setattr(fetch_mod.settings, "media_max_bytes", 100)
     url = "http://example.com/huge.mp4"
-    respx.get(url).mock(
+    respx.get(_pinned(url)).mock(
         return_value=httpx.Response(
             200, headers={"content-type": "video/mp4", "content-length": "999999"}, content=b"x"
         )
@@ -284,7 +300,7 @@ async def test_tee_to_cache_aborts_past_the_byte_budget(tmp_path: Path, monkeypa
     # A streaming body with no Content-Length: the declared-length check in
     # open_upstream cannot trip, so the running budget in tee_to_cache is the
     # only thing that can stop it (the scenario the test names).
-    respx.get(url).mock(
+    respx.get(_pinned(url)).mock(
         return_value=httpx.Response(200, headers={"content-type": "video/mp4"}, stream=httpx.ByteStream(b"x" * 1000))
     )
     async with httpx.AsyncClient() as client:
@@ -301,7 +317,7 @@ async def test_open_upstream_refuses_svg(tmp_path: Path, monkeypatch: pytest.Mon
     its <script> on the app's own origin, with the session cookie attached."""
     monkeypatch.setattr(cache_mod.settings, "cache_dir", str(tmp_path))
     url = "http://example.com/evil.svg"
-    respx.get(url).mock(
+    respx.get(_pinned(url)).mock(
         return_value=httpx.Response(
             200, headers={"content-type": "image/svg+xml"}, content=b"<svg><script>x</script></svg>"
         )
@@ -309,3 +325,158 @@ async def test_open_upstream_refuses_svg(tmp_path: Path, monkeypatch: pytest.Mon
     async with httpx.AsyncClient() as client:
         with pytest.raises(NonMediaUpstreamError):
             await open_upstream(url, None, client)
+
+
+async def test_open_upstream_refuses_dns_rebinding(monkeypatch: pytest.MonkeyPatch) -> None:
+    """A host whose first resolution is public and second is private must be
+    refused: the SSRF guard must not be TOCTOU-vulnerable to DNS rebinding."""
+    import httpx
+    import respx
+
+    import src.media.fetch as fetch_mod
+
+    calls = {"n": 0}
+
+    def _rebinding_resolve(host: str) -> list[str]:
+        calls["n"] += 1
+        # _check_url resolves first (public), httpx would resolve again (private).
+        return ["93.184.216.34"] if calls["n"] == 1 else ["169.254.169.254"]
+
+    monkeypatch.setattr(fetch_mod, "_resolve", _rebinding_resolve)
+    monkeypatch.setattr(fetch_mod.settings, "allow_private_media_hosts", 0)
+
+    url = "http://rebind.example.com/x.jpg"
+    seen_hosts: list[str] = []
+
+    def _handler(request: httpx.Request) -> httpx.Response:
+        seen_hosts.append(request.url.host)
+        return httpx.Response(200, content=b"x", headers={"content-type": "image/jpeg"})
+
+    with respx.mock:
+        respx.get(fetch_mod._pinned_url(url, "93.184.216.34")).mock(side_effect=_handler)
+        async with httpx.AsyncClient() as client:
+            resp = await fetch_mod.open_upstream(url, None, client)
+            assert resp.status_code == 200
+            await resp.aclose()
+    # The request must go to the one validated IP, not to the hostname that
+    # (in an un-mocked world) would next resolve to a link-local address.
+    assert calls["n"] == 1, "open_upstream must not let httpx re-resolve the host"
+    assert seen_hosts == ["93.184.216.34"], f"request went to {seen_hosts}"
+
+
+async def test_tee_to_cache_server_abort_logs_warning(tmp_path: Path, caplog: pytest.LogCaptureFixture) -> None:
+    """A byte-budget abort is a lossy event: the client sees a truncated file.
+
+    It must log at WARNING and not be mislabelled as a client disconnect.
+    """
+    import httpx
+    import respx
+
+    import src.media.cache as cache_mod
+    from src.media import fetch as fetch_mod
+
+    monkeypatch_fetch = pytest.MonkeyPatch()
+    monkeypatch_fetch.setattr(cache_mod.settings, "cache_dir", str(tmp_path))
+    monkeypatch_fetch.setattr(fetch_mod.settings, "media_max_bytes", 4)
+    try:
+        url = "http://example.com/big.jpg"
+        body = b"0123456789"
+        with respx.mock:
+            # No Content-Length: open_upstream cannot pre-trip on the declared
+            # size, so the running budget inside tee_to_cache is what aborts.
+            respx.get(_pinned(url)).mock(
+                return_value=httpx.Response(
+                    200,
+                    headers={"content-type": "image/jpeg"},
+                    stream=httpx.ByteStream(body),
+                )
+            )
+            async with httpx.AsyncClient() as client:
+                resp = await fetch_mod.open_upstream(url, None, client)
+                caplog.set_level(logging.DEBUG)
+                with pytest.raises(fetch_mod.UpstreamError, match="MEDIA_MAX_BYTES"):
+                    async for _ in fetch_mod.tee_to_cache(url, resp):
+                        pass
+    finally:
+        monkeypatch_fetch.undo()
+
+    assert any(r.levelno == logging.WARNING and "server aborted" in r.getMessage() for r in caplog.records), (
+        "a size-check abort must log at WARNING, not be mislabelled a client disconnect"
+    )
+
+
+async def test_tee_to_cache_client_disconnect_logs_debug(tmp_path: Path, caplog: pytest.LogCaptureFixture) -> None:
+    """A real client disconnect is expected and stays at DEBUG."""
+    import httpx
+    import respx
+
+    import src.media.cache as cache_mod
+    from src.media import fetch as fetch_mod
+
+    monkeypatch_fetch = pytest.MonkeyPatch()
+    monkeypatch_fetch.setattr(cache_mod.settings, "cache_dir", str(tmp_path))
+    monkeypatch_fetch.setattr(fetch_mod.settings, "media_max_bytes", 0)
+    try:
+        url = "http://example.com/stream.jpg"
+        with respx.mock:
+            respx.get(_pinned(url)).mock(
+                return_value=httpx.Response(200, content=b"abcdefghij", headers={"content-type": "image/jpeg"})
+            )
+            async with httpx.AsyncClient() as client:
+                resp = await fetch_mod.open_upstream(url, None, client)
+                caplog.set_level(logging.DEBUG)
+                gen = fetch_mod.tee_to_cache(url, resp)
+                await gen.__anext__()  # pull one chunk then abandon
+                await gen.aclose()
+    finally:
+        monkeypatch_fetch.undo()
+
+    assert any(r.levelno == logging.DEBUG and "client stopped reading" in r.getMessage() for r in caplog.records)
+
+
+async def test_tee_to_cache_non_client_abort_not_mislabeled(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+) -> None:
+    """A cache-side failure (disk full, write error) raised after the first
+    chunk must NOT fall through to the "client stopped reading" debug log —
+    T5 only covered the byte-budget path. Regression guard."""
+    import collections.abc
+
+    import httpx
+    import respx
+
+    monkeypatch.setattr(cache_mod.settings, "cache_dir", str(tmp_path))
+
+    # Wrap the bound cache_stream_tee in fetch_mod so the second yield raises.
+    orig = fetch_mod.cache_stream_tee
+
+    async def _failing_tee(
+        url: str, chunks: collections.abc.AsyncIterable[bytes], content_type: str = "application/octet-stream"
+    ) -> None:
+        yielded = 0
+        async for chunk in orig(url, chunks, content_type):
+            yielded += 1
+            yield chunk
+            if yielded >= 1:
+                raise OSError("simulated cache write failure")
+
+    monkeypatch.setattr(fetch_mod, "cache_stream_tee", _failing_tee)
+
+    url = "http://example.com/boomboom.jpg"
+    with respx.mock:
+        respx.get(_pinned(url)).mock(
+            return_value=httpx.Response(200, content=b"x" * 4096, headers={"content-type": "image/jpeg"})
+        )
+        caplog.set_level(logging.DEBUG)
+        async with httpx.AsyncClient() as client:
+            resp = await fetch_mod.open_upstream(url, None, client)
+            with pytest.raises(OSError, match="simulated cache write failure"):
+                async for _ in fetch_mod.tee_to_cache(url, resp):
+                    pass
+
+    assert any(r.levelno == logging.WARNING and "aborted" in r.getMessage() for r in caplog.records), (
+        "cache-side abort must log at WARNING"
+    )
+    assert not any(r.levelno == logging.DEBUG and "client stopped reading" in r.getMessage() for r in caplog.records), (
+        "non-client abort must NOT be mislabelled as a client disconnect"
+    )

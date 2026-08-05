@@ -19,7 +19,7 @@ async def reddit_feeds_status() -> Response:
     logger.debug(f"reddit_feeds_status fetching {url}")
     started = time.perf_counter()
     try:
-        resp = await client.get(url, timeout=10, follow_redirects=True)
+        resp = await client.get(url, timeout=10, follow_redirects=False)
     except Exception as exc:
         # exception(), not warning(): httpx timeouts routinely stringify to
         # empty, which left the line with no exception type and no traceback
@@ -41,9 +41,16 @@ async def reddit_feeds_status() -> Response:
             f"status={resp.status_code} type={resp.headers.get('content-type', '?')}"
         )
         raise HTTPException(status_code=502, detail="Reddit Feeds API returned non-JSON body") from exc
-    logger.debug(f"reddit_feeds_status {resp.status_code} from {url} in {elapsed_ms:.0f}ms")
+    logger.debug(
+        f"reddit_feeds_status {resp.status_code} from {url} in {elapsed_ms:.0f}ms "
+        f"bytes={len(resp.content)} type={resp.headers.get('content-type', '?')}"
+    )
     # Pass the body through rather than returning a parsed value: a `-> dict`
     # annotation makes FastAPI validate the return *after* this function exits,
     # outside the try, so a JSON array (`[]` for "no feeds yet") became a 500
     # instead of the 502-or-pass-through this endpoint promises (R4).
-    return Response(content=resp.content, media_type="application/json")
+    return Response(
+        content=resp.content,
+        media_type="application/json",
+        headers={"X-Content-Type-Options": "nosniff"},
+    )

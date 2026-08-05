@@ -20,7 +20,8 @@ def parse_opml(path: str) -> list[dict[str, str]]:
     """
     with open(path, encoding="utf-8") as f:
         try:
-            tree = ElementTree.parse(f)
+            # This parses an operator-provided local config file, not remote request input.
+            tree = ElementTree.parse(f)  # noqa: S314
         except ElementTree.ParseError:
             return []
 

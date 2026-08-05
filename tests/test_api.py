@@ -1,4 +1,5 @@
 import logging
+import re
 from pathlib import Path
 
 import aiosqlite
@@ -6,6 +7,13 @@ import httpx
 import pytest
 import respx
 from httpx import AsyncClient
+
+
+def _pinned(url: str) -> str:
+    """The url as open_upstream now sends it: host replaced by the stubbed IP."""
+    from src.media import fetch as fetch_mod
+
+    return fetch_mod._pinned_url(url, "93.184.216.34")
 
 
 async def test_feeds_empty(client: AsyncClient) -> None:
@@ -221,6 +229,22 @@ async def test_mark_seen(client: AsyncClient, db: aiosqlite.Connection) -> None:
     assert row[0] is not None
 
 
+async def test_mark_seen_items_and_seen_media_share_timestamp(client: AsyncClient, db: aiosqlite.Connection) -> None:
+    """F11: items.seen_at and seen_media.seen_at are bound to one `now` so they
+    cannot diverge. A refactor that binds a second dt.now() to the INSERT must
+    fail this test.
+    """
+    await _insert_feed(db)
+    await _insert_item(db, "item1", "feed1", seen_at=None)
+    resp = await client.post("/api/items/item1/seen")
+    assert resp.status_code == 200
+    async with db.execute("SELECT seen_at FROM items WHERE id = 'item1'") as cur:
+        items_seen = (await cur.fetchone())[0]
+    async with db.execute("SELECT seen_at FROM seen_media WHERE media_key = 'http://example.com/img.jpg'") as cur:
+        media_seen = (await cur.fetchone())[0]
+    assert items_seen == media_seen, f"items.seen_at ({items_seen}) != seen_media.seen_at ({media_seen})"
+
+
 async def test_mark_seen_writes_seen_media(client: AsyncClient, db: aiosqlite.Connection) -> None:
     """seen_media is the durable record — it must outlive the items row."""
     await _insert_feed(db)
@@ -238,6 +262,34 @@ async def test_mark_seen_writes_seen_media(client: AsyncClient, db: aiosqlite.Co
     await db.commit()
     async with db.execute("SELECT COUNT(*) FROM seen_media") as cur:
         assert (await cur.fetchone())[0] == 1
+
+
+async def test_mark_seen_rolls_back_when_seen_media_write_fails(
+    client: AsyncClient, db: aiosqlite.Connection, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """If the INSERT OR REPLACE INTO seen_media raises, the UPDATE must not
+    be left committed — otherwise items.seen_at is set with no durable seen
+    record.
+    """
+    await _insert_feed(db)
+    await _insert_item(db, "item1", "feed1", seen_at=None)
+    orig_execute = db.execute
+    calls = {"n": 0}
+
+    def _flaky_execute(query: str, params: tuple[object, ...] = ()) -> object:
+        calls["n"] += 1
+        if "INSERT OR REPLACE INTO seen_media" in query:
+            raise aiosqlite.OperationalError("simulated disk full")
+        return orig_execute(query, params)
+
+    monkeypatch.setattr(db, "execute", _flaky_execute)
+    monkeypatch.setattr(client._transport, "raise_app_exceptions", False)
+    resp = await client.post("/api/items/item1/seen")
+    monkeypatch.undo()
+    assert resp.status_code == 500
+    async with db.execute("SELECT seen_at FROM items WHERE id = 'item1'") as cur:
+        row = await cur.fetchone()
+    assert row[0] is None, "items.seen_at must be rolled back when seen_media write fails"
 
 
 async def test_mark_seen_not_found(client: AsyncClient) -> None:
@@ -261,13 +313,26 @@ async def test_mark_seen_after_prune_returns_clean_shape(client: AsyncClient, db
 # ---------------------------------------------------------------------------
 
 
-async def test_proxy_cache_hit(client: AsyncClient, tmp_path: object, monkeypatch: object) -> None:
+async def _register_proxy_url(db: aiosqlite.Connection, url: str) -> None:
+    """Register `url` as an item's media_url so the proxy gate accepts it."""
+    await db.execute("INSERT INTO feeds(id, url, title) VALUES ('fproxy', 'http://x', 'X')")
+    await db.execute(
+        "INSERT INTO items(id, feed_id, guid, media_url, media_type) VALUES ('iproxy', 'fproxy', 'g', ?, 'image')",
+        (url,),
+    )
+    await db.commit()
+
+
+async def test_proxy_cache_hit(
+    client: AsyncClient, tmp_path: object, monkeypatch: object, db: aiosqlite.Connection
+) -> None:
     import hashlib
 
     import src.media.cache as cache_mod
 
     monkeypatch.setattr(cache_mod.settings, "cache_dir", str(tmp_path))
     url = "http://example.com/img.jpg"
+    await _register_proxy_url(db, url)
     filename = hashlib.sha256(url.encode()).hexdigest()
     (tmp_path / filename).write_bytes(b"cached")  # type: ignore[operator]
 
@@ -277,7 +342,7 @@ async def test_proxy_cache_hit(client: AsyncClient, tmp_path: object, monkeypatc
 
 
 async def test_proxy_cache_hit_returns_correct_content_type(
-    client: AsyncClient, tmp_path: object, monkeypatch: object
+    client: AsyncClient, tmp_path: object, monkeypatch: object, db: aiosqlite.Connection
 ) -> None:
     """Cache hit must serve the stored Content-Type, not octet-stream.
 
@@ -292,6 +357,7 @@ async def test_proxy_cache_hit_returns_correct_content_type(
 
     monkeypatch.setattr(cache_mod.settings, "cache_dir", str(tmp_path))
     url = "http://example.com/anim.gif"
+    await _register_proxy_url(db, url)
     filename = hashlib.sha256(url.encode()).hexdigest()
     (tmp_path / filename).write_bytes(b"GIF89a")  # type: ignore[operator]
     (tmp_path / f"{filename}.meta").write_text("image/gif")  # type: ignore[operator]
@@ -302,7 +368,7 @@ async def test_proxy_cache_hit_returns_correct_content_type(
 
 
 async def test_proxy_cache_hit_falls_back_when_sidecar_missing(
-    client: AsyncClient, tmp_path: object, monkeypatch: object
+    client: AsyncClient, tmp_path: object, monkeypatch: object, db: aiosqlite.Connection
 ) -> None:
     """Pre-sidecar cached files (no .meta sibling) must still be servable."""
     import hashlib
@@ -311,6 +377,7 @@ async def test_proxy_cache_hit_falls_back_when_sidecar_missing(
 
     monkeypatch.setattr(cache_mod.settings, "cache_dir", str(tmp_path))
     url = "http://example.com/anim.gif"
+    await _register_proxy_url(db, url)
     filename = hashlib.sha256(url.encode()).hexdigest()
     (tmp_path / filename).write_bytes(b"GIF89a")  # type: ignore[operator]
     # no .meta written — simulates a cache file from before sidecars existed
@@ -325,7 +392,9 @@ async def test_proxy_cache_hit_falls_back_when_sidecar_missing(
     assert resp.headers["x-content-type-options"] == "nosniff"
 
 
-async def test_proxy_cache_miss(client: AsyncClient, tmp_path: object, monkeypatch: object) -> None:
+async def test_proxy_cache_miss(
+    client: AsyncClient, tmp_path: object, monkeypatch: object, db: aiosqlite.Connection
+) -> None:
     import httpx
     import respx
 
@@ -333,9 +402,10 @@ async def test_proxy_cache_miss(client: AsyncClient, tmp_path: object, monkeypat
 
     monkeypatch.setattr(cache_mod.settings, "cache_dir", str(tmp_path))
     url = "http://example.com/photo.jpg"
+    await _register_proxy_url(db, url)
 
     with respx.mock:
-        respx.get(url).mock(
+        respx.get(_pinned(url)).mock(
             return_value=httpx.Response(200, content=b"freshdata", headers={"content-type": "image/jpeg"})
         )
         real_client = httpx.AsyncClient()
@@ -357,6 +427,7 @@ async def test_proxy_rejects_html_upstream(
     client: AsyncClient,
     tmp_path: object,
     monkeypatch: object,
+    db: aiosqlite.Connection,
 ) -> None:
     """An upstream serving text/html for a media URL is same-origin content
     injection (F5). Reject it as 502 instead of forwarding the content-type."""
@@ -367,8 +438,11 @@ async def test_proxy_rejects_html_upstream(
 
     monkeypatch.setattr(cache_mod.settings, "cache_dir", str(tmp_path))
     url = "http://example.com/sneaky.jpg"
+    await _register_proxy_url(db, url)
     with respx.mock:
-        respx.get(url).mock(return_value=httpx.Response(200, content=b"<html/>", headers={"content-type": "text/html"}))
+        respx.get(_pinned(url)).mock(
+            return_value=httpx.Response(200, content=b"<html/>", headers={"content-type": "text/html"})
+        )
         real_client = httpx.AsyncClient()
         monkeypatch.setattr("src.api.media.get_http_client", lambda: real_client)
         resp = await client.get(f"/api/media/proxy?url={url}")
@@ -380,6 +454,7 @@ async def test_proxy_image_passes_with_nosniff(
     client: AsyncClient,
     tmp_path: object,
     monkeypatch: object,
+    db: aiosqlite.Connection,
 ) -> None:
     import httpx
     import respx
@@ -388,8 +463,9 @@ async def test_proxy_image_passes_with_nosniff(
 
     monkeypatch.setattr(cache_mod.settings, "cache_dir", str(tmp_path))
     url = "http://example.com/real.jpg"
+    await _register_proxy_url(db, url)
     with respx.mock:
-        respx.get(url).mock(
+        respx.get(_pinned(url)).mock(
             return_value=httpx.Response(200, content=b"jpgdata", headers={"content-type": "image/jpeg"})
         )
         real_client = httpx.AsyncClient()
@@ -405,6 +481,7 @@ async def test_proxy_octet_stream_upstream_passes(
     client: AsyncClient,
     tmp_path: object,
     monkeypatch: object,
+    db: aiosqlite.Connection,
 ) -> None:
     """CDNs that don't declare a media type must not be rejected (F5)."""
     import httpx
@@ -414,8 +491,9 @@ async def test_proxy_octet_stream_upstream_passes(
 
     monkeypatch.setattr(cache_mod.settings, "cache_dir", str(tmp_path))
     url = "http://example.com/unknown.jpg"
+    await _register_proxy_url(db, url)
     with respx.mock:
-        respx.get(url).mock(
+        respx.get(_pinned(url)).mock(
             return_value=httpx.Response(200, content=b"jpgdata", headers={"content-type": "application/octet-stream"})
         )
         real_client = httpx.AsyncClient()
@@ -440,9 +518,10 @@ async def test_proxy_upstream_error(
 
     monkeypatch.setattr(cache_mod.settings, "cache_dir", str(tmp_path))
     url = "http://example.com/broken.jpg"
+    await _register_proxy_url(db, url)
 
     with respx.mock:
-        respx.get(url).mock(return_value=httpx.Response(404))
+        respx.get(_pinned(url)).mock(return_value=httpx.Response(404))
         real_client = httpx.AsyncClient()
         monkeypatch.setattr("src.api.media.get_http_client", lambda: real_client)
         resp = await client.get(f"/api/media/proxy?url={url}")
@@ -484,7 +563,7 @@ async def test_proxy_404_marks_item_unavailable(
     await db.commit()
 
     with respx.mock:
-        respx.get(url).mock(return_value=httpx.Response(404))
+        respx.get(_pinned(url)).mock(return_value=httpx.Response(404))
         real_client = httpx.AsyncClient()
         monkeypatch.setattr("src.api.media.get_http_client", lambda: real_client)
         resp = await client.get(f"/api/media/proxy?url={url}&item_id={item_id}")
@@ -517,9 +596,10 @@ async def test_proxy_404_without_item_id_still_returns_502(
 
     monkeypatch.setattr(cache_mod.settings, "cache_dir", str(tmp_path))
     url = "http://example.com/broken.jpg"
+    await _register_proxy_url(db, url)
 
     with respx.mock:
-        respx.get(url).mock(return_value=httpx.Response(404))
+        respx.get(_pinned(url)).mock(return_value=httpx.Response(404))
         real_client = httpx.AsyncClient()
         monkeypatch.setattr("src.api.media.get_http_client", lambda: real_client)
         resp = await client.get(f"/api/media/proxy?url={url}")
@@ -563,6 +643,24 @@ async def test_prefetch_hint_unknown_item_404(client: AsyncClient, db: aiosqlite
     """F16: a typo'd item_id must be 404, not indistinguishable from ok."""
     resp = await client.post("/api/prefetch/hint", json={"item_id": "nonexistent"})
     assert resp.status_code == 404
+
+
+@pytest.mark.parametrize(
+    "body",
+    [
+        {"item_id": "x", "unseen": "false"},
+        {"item_id": "x", "unseen": None},
+        {"item_id": 123},
+        {"unseen": True},
+    ],
+)
+async def test_prefetch_hint_rejects_bad_body(
+    client: AsyncClient, body: dict[str, object], db: aiosqlite.Connection
+) -> None:
+    await _insert_feed(db)
+    await _insert_item(db, "x", "feed1")
+    resp = await client.post("/api/prefetch/hint", json=body)
+    assert resp.status_code == 422
 
 
 # ---------------------------------------------------------------------------
@@ -620,27 +718,57 @@ async def test_reddit_feeds_status_upstream_error(
     assert resp.status_code == 502
 
 
-async def test_reddit_feeds_status_redirects_followed(
+async def test_reddit_feeds_status_redirects_become_502(
     client: AsyncClient,
     mock_http: respx.MockRouter,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """F10: a 301 from the upstream must be followed, not fall through to a
-    JSONDecodeError on the redirect body."""
+    """Task 6: a 301 from the upstream must surface as 502 — the trusted URL
+    must not be silently rewritten by an attacker-controlled Location header.
+    follow_redirects=False is the contract (was True; F10/R13 fixed it then,
+    Task 6 closed it for security)."""
     mock_http.get("http://127.0.0.1:9090/status").mock(
         return_value=httpx.Response(301, headers={"location": "http://127.0.0.1:9090/v2/status"})
     )
-    mock_http.get("http://127.0.0.1:9090/v2/status").mock(return_value=httpx.Response(200, json={"ok": True}))
-    # Production builds httpx.AsyncClient() (src/scheduler.py:79), whose
-    # follow_redirects defaults to False — so the route's own argument is the
-    # only thing that can follow the redirect. With the client configured to
-    # follow, this test passed with the fix deleted (R13).
     real_client = httpx.AsyncClient()
     monkeypatch.setattr("src.api.reddit_feeds.get_http_client", lambda: real_client)
     resp = await client.get("/api/reddit-feeds/status")
     await real_client.aclose()
+    assert resp.status_code == 502
+
+
+async def test_reddit_feeds_status_has_nosniff(client: AsyncClient, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Task 6: proxied JSON must always carry X-Content-Type-Options: nosniff."""
+    from src.config import settings
+
+    monkeypatch.setattr(settings, "reddit_feeds_api_url", "http://rf.local")
+    with respx.mock:
+        respx.get("http://rf.local/status").mock(
+            return_value=httpx.Response(200, content=b"[]", headers={"content-type": "application/json"})
+        )
+        real_client = httpx.AsyncClient()
+        monkeypatch.setattr("src.api.reddit_feeds.get_http_client", lambda: real_client)
+        resp = await client.get("/api/reddit-feeds/status")
+        await real_client.aclose()
     assert resp.status_code == 200
-    assert resp.json() == {"ok": True}
+    assert resp.headers["x-content-type-options"] == "nosniff"
+
+
+async def test_reddit_feeds_status_redirect_is_502(client: AsyncClient, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Task 6: a 3xx from upstream must surface as 502, never be silently
+    proxied through a rewritten Location header."""
+    from src.config import settings
+
+    monkeypatch.setattr(settings, "reddit_feeds_api_url", "http://rf.local")
+    with respx.mock:
+        respx.get("http://rf.local/status").mock(
+            return_value=httpx.Response(301, headers={"location": "http://elsewhere/status"})
+        )
+        real_client = httpx.AsyncClient()
+        monkeypatch.setattr("src.api.reddit_feeds.get_http_client", lambda: real_client)
+        resp = await client.get("/api/reddit-feeds/status")
+        await real_client.aclose()
+    assert resp.status_code == 502
 
 
 async def test_reddit_feeds_status_401_maps_to_502(
@@ -743,7 +871,6 @@ async def test_items_interleaved_across_feeds(client: AsyncClient, db: aiosqlite
     # Round 3: only feedA remains (rn=3)
     # Within each round, feedA < feedB alphabetically
     assert ids == ["a1", "b1", "a2", "b2", "a3"]
-    assert [item["rn"] for item in data] == [1, 1, 2, 2, 3]
 
 
 async def test_items_rejects_invalid_size(client: AsyncClient) -> None:
@@ -834,7 +961,6 @@ async def test_items_rank_ties_break_by_id(client: AsyncClient, db: aiosqlite.Co
     assert resp.status_code == 200
     data = resp.json()
     assert [i["id"] for i in data] == ["aa", "mm", "zz"]
-    assert [i["rn"] for i in data] == [1, 2, 3]
 
 
 async def test_items_cursor_survives_prune_beneath_it(client: AsyncClient, db: aiosqlite.Connection) -> None:
@@ -893,6 +1019,7 @@ async def test_proxy_cache_hit_evicted_before_send_refetches(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
     mock_http: respx.MockRouter,
+    db: aiosqlite.Connection,
 ) -> None:
     """R2: cache_read only stats for existence; FileResponse opens the file
     after the handler returned. evict() runs after every refresh cycle while
@@ -902,10 +1029,11 @@ async def test_proxy_cache_hit_evicted_before_send_refetches(
 
     monkeypatch.setattr(cache_mod.settings, "cache_dir", str(tmp_path))
     url = "http://example.com/gone.jpg"
+    await _register_proxy_url(db, url)
     # cache_read says hit; the file is already gone by the time we serve it.
     monkeypatch.setattr("src.api.media.cache_read", lambda _url: tmp_path / "evicted")
 
-    mock_http.get(url).mock(
+    mock_http.get(_pinned(url)).mock(
         return_value=httpx.Response(200, content=b"refetched", headers={"content-type": "image/jpeg"})
     )
     real_client = httpx.AsyncClient()
@@ -918,7 +1046,7 @@ async def test_proxy_cache_hit_evicted_before_send_refetches(
 
 
 async def test_proxy_cache_hit_sets_nosniff(
-    client: AsyncClient, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    client: AsyncClient, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, db: aiosqlite.Connection
 ) -> None:
     """R8: the miss path set nosniff and the hit path set no security headers,
     so the same bytes were served differently on first and second view — and
@@ -929,6 +1057,7 @@ async def test_proxy_cache_hit_sets_nosniff(
 
     monkeypatch.setattr(cache_mod.settings, "cache_dir", str(tmp_path))
     url = "http://example.com/img.jpg"
+    await _register_proxy_url(db, url)
     filename = hashlib.sha256(url.encode()).hexdigest()
     (tmp_path / filename).write_bytes(b"cached")
     (tmp_path / f"{filename}.meta").write_text("image/jpeg")
@@ -944,6 +1073,7 @@ async def test_proxy_upstream_error_logged_at_warning(
     monkeypatch: pytest.MonkeyPatch,
     mock_http: respx.MockRouter,
     caplog: pytest.LogCaptureFixture,
+    db: aiosqlite.Connection,
 ) -> None:
     """R10: the 502 is raised only after a URL was marked dead and a fully-dead
     item dropped. That was logged at DEBUG, and log_level defaults to info — so
@@ -953,7 +1083,8 @@ async def test_proxy_upstream_error_logged_at_warning(
 
     monkeypatch.setattr(cache_mod.settings, "cache_dir", str(tmp_path))
     url = "http://example.com/gone.jpg"
-    mock_http.get(url).mock(return_value=httpx.Response(404))
+    await _register_proxy_url(db, url)
+    mock_http.get(_pinned(url)).mock(return_value=httpx.Response(404))
     real_client = httpx.AsyncClient()
     monkeypatch.setattr("src.api.media.get_http_client", lambda: real_client)
 
@@ -1043,7 +1174,7 @@ async def test_reddit_feeds_status_logs_the_exception(
 
 
 async def test_proxy_cache_hit_honours_range(
-    client: AsyncClient, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    client: AsyncClient, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, db: aiosqlite.Connection
 ) -> None:
     """R14: the hit path uses FileResponse specifically because it is
     Range-capable — 'what makes a cached video seekable'. Nothing tested it, so
@@ -1054,6 +1185,7 @@ async def test_proxy_cache_hit_honours_range(
 
     monkeypatch.setattr(cache_mod.settings, "cache_dir", str(tmp_path))
     url = "http://example.com/clip.mp4"
+    await _register_proxy_url(db, url)
     filename = hashlib.sha256(url.encode()).hexdigest()
     (tmp_path / filename).write_bytes(b"0123456789")
     (tmp_path / f"{filename}.meta").write_text("video/mp4")
@@ -1069,6 +1201,7 @@ async def test_proxy_cache_miss_ignores_range(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
     mock_http: respx.MockRouter,
+    db: aiosqlite.Connection,
 ) -> None:
     """The documented other half (F7): the miss path streams and deliberately
     does not honour Range, because streaming misses through is what prevents
@@ -1077,7 +1210,8 @@ async def test_proxy_cache_miss_ignores_range(
 
     monkeypatch.setattr(cache_mod.settings, "cache_dir", str(tmp_path))
     url = "http://example.com/fresh.mp4"
-    mock_http.get(url).mock(
+    await _register_proxy_url(db, url)
+    mock_http.get(_pinned(url)).mock(
         return_value=httpx.Response(200, content=b"0123456789", headers={"content-type": "video/mp4"})
     )
     real_client = httpx.AsyncClient()
@@ -1087,3 +1221,260 @@ async def test_proxy_cache_miss_ignores_range(
 
     assert resp.status_code == 200
     assert resp.content == b"0123456789"
+
+
+async def test_is_known_media_url_primary_and_gallery(db: aiosqlite.Connection) -> None:
+    from src.media.availability import is_known_media_url
+
+    await db.execute("INSERT INTO feeds(id, url, title) VALUES ('f1', 'http://x', 'X')")
+    await db.execute(
+        "INSERT INTO items(id, feed_id, guid, media_url, media_type, media_json)"
+        " VALUES ('i1', 'f1', 'g1', 'http://primary.jpg', 'image',"
+        ' \'[{"url":"http://slide-a.jpg","type":"image"},{"url":"http://slide-b.jpg","type":"image"}]\')'
+    )
+    await db.commit()
+    assert await is_known_media_url("http://primary.jpg", db) is True
+    assert await is_known_media_url("http://slide-b.jpg", db) is True
+    assert await is_known_media_url("http://not-in-items.jpg", db) is False
+
+
+async def test_proxy_rejects_unknown_url(client: AsyncClient, tmp_path: object, monkeypatch: object) -> None:
+    import src.media.cache as cache_mod
+
+    monkeypatch.setattr(cache_mod.settings, "cache_dir", str(tmp_path))
+    url = "http://example.com/not-in-db.jpg"
+    resp = await client.get(f"/api/media/proxy?url={url}")
+    assert resp.status_code == 404
+    assert resp.json()["detail"] == "not a known media url"
+
+
+async def test_items_response_omits_rn(client: AsyncClient, db: aiosqlite.Connection) -> None:
+    await _insert_feed(db)
+    await _insert_item(db, "item1", "feed1")
+    data = (await client.get("/api/items")).json()
+    assert data and "rn" not in data[0]
+
+
+async def test_list_items_logs_db_duration(
+    client: AsyncClient, db: aiosqlite.Connection, caplog: pytest.LogCaptureFixture
+) -> None:
+    await _insert_feed(db)
+    await _insert_item(db, "item1", "feed1")
+    caplog.set_level(logging.DEBUG, logger="src.api.items")
+    await client.get("/api/items")
+    assert any(re.search(r"db=\S*ms", r.getMessage()) and "list_items" in r.getMessage() for r in caplog.records), (
+        "list_items exit log must include the DB query duration"
+    )
+
+
+async def test_list_items_logs_partial_cursor_422(client: AsyncClient, caplog: pytest.LogCaptureFixture) -> None:
+    caplog.set_level(logging.DEBUG, logger="src.api.items")
+    resp = await client.get("/api/items", params={"after_feed_id": "f1"})
+    assert resp.status_code == 422
+    assert any("422" in r.getMessage() and "partial cursor" in r.getMessage() for r in caplog.records)
+
+
+async def test_proxy_eviction_fallthrough_logs_info(
+    client: AsyncClient,
+    db: aiosqlite.Connection,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    import hashlib
+
+    import src.api.media as media_mod
+    import src.media.cache as cache_mod
+    from src.media import fetch as fetch_mod
+
+    monkeypatch.setattr(cache_mod.settings, "cache_dir", str(tmp_path))
+    url = "http://example.com/evicted.jpg"
+    fname = hashlib.sha256(url.encode()).hexdigest()
+    (tmp_path / fname).write_bytes(b"")
+    await db.execute("INSERT INTO feeds(id,url,title) VALUES ('f','http://x','X')")
+    await db.execute("INSERT INTO items(id,feed_id,guid,media_url,media_type) VALUES ('i','f','g',?, 'image')", (url,))
+    await db.commit()
+    orig_read = media_mod.cache_read
+
+    def _vanish(u: str) -> Path | None:
+        p = orig_read(u)
+        if p:
+            p.unlink(missing_ok=True)
+        return p
+
+    monkeypatch.setattr(media_mod, "cache_read", _vanish)
+    with respx.mock:
+        respx.get(fetch_mod._pinned_url(url, "93.184.216.34")).mock(
+            return_value=httpx.Response(200, content=b"x", headers={"content-type": "image/jpeg"})
+        )
+        real = httpx.AsyncClient()
+        monkeypatch.setattr("src.api.media.get_http_client", lambda: real)
+        caplog.set_level(logging.INFO, logger="src.api.media")
+        await client.get(f"/api/media/proxy?url={url}")
+        await real.aclose()
+    assert any(r.levelno == logging.INFO and "evicted" in r.getMessage() for r in caplog.records)
+
+
+async def test_proxy_exception_uses_logger_exception(
+    client: AsyncClient,
+    db: aiosqlite.Connection,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    import src.media.cache as cache_mod
+    from src.media import fetch as fetch_mod
+
+    monkeypatch.setattr(cache_mod.settings, "cache_dir", str(tmp_path))
+    url = "http://example.com/transport.jpg"
+    await db.execute("INSERT INTO feeds(id,url,title) VALUES ('f','http://x','X')")
+    await db.execute("INSERT INTO items(id,feed_id,guid,media_url,media_type) VALUES ('i','f','g',?, 'image')", (url,))
+    await db.commit()
+    with respx.mock:
+        respx.get(fetch_mod._pinned_url(url, "93.184.216.34")).mock(side_effect=httpx.ConnectError("boom"))
+        real = httpx.AsyncClient()
+        monkeypatch.setattr("src.api.media.get_http_client", lambda: real)
+        caplog.set_level(logging.WARNING, logger="src.api.media")
+        await client.get(f"/api/media/proxy?url={url}")
+        await real.aclose()
+    assert any(r.levelno >= logging.WARNING and r.exc_info for r in caplog.records), (
+        "the generic except must use logger.exception (exc_info set)"
+    )
+
+
+async def test_items_cursor_survives_pruned_anchor(client: AsyncClient, db: aiosqlite.Connection) -> None:
+    """The docstring's central edge case: the anchor row itself is pruned
+    between page-1 and page-2. The COUNT(*)-derived rank must still place the
+    cursor at the anchor's position, so page-2 returns exactly the post-anchor
+    items with no duplicates of page-1."""
+    await _insert_feed(db)
+    for i in range(1, 6):
+        await _insert_item(db, f"item{i}", "feed1")
+    page1 = (await client.get("/api/items", params={"size": 3})).json()
+    assert [i["id"] for i in page1] == ["item1", "item2", "item3"]
+    anchor = page1[-1]
+    await db.execute("DELETE FROM items WHERE id = 'item3'")
+    await db.commit()
+    page2 = (
+        await client.get(
+            "/api/items",
+            params={
+                "after_feed_id": anchor["feed_id"],
+                "after_pub_date": anchor["pub_date"],
+                "after_id": anchor["id"],
+                "size": 10,
+            },
+        )
+    ).json()
+    assert [i["id"] for i in page2] == ["item4", "item5"], (
+        f"pruned-anchor cursor must not re-emit page-1 items or skip ahead; got {[i['id'] for i in page2]}"
+    )
+
+
+async def test_proxy_upstream_error_detail(
+    client: AsyncClient, db: aiosqlite.Connection, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import httpx
+    import respx
+
+    import src.media.cache as cache_mod
+    import src.media.fetch as fetch_mod
+
+    monkeypatch.setattr(cache_mod.settings, "cache_dir", str(tmp_path))
+    url = "http://example.com/missing.jpg"
+    await db.execute("INSERT INTO feeds(id,url,title) VALUES ('f','http://x','X')")
+    await db.execute("INSERT INTO items(id,feed_id,guid,media_url,media_type) VALUES ('i','f','g',?, 'image')", (url,))
+    await db.commit()
+    with respx.mock:
+        respx.get(fetch_mod._pinned_url(url, "93.184.216.34")).mock(return_value=httpx.Response(404))
+        real = httpx.AsyncClient()
+        monkeypatch.setattr("src.api.media.get_http_client", lambda: real)
+        resp = await client.get(f"/api/media/proxy?url={url}")
+        await real.aclose()
+    assert resp.status_code == 502
+    assert resp.json()["detail"] == "upstream error"
+
+
+async def test_proxy_transport_error_detail(
+    client: AsyncClient, db: aiosqlite.Connection, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import httpx
+    import respx
+
+    import src.media.cache as cache_mod
+    import src.media.fetch as fetch_mod
+
+    monkeypatch.setattr(cache_mod.settings, "cache_dir", str(tmp_path))
+    url = "http://example.com/unreachable.jpg"
+    await db.execute("INSERT INTO feeds(id,url,title) VALUES ('f','http://x','X')")
+    await db.execute("INSERT INTO items(id,feed_id,guid,media_url,media_type) VALUES ('i','f','g',?, 'image')", (url,))
+    await db.commit()
+    with respx.mock:
+        respx.get(fetch_mod._pinned_url(url, "93.184.216.34")).mock(side_effect=httpx.ConnectError("boom"))
+        real = httpx.AsyncClient()
+        monkeypatch.setattr("src.api.media.get_http_client", lambda: real)
+        resp = await client.get(f"/api/media/proxy?url={url}")
+        await real.aclose()
+    assert resp.status_code == 502
+    assert resp.json()["detail"] == "upstream fetch failed"
+
+
+async def test_prefetch_hint_warms_cache(
+    client: AsyncClient, db: aiosqlite.Connection, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import asyncio
+
+    import httpx
+    import respx
+
+    import src.media.cache as cache_mod
+    import src.media.fetch as fetch_mod
+
+    monkeypatch.setattr(cache_mod.settings, "cache_dir", str(tmp_path))
+    await _insert_feed(db)
+    url = "http://example.com/img.jpg"
+    await db.execute(
+        """INSERT INTO items(id, feed_id, guid, title, media_url, media_type, pub_date, seen_at)
+           VALUES ('item1', 'feed1', 'g1', 'T', ?, 'image', ?, NULL)""",
+        (url, "2026-01-01T00:00:00"),
+    )
+    await db.execute(
+        """INSERT INTO items(id, feed_id, guid, title, media_url, media_type, pub_date, seen_at)
+           VALUES ('item2', 'feed1', 'g2', 'T', ?, 'image', ?, NULL)""",
+        (url, "2026-01-02T00:00:00"),
+    )
+    await db.commit()
+    with respx.mock:
+        respx.get(fetch_mod._pinned_url(url, "93.184.216.34")).mock(
+            return_value=httpx.Response(200, content=b"jpg", headers={"content-type": "image/jpeg"})
+        )
+        real = httpx.AsyncClient()
+        monkeypatch.setattr("src.api.media.get_http_client", lambda: real)
+        resp = await client.post("/api/prefetch/hint", json={"item_id": "item1", "unseen": True})
+        assert resp.status_code == 200
+        from src.media import prefetch as _pf
+
+        bg = getattr(_pf, "_bg_tasks", None) or getattr(_pf, "_tasks", None) or getattr(_pf, "background_tasks", None)
+        if bg:
+            await asyncio.gather(*list(bg), return_exceptions=True)
+        await real.aclose()
+    from src.media.cache import cache_read
+
+    assert cache_read(url) is not None, "prefetch_hint must actually warm the cache"
+
+
+async def test_feeds_zero_item_counts(client: AsyncClient, db: aiosqlite.Connection) -> None:
+    await db.execute("INSERT INTO feeds(id, url, title) VALUES ('f0', 'http://x', 'Empty')")
+    await db.commit()
+    data = (await client.get("/api/feeds")).json()
+    feed = next(f for f in data if f["id"] == "f0")
+    assert feed["item_count"] == 0
+    assert feed["unseen_count"] == 0
+
+
+@pytest.mark.parametrize("size", [1, 200])
+async def test_items_accepts_size_boundaries(client: AsyncClient, db: aiosqlite.Connection, size: int) -> None:
+    await _insert_feed(db)
+    await _insert_item(db, "item1", "feed1")
+    resp = await client.get("/api/items", params={"size": size})
+    assert resp.status_code == 200

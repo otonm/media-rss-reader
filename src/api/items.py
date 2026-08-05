@@ -2,23 +2,22 @@
 
 import asyncio
 import datetime as dt
-import hashlib
 import json
 import logging
-from typing import Annotated, Any
+import time
+from typing import Any
 
 import aiosqlite
-from fastapi import APIRouter, Depends, HTTPException, Query
+from fastapi import APIRouter, HTTPException, Query
 
-from src.db.connection import get_db
+from src.api.schemas import ItemOut, SeenResponse
+from src.db.connection import _DbDep
 from src.db.queries import INTERLEAVE_ORDER_BY, RANKED_ITEMS_CTE
-from src.media.cache import cache_present_names
+from src.media.cache import cache_name, cache_present_names
 from src.media.normalize import media_key
 
 logger = logging.getLogger(__name__)
 router = APIRouter()
-
-_DbDep = Annotated[aiosqlite.Connection, Depends(get_db)]
 
 
 def _row_to_item(row: aiosqlite.Row, cached_names: set[str]) -> dict[str, Any]:
@@ -42,19 +41,20 @@ def _row_to_item(row: aiosqlite.Row, cached_names: set[str]) -> dict[str, Any]:
         item["media"] = json.loads(raw)
     else:
         item["media"] = [{"url": item["media_url"], "type": item["media_type"]}]
-    item["cached"] = hashlib.sha256(item["media_url"].encode()).hexdigest() in cached_names
+    item["cached"] = cache_name(item["media_url"]) in cached_names
     return item
 
 
-@router.get("/items")
+@router.get("/items", response_model=None)
 async def list_items(
     unseen: bool = False,
     after_feed_id: str | None = None,
     after_pub_date: str | None = None,
     after_id: str | None = None,
     size: int = Query(50, ge=1, le=200),
-    db: _DbDep = None,  # type: ignore[assignment]
-) -> list[dict[str, Any]]:
+    *,
+    db: _DbDep,
+) -> list[ItemOut]:
     """Return a keyset-paginated, interleaved list of media items.
 
     The window function assigns rn per feed over the FULL items set (seen
@@ -82,13 +82,17 @@ async def list_items(
     """
     cursor = (after_feed_id, after_pub_date, after_id)
     if any(part is not None for part in cursor) and not all(part is not None for part in cursor):
+        logger.debug(
+            f"list_items: 422, partial cursor after_feed_id={after_feed_id} "
+            f"after_pub_date={after_pub_date} after_id={after_id}"
+        )
         raise HTTPException(
             status_code=422,
             detail="after_feed_id, after_pub_date and after_id must be given together",
         )
 
     conditions: list[str] = []
-    params: list[Any] = []
+    params: list[str | int] = []
     if unseen:
         conditions.append("seen_at IS NULL")
     if all(part is not None for part in cursor):
@@ -101,33 +105,39 @@ async def list_items(
     where_clause = ("WHERE " + " AND ".join(conditions)) if conditions else ""
     params.append(size)
 
+    # SQL fragments are source-controlled; request values remain bound.
     query = f"""
         {RANKED_ITEMS_CTE}
         SELECT id, feed_id, title, media_url, media_type, media_json,
-               pub_date, fetched_at, seen_at, rn
+               pub_date, fetched_at, seen_at
         FROM ranked
         {where_clause}
         {INTERLEAVE_ORDER_BY}
         LIMIT ?
-    """
+    """  # noqa: S608
     logger.debug(f"list_items unseen={unseen} cursor=({after_feed_id},{after_pub_date},{after_id}) size={size}")
+    t0 = time.perf_counter()
     async with db.execute(query, params) as cur:
         rows = await cur.fetchall()
+    db_ms = (time.perf_counter() - t0) * 1000
+    t_cache = time.perf_counter()
     cached_names = await asyncio.to_thread(cache_present_names)
+    cache_ms = (time.perf_counter() - t_cache) * 1000
+    logger.debug(f"list_items: cache_present_names returned {len(cached_names)} name(s) in {cache_ms:.1f}ms")
     items = [_row_to_item(row, cached_names) for row in rows]
     # The cached count is the number the browser can paint instantly; a low
     # ratio here is why a scroll feels slow, and it is what the UI_DEBUG
     # overlay's HIT/MISS line reflects.
     cached_count = sum(1 for i in items if i["cached"])
-    logger.debug(f"list_items returned {len(items)} item(s), {cached_count} already cached on disk")
+    logger.debug(f"list_items returned {len(items)} item(s), {cached_count} cached on disk; db={db_ms:.1f}ms")
     return items
 
 
-@router.post("/items/{item_id}/seen")
+@router.post("/items/{item_id}/seen", response_model=None)
 async def mark_seen(
     item_id: str,
-    db: _DbDep = None,  # type: ignore[assignment]
-) -> dict[str, str]:
+    db: _DbDep,
+) -> SeenResponse:
     """Mark an item as seen and return the timestamp.
 
     Uses UPDATE ... RETURNING (SQLite >= 3.35) so the SELECT-before-UPDATE
@@ -141,20 +151,33 @@ async def mark_seen(
     """
     logger.debug(f"mark_seen item_id={item_id}")
     now = dt.datetime.now(dt.UTC).strftime("%Y-%m-%d %H:%M:%S")
-    async with db.execute(
-        "UPDATE items SET seen_at = ? WHERE id = ? RETURNING media_url, seen_at",
-        (now, item_id),
-    ) as cur:
-        row = await cur.fetchone()
-    if row is None:
-        logger.debug(f"mark_seen item_id={item_id} not found")
-        raise HTTPException(status_code=404, detail="Not found")
+    try:
+        t0 = time.perf_counter()
+        async with db.execute(
+            "UPDATE items SET seen_at = ? WHERE id = ? RETURNING media_url, seen_at",
+            (now, item_id),
+        ) as cur:
+            row = await cur.fetchone()
+        update_ms = (time.perf_counter() - t0) * 1000
+        if row is None:
+            logger.debug(f"mark_seen item_id={item_id} not found")
+            raise HTTPException(status_code=404, detail="Not found")
 
-    await db.execute(
-        "INSERT OR REPLACE INTO seen_media (media_key, seen_at) VALUES (?, ?)",
-        (media_key(row["media_url"]), now),
+        t0 = time.perf_counter()
+        await db.execute(
+            "INSERT OR REPLACE INTO seen_media (media_key, seen_at) VALUES (?, ?)",
+            (media_key(row["media_url"]), now),
+        )
+        insert_ms = (time.perf_counter() - t0) * 1000
+        t0 = time.perf_counter()
+        await db.commit()
+        commit_ms = (time.perf_counter() - t0) * 1000
+    except Exception:
+        await db.rollback()
+        raise
+
+    logger.debug(
+        f"mark_seen item_id={item_id} seen_at={row['seen_at']} "
+        f"update={update_ms:.1f}ms insert={insert_ms:.1f}ms commit={commit_ms:.1f}ms"
     )
-    await db.commit()
-
-    logger.debug(f"mark_seen item_id={item_id} seen_at={row['seen_at']}")
     return {"seen_at": row["seen_at"]}

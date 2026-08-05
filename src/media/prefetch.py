@@ -106,8 +106,9 @@ async def prefetch_ahead(item_id: str, db: aiosqlite.Connection, client: httpx.A
 
     Returns the number of warm tasks queued, which the hint endpoint logs (R9).
     """
+    # Interpolated SQL fragments are source-controlled; request values remain bound.
     async with db.execute(
-        f"{RANKED_ITEMS_CTE} SELECT rn, feed_id, id FROM ranked WHERE id = ?",
+        f"{RANKED_ITEMS_CTE} SELECT rn, feed_id, id FROM ranked WHERE id = ?",  # noqa: S608
         (item_id,),
     ) as cur:
         cursor = await cur.fetchone()
@@ -119,7 +120,7 @@ async def prefetch_ahead(item_id: str, db: aiosqlite.Connection, client: httpx.A
         f"""{RANKED_ITEMS_CTE}
             SELECT id, media_url FROM ranked
             WHERE {seen_filter}(rn, feed_id, id) > (?, ?, ?)
-            {INTERLEAVE_ORDER_BY} LIMIT ?""",
+            {INTERLEAVE_ORDER_BY} LIMIT ?""",  # noqa: S608
         (cursor["rn"], cursor["feed_id"], cursor["id"], settings.prefetch_ahead),
     ) as cur:
         rows = await cur.fetchall()
