@@ -313,20 +313,45 @@ async def test_mark_seen(client: AsyncClient, db: aiosqlite.Connection) -> None:
     assert row[0] is not None
 
 
-async def test_mark_seen_items_and_seen_media_share_timestamp(client: AsyncClient, db: aiosqlite.Connection) -> None:
-    """F11: items.seen_at and seen_media.seen_at are bound to one `now` so they
-    cannot diverge. A refactor that binds a second dt.now() to the INSERT must
-    fail this test.
+async def test_mark_seen_items_and_seen_media_share_timestamp(
+    client: AsyncClient, db: aiosqlite.Connection, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """F11: items.seen_at and seen_media.seen_at are bound to one `now`, so
+    they cannot diverge. The timestamp has one-second resolution, so two real
+    now() calls produce the same string and the assertion could not fail —
+    patch the clock so every call returns a distinct second.
     """
+    import datetime as real_dt
+
+    import src.api.items as items_mod
+
+    ticks = iter(
+        [
+            real_dt.datetime(2026, 1, 1, 0, 0, s, tzinfo=real_dt.UTC)
+            for s in range(1, 10)
+        ]
+    )
+
+    class _TickingClock(real_dt.datetime):
+        @classmethod
+        def now(cls, tz: object = None) -> real_dt.datetime:
+            return next(ticks)
+
+    monkeypatch.setattr(items_mod.dt, "datetime", _TickingClock)
+
     await _insert_feed(db)
     await _insert_item(db, "item1", "feed1", seen_at=None)
     resp = await client.post("/api/items/item1/seen")
     assert resp.status_code == 200
     async with db.execute("SELECT seen_at FROM items WHERE id = 'item1'") as cur:
         items_seen = (await cur.fetchone())[0]
-    async with db.execute("SELECT seen_at FROM seen_media WHERE media_key = 'http://example.com/img.jpg'") as cur:
+    async with db.execute(
+        "SELECT seen_at FROM seen_media WHERE media_key = 'http://example.com/img.jpg'"
+    ) as cur:
         media_seen = (await cur.fetchone())[0]
-    assert items_seen == media_seen, f"items.seen_at ({items_seen}) != seen_media.seen_at ({media_seen})"
+    assert items_seen == media_seen, (
+        f"one now() must be bound to both writes; got {items_seen} vs {media_seen}"
+    )
 
 
 async def test_mark_seen_writes_seen_media(client: AsyncClient, db: aiosqlite.Connection) -> None:
@@ -1000,7 +1025,7 @@ async def test_items_report_whether_media_is_already_cached(
     assert cached_by_id == {"i1": True, "i2": False}
 
 
-async def test_items_cached_excludes_meta_and_tmp(
+async def test_items_cached_true_for_warm_media(
     client: AsyncClient,
     db: aiosqlite.Connection,
     tmp_path: object,
@@ -1013,7 +1038,6 @@ async def test_items_cached_excludes_meta_and_tmp(
     monkeypatch.setattr(cache_mod.settings, "cache_dir", str(tmp_path))
     warm = "http://example.com/warm.jpg"
     (tmp_path / hashlib.sha256(warm.encode()).hexdigest()).write_bytes(b"x")
-    (tmp_path / "abc123.tmp").write_bytes(b"partial")  # in-flight, must not count
     await db.execute("INSERT INTO feeds(id,url,title) VALUES ('f1','http://x','X')")
     await db.execute(
         "INSERT INTO items(id,feed_id,guid,media_url,media_type,pub_date)"

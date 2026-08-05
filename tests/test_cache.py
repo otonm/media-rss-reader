@@ -207,3 +207,22 @@ def test_cache_name_is_the_single_source() -> None:
 
     url = "http://example.com/y.png"
     assert cache_name(url) == _cache_path(url).name
+
+
+def test_cache_present_names_excludes_meta_and_tmp(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The `cached` hint on /api/items is a membership test on a bare sha256
+    name, so adding a .tmp or .meta entry to the returned set can never flip
+    it — deleting the suffix filter here kept that test green. This is the
+    only place the exclusion is observable.
+    """
+    import src.media.cache as cache_mod
+
+    monkeypatch.setattr(cache_mod.settings, "cache_dir", str(tmp_path))
+    data_name = cache_mod.cache_name("http://example.com/warm.jpg")
+    (tmp_path / data_name).write_bytes(b"x")
+    (tmp_path / f"{data_name}.meta").write_text("image/jpeg")
+    (tmp_path / "abc123.tmp").write_bytes(b"partial")
+
+    assert cache_mod.cache_present_names() == {data_name}
