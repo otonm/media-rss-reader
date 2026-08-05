@@ -57,13 +57,14 @@ async def proxy_media(
         raise HTTPException(status_code=404, detail="not a known media url")
     hit = await asyncio.to_thread(cache_lookup, url)
     if hit is not None:
-        path, _stat_result, media_type = hit
+        path, media_type = hit
         logger.debug(f"proxy_media: HIT {url} -> {path.name} (type={media_type})")
-        # stat_result is deliberately NOT forwarded: passing it suppresses
-        # Starlette's own os.stat inside FileResponse.__call__, which is the
-        # check that fails before any bytes go out. evict() runs after every
-        # refresh cycle, and with the stat suppressed the client received a 200
-        # with a correct Content-Length and a body that died mid-flight (R2).
+        # cache_lookup's stat is deliberately not forwarded: passing a
+        # stat_result suppresses Starlette's own os.stat inside
+        # FileResponse.__call__, which is the check that fails before any bytes
+        # go out. evict() runs after every refresh cycle, and with the stat
+        # suppressed the client received a 200 with a correct Content-Length and
+        # a body that died mid-flight (R2).
         return FileResponse(
             path,
             media_type=media_type,

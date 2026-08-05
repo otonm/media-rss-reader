@@ -226,11 +226,16 @@ def test_cache_present_names_excludes_meta_and_tmp(tmp_path: Path, monkeypatch: 
     assert cache_mod.cache_present_names() == {data_name}
 
 
-def test_cache_lookup_returns_path_stat_and_type(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+def test_cache_lookup_returns_path_and_type_only(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     """Three blocking filesystem calls per proxy request — cache_read's
     Path.exists, the route's Path.stat, and cache_read_meta's Path.exists plus
     read_text — become one offload. Two of them sat behind helpers where Ruff's
-    ASYNC rules cannot see them."""
+    ASYNC rules cannot see them.
+
+    The stat is not returned: handing one to FileResponse suppresses Starlette's
+    own os.stat, which is the check that catches an eviction before any bytes go
+    out (R2). Returning it invited exactly that call.
+    """
     import src.media.cache as cache_mod
 
     monkeypatch.setattr(cache_mod.settings, "cache_dir", str(tmp_path))
@@ -240,9 +245,8 @@ def test_cache_lookup_returns_path_stat_and_type(tmp_path: Path, monkeypatch: py
 
     hit = cache_mod.cache_lookup(url)
     assert hit is not None
-    path, stat_result, media_type = hit
+    path, media_type = hit
     assert path.name == cache_mod.cache_name(url)
-    assert stat_result.st_size == 5
     assert media_type == "image/jpeg"
 
 
@@ -261,4 +265,4 @@ def test_cache_lookup_defaults_the_type_without_a_meta_sidecar(tmp_path: Path, m
     (tmp_path / cache_mod.cache_name(url)).write_bytes(b"x")
     hit = cache_mod.cache_lookup(url)
     assert hit is not None
-    assert hit[2] == "application/octet-stream"
+    assert hit[1] == "application/octet-stream"

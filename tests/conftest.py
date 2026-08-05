@@ -5,7 +5,7 @@ os.environ.setdefault("AUTH_USERNAME", "testuser")
 os.environ.setdefault("AUTH_PASSWORD", "testpassword")
 os.environ.setdefault("AUTH_SECRET_KEY", "test-secret-key-minimum-32-chars!!")
 
-from collections.abc import AsyncGenerator
+from collections.abc import AsyncGenerator, Iterator
 
 import aiosqlite
 import pytest
@@ -155,7 +155,7 @@ def _stub_dns(monkeypatch: pytest.MonkeyPatch) -> None:
 
 
 @pytest.fixture(autouse=True)
-def _clear_prefetch_tasks() -> AsyncGenerator[None]:
+def _clear_prefetch_tasks() -> Iterator[None]:
     """_bg_tasks is module state with no reset, so what a test gathers
     otherwise depends on test ordering."""
     from src.media import prefetch as prefetch_mod

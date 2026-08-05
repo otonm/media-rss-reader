@@ -167,20 +167,22 @@ def cache_read_meta(url: str) -> str | None:
     return meta.read_text(encoding="ascii").strip() or None
 
 
-def cache_lookup(url: str) -> tuple[Path, os.stat_result, str] | None:
-    """Return (path, stat, content_type) for a cached URL, or None on a miss.
+def cache_lookup(url: str) -> tuple[Path, str] | None:
+    """Return (path, content_type) for a cached URL, or None on a miss.
 
     One blocking call for the proxy's hit path instead of three. The stat is
-    also what makes a miss unambiguous: cache_read only checked existence, so a
-    file evicted between the check and the stat was a separate race the caller
-    had to handle.
+    what makes a miss unambiguous — cache_read only checked existence, so a file
+    evicted between the check and the stat was a separate race the caller had to
+    handle — but its result is deliberately not returned: forwarding it to
+    FileResponse suppresses Starlette's own os.stat, which is the check that
+    fails before any bytes go out (R2).
     """
     path = _cache_path(url)
     try:
-        stat_result = path.stat()
+        path.stat()
     except FileNotFoundError:
         return None
-    return path, stat_result, cache_read_meta(url) or "application/octet-stream"
+    return path, cache_read_meta(url) or "application/octet-stream"
 
 
 def cache_present_names() -> set[str]:
