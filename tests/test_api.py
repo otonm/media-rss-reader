@@ -1580,23 +1580,34 @@ async def test_items_page_survives_one_unparseable_row(client: AsyncClient, db: 
     assert {i["id"] for i in resp.json()} == {"good", "bad"}
 
 
-async def test_mark_seen_404_does_not_roll_back(
-    client: AsyncClient, db: aiosqlite.Connection, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    """The try spanned the 404 raise, so an ordinary not-found issued a
-    ROLLBACK — discarding whatever else the connection had open. With a shared
-    process-wide connection that is no longer hypothetical."""
-    rollbacks = {"n": 0}
-    real_rollback = db.rollback
-
-    async def _counting_rollback() -> None:
-        rollbacks["n"] += 1
-        await real_rollback()
-
-    monkeypatch.setattr(db, "rollback", _counting_rollback)
+async def test_mark_seen_404_leaves_no_open_transaction(client: AsyncClient, db: aiosqlite.Connection) -> None:
+    """sqlite3 opens an implicit transaction before any DML, including an
+    UPDATE that matches nothing. Raising the 404 without closing it left the
+    process-wide connection holding a RESERVED lock forever: every
+    run_with_own_db write on its own connection then waited out the 30 s busy
+    timeout and was swallowed, and WAL could not checkpoint. Counting rollbacks
+    cannot see that — only the transaction state can.
+    """
     resp = await client.post("/api/items/nonexistent/seen")
     assert resp.status_code == 404
-    assert rollbacks["n"] == 0, "a not-found is not a failed write"
+    assert db._conn is not None
+    assert db._conn.in_transaction is False, "a 404 must not strand a write transaction"
+
+
+async def test_mark_seen_404_does_not_block_another_connection(client: AsyncClient, db: aiosqlite.Connection) -> None:
+    """The consequence, end to end: run_with_own_db opens its own connection to
+    mark a URL dead or record a digest, and a stranded RESERVED lock turned
+    every one of those into a 30 s wait and a swallowed OperationalError."""
+    from src.config import settings
+
+    assert (await client.post("/api/items/nonexistent/seen")).status_code == 404
+
+    other = await aiosqlite.connect(settings.db_path, timeout=1)
+    try:
+        await other.execute("INSERT INTO feeds(id, url, title) VALUES ('other', 'http://o', 'O')")
+        await other.commit()
+    finally:
+        await other.close()
 
 
 async def test_mark_seen_logs_when_it_rolls_back(

@@ -1,7 +1,8 @@
 """Database connection factory.
 
-open_db() is used by the scheduler (persistent connection held for the process lifetime).
-get_db() is a FastAPI dependency returning the connection opened at startup.
+open_db() opens a connection held for the process lifetime. src/main.py opens two:
+one the requests share via get_db(), one the scheduler keeps to itself.
+get_db() is a FastAPI dependency returning the request-side connection.
 run_with_own_db() is for work that outlives the request that started it.
 
 DbDep is the annotated dependency four modules in two other packages import;
@@ -51,6 +52,11 @@ async def get_db(request: Request) -> aiosqlite.Connection:
     the highest-rate route in the app. aiosqlite serialises statements on the
     connection's worker thread, so DB access queues app-wide; with WAL and
     queries this small that is cheaper than a thread per request.
+
+    Sharing one connection means sharing one implicit transaction: anything
+    here that writes more than a single statement has to serialise itself
+    (src/api/items.py's _write_lock) rather than assume it owns the connection.
+    The scheduler is kept on a separate connection for the same reason.
 
     Work that outlives the request still needs run_with_own_db — a streaming
     body or a warm task running after the route returned must not borrow a

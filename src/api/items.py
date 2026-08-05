@@ -17,6 +17,13 @@ from src.timing import timer
 logger = logging.getLogger(__name__)
 router = APIRouter()
 
+# mark_seen is the request path's only concurrent writer (post_setup runs once,
+# ever). get_db hands every request the same connection, and sqlite3 opens one
+# implicit transaction per connection, not per coroutine — so without this two
+# overlapping marks share a transaction and either one's rollback discards the
+# other's UPDATE, leaving seen_media written and items.seen_at not (F11).
+_write_lock = asyncio.Lock()
+
 
 def _row_to_item(row: aiosqlite.Row, cached_names: set[str]) -> dict[str, Any]:
     """Convert an items row to the API shape, expanding media_json to `media`.
@@ -72,6 +79,16 @@ async def list_items(
     A count-based OFFSET cannot be correct here either: the set the client is
     counting over ceases to be a prefix of the server's ranking the moment any
     item changes seen state (F17).
+
+    Limitation: a newly inserted item with an older pub_date shifts its feed's
+    rn values and can invalidate an outstanding cursor. Two statements rather
+    than one widens that to a window *inside* the request — the anchor's rank is
+    read before the page is — so a feed refresh landing in between can shift it.
+    Rare in practice (new feed entries vs. per-scroll mark-seen), and the
+    client's known-set guard dedups the duplicate side. Collapsing to one
+    statement would close the window but costs the 410 below: a missing anchor
+    would become an empty page instead, with no signal to the client and no log
+    line.
 
     An anchor that no longer exists — pruned, or its feed left the OPML and the
     rows cascaded — answers 410. Resolving it to a position instead is what
@@ -138,9 +155,9 @@ async def mark_seen(
     returns media_url + seen_at. A single Python timestamp is bound to both
     items.seen_at and seen_media.seen_at so the two cannot diverge (F11).
 
-    The UPDATE sits outside the try: a not-found matched no row, so there is
-    nothing to roll back, and rolling back anyway would discard unrelated work
-    on the shared connection.
+    Both writes run under _write_lock, which is what makes the rollbacks below
+    safe: nothing else can have work open on the shared connection, so a
+    ROLLBACK here can only discard this request's own statements.
 
     The browser marks the item locally before firing this beacon request,
     which it discards; the response shape is kept stable for symmetry with
@@ -148,40 +165,45 @@ async def mark_seen(
     """
     logger.debug(f"mark_seen item_id={item_id}")
     now = dt.datetime.now(dt.UTC).strftime("%Y-%m-%d %H:%M:%S")
-    update_elapsed = timer()
-    async with db.execute(
-        "UPDATE items SET seen_at = ? WHERE id = ? RETURNING media_url, seen_at",
-        (now, item_id),
-    ) as cur:
-        row = await cur.fetchone()
-    update_ms = update_elapsed()
-    if row is None:
-        # Outside the try: an ordinary not-found is not a failed write, and
-        # issuing a ROLLBACK for it discards whatever else the connection has
-        # open.
-        logger.debug(f"mark_seen item_id={item_id} not found")
-        raise HTTPException(status_code=404, detail="Not found")
-
-    try:
-        insert_elapsed = timer()
-        await db.execute(
-            "INSERT OR REPLACE INTO seen_media (media_key, seen_at) VALUES (?, ?)",
-            (media_key(row["media_url"]), now),
-        )
-        insert_ms = insert_elapsed()
-        commit_elapsed = timer()
-        await db.commit()
-        commit_ms = commit_elapsed()
-    except Exception:
-        logger.warning(f"mark_seen item_id={item_id}: write failed, rolling back the seen mark")
-        try:
+    async with _write_lock:
+        update_elapsed = timer()
+        async with db.execute(
+            "UPDATE items SET seen_at = ? WHERE id = ? RETURNING media_url, seen_at",
+            (now, item_id),
+        ) as cur:
+            row = await cur.fetchone()
+        update_ms = update_elapsed()
+        if row is None:
+            # sqlite3 opens an implicit transaction before any DML, including an
+            # UPDATE that matches nothing. Raising without closing it left the
+            # process-wide connection holding a RESERVED lock indefinitely: every
+            # run_with_own_db write — dead-URL marks, digest records — then waited
+            # out the 30 s busy timeout and was swallowed as a warning, and WAL
+            # could not checkpoint.
             await db.rollback()
+            logger.debug(f"mark_seen item_id={item_id} not found")
+            raise HTTPException(status_code=404, detail="Not found")
+
+        try:
+            insert_elapsed = timer()
+            await db.execute(
+                "INSERT OR REPLACE INTO seen_media (media_key, seen_at) VALUES (?, ?)",
+                (media_key(row["media_url"]), now),
+            )
+            insert_ms = insert_elapsed()
+            commit_elapsed = timer()
+            await db.commit()
+            commit_ms = commit_elapsed()
         except Exception:
-            # Rollback is I/O on a possibly-broken connection. Letting it
-            # propagate would replace the exception that describes what
-            # actually went wrong.
-            logger.exception(f"mark_seen item_id={item_id}: rollback failed as well")
-        raise
+            logger.warning(f"mark_seen item_id={item_id}: write failed, rolling back the seen mark")
+            try:
+                await db.rollback()
+            except Exception:
+                # Rollback is I/O on a possibly-broken connection. Letting it
+                # propagate would replace the exception that describes what
+                # actually went wrong.
+                logger.exception(f"mark_seen item_id={item_id}: rollback failed as well")
+            raise
 
     logger.debug(
         f"mark_seen item_id={item_id} seen_at={row['seen_at']} "
