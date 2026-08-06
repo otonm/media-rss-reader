@@ -1,3 +1,4 @@
+import asyncio
 import contextlib
 import logging
 import re
@@ -1670,11 +1671,15 @@ async def test_two_overlapping_mark_seen_requests_do_not_corrupt_each_other(
     serialisation one request's ROLLBACK discards the other's UPDATE and leaves
     seen_media written with items.seen_at unset (M8, F11).
 
+    A 404 is mixed into the six real ids: with six existing items alone no
+    request ever raises, so write_transaction never reaches db.rollback() and
+    the counts hold at 6/6 with or without the lock. The 404 forces a genuine
+    ROLLBACK on the shared connection concurrently with the other five
+    requests' uncommitted UPDATEs — the only thing that can discard them.
+
     The lock had no test of any kind: deleting `async with _write_lock:` left
     all 303 green.
     """
-    import asyncio
-
     await _insert_feed(db, "f1")
     for n in range(6):
         await db.execute(
@@ -1683,8 +1688,11 @@ async def test_two_overlapping_mark_seen_requests_do_not_corrupt_each_other(
         )
     await db.commit()
 
-    responses = await asyncio.gather(*(client.post(f"/api/items/i{n}/seen") for n in range(6)))
-    assert all(r.status_code == 200 for r in responses)
+    requests = [client.post(f"/api/items/i{n}/seen") for n in range(6)]
+    requests.append(client.post("/api/items/nonexistent/seen"))
+    *ok_responses, missing_response = await asyncio.gather(*requests)
+    assert all(r.status_code == 200 for r in ok_responses)
+    assert missing_response.status_code == 404
 
     async with db.execute("SELECT COUNT(*) AS n FROM items WHERE seen_at IS NOT NULL") as cur:
         assert (await cur.fetchone())["n"] == 6
@@ -1724,7 +1732,7 @@ async def test_mark_seen_reports_the_original_error_when_rollback_also_fails(
 
     resp = await client.post("/api/items/i1/seen")
     assert resp.status_code == 500
-    warnings = [r for r in caplog.records if r.levelno == logging.WARNING and "write failed" in r.message]
+    warnings = [r for r in caplog.records if r.levelno == logging.WARNING and "write failed" in r.getMessage()]
     assert warnings and warnings[0].exc_info is not None, "minor 8: the warning carries the exception"
     # exc_info alone is not enough: a warning with SOME traceback is logged
     # either way. The contract is which exception it carries — the original
@@ -1734,35 +1742,85 @@ async def test_mark_seen_reports_the_original_error_when_rollback_also_fails(
     )
 
 
-async def test_setup_write_is_not_discarded_by_a_concurrent_mark_seen(
+async def test_setup_write_is_not_discarded_by_a_concurrent_failing_write(
+    auth_client: AsyncClient,
     db: aiosqlite.Connection,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """post_setup wrote and committed on the same shared connection without
-    taking the lock, so a concurrent mark_seen rollback discarded the TOTP
-    secret while the user was redirected to / as though setup succeeded
-    (minor 2)."""
-    import asyncio
+    taking the lock, so a concurrent rollback could discard the TOTP secret
+    while the user was redirected to / as though setup succeeded (minor 2).
 
+    Drives the real /setup route (auth_client mounts the auth router on this
+    same db) rather than a hand-copied replica of what post_setup does — a
+    replica stays green even if post_setup itself stops using
+    write_transaction, which is exactly the regression minor 2 describes.
+
+    The race needs forcing: a natural asyncio.gather of the HTTP call and a
+    concurrent write resolves the HTTP call's INSERT-then-commit as one
+    uninterrupted run in practice, never actually overlapping the other
+    writer. db.execute is wrapped to release the concurrent writer the instant
+    the real INSERT statement returns — before post_setup's route has had a
+    chance to commit or (with the fix) release write_transaction's lock — so
+    the two are forced to contend on the same window every run. This targets
+    only the literal `'totp_secret'` INSERT, not the earlier SELECT guard
+    that also mentions the key, so the writer isn't released before post_setup
+    has even started writing.
+
+    The concurrent writer does no statement of its own before rolling back —
+    what it would have written is irrelevant to the corruption mechanism, only
+    that rollback() runs on the shared connection while the INSERT is still
+    uncommitted. An UPDATE first was tried and measurably lost the race: it
+    round-trips to aiosqlite's worker thread, which reliably let post_setup's
+    single scheduling tick reach commit() first even in the unfixed code,
+    making the test pass whether or not the bug was present.
+    """
+    import pyotp
     from fastapi import HTTPException
 
+    from src.auth.session import SETUP_COOKIE, sign_setup_cookie
+    from src.config import settings
     from src.db.connection import write_transaction
 
-    async def setup_write() -> None:
-        async with write_transaction(db):
-            await db.execute("INSERT OR REPLACE INTO auth_config (key, value) VALUES ('totp_secret', 'S3CRET')")
-            await asyncio.sleep(0)
+    secret = pyotp.random_base32()
+    auth_client.cookies.set(SETUP_COOKIE, sign_setup_cookie(secret, settings.auth_secret_key))
+    code = pyotp.TOTP(secret).now()
 
-    async def failing_mark() -> None:
+    about_to_insert = asyncio.Event()
+    real_execute = db.execute
+
+    async def _delayed_insert(sql: str, params: tuple) -> aiosqlite.Cursor:
+        result = await real_execute(sql, params)
+        about_to_insert.set()
+        await asyncio.sleep(0)
+        return result
+
+    def _synced_execute(sql: str, params: tuple = ()):  # noqa: ANN202
+        # _load_totp_secret's SELECT also mentions 'totp_secret' and is used as
+        # `async with db.execute(...)`, which a coroutine can't satisfy — only
+        # the plain-awaited INSERT is wrapped; the SELECT passes through
+        # untouched so it keeps aiosqlite's dual await/async-with object.
+        if "INSERT OR REPLACE INTO auth_config" in sql:
+            return _delayed_insert(sql, params)
+        return real_execute(sql, params)
+
+    async def failing_write() -> None:
+        await about_to_insert.wait()
         with contextlib.suppress(HTTPException):
             async with write_transaction(db):
-                await db.execute("UPDATE items SET seen_at = 'x' WHERE id = 'nope'")
                 raise HTTPException(status_code=404, detail="Not found")
 
-    await asyncio.gather(setup_write(), failing_mark())
+    monkeypatch.setattr(db, "execute", _synced_execute)
+    setup_resp, _ = await asyncio.gather(
+        auth_client.post("/setup", data={"totp_code": code}),
+        failing_write(),
+    )
+    monkeypatch.undo()
 
+    assert setup_resp.status_code == 303
     async with db.execute("SELECT value FROM auth_config WHERE key = 'totp_secret'") as cur:
         row = await cur.fetchone()
-    assert row is not None and row["value"] == "S3CRET"
+    assert row is not None and row["value"] == secret
 
 
 async def test_reddit_feeds_status_caps_the_body(
