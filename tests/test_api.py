@@ -1126,6 +1126,35 @@ async def test_proxy_upstream_error_logged_at_warning(
     assert any("i1" in m and url in m for m in caplog.messages)
 
 
+async def test_proxy_serves_a_gallery_slide_with_a_non_ascii_url(
+    client: AsyncClient,
+    db: aiosqlite.Connection,
+    mock_http: respx.MockRouter,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Slides 2..N of a gallery live only in media_json (M3)."""
+    import json
+
+    from src.config import settings
+
+    monkeypatch.setattr(settings, "cache_dir", str(tmp_path))
+    slide = "http://example.com/café.jpg"
+    await _insert_feed(db, "f1")
+    await db.execute(
+        """INSERT INTO items(id, feed_id, guid, media_url, media_type, media_json)
+           VALUES ('i1', 'f1', 'g1', 'http://example.com/one.jpg', 'image', ?)""",
+        (json.dumps([{"url": "http://example.com/one.jpg", "type": "image"}, {"url": slide, "type": "image"}]),),
+    )
+    await db.commit()
+    mock_http.get(_pinned(slide)).mock(
+        return_value=httpx.Response(200, content=b"jpg", headers={"content-type": "image/jpeg"})
+    )
+
+    resp = await client.get("/api/media/proxy", params={"url": slide})
+    assert resp.status_code == 200
+
+
 async def test_prefetch_hint_logs_entry_and_queue_size(
     client: AsyncClient,
     db: aiosqlite.Connection,

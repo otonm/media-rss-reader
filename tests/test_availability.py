@@ -138,6 +138,27 @@ async def test_unknown_item_id_marks_dead_only(db: aiosqlite.Connection) -> None
     assert [r[0] for r in rows] == ["http://x.com/a.jpg"]
 
 
+async def test_is_known_media_url_matches_a_non_ascii_gallery_slide(db: aiosqlite.Connection) -> None:
+    """media_json is written by json.dumps with ensure_ascii=True, so `é` is
+    stored as `\\u00e9`, while the LIKE prefilter was built from the raw request
+    value. The two could never match, so every gallery slide with a non-ASCII
+    character 404'd forever (M3)."""
+    import json
+
+    from src.media.availability import is_known_media_url
+
+    slide = "http://example.com/café.jpg"
+    await db.execute("INSERT INTO feeds(id, url, title) VALUES ('f1', 'http://f', 'F')")
+    await db.execute(
+        """INSERT INTO items(id, feed_id, guid, media_url, media_type, media_json)
+           VALUES ('i1', 'f1', 'g1', 'http://example.com/first.jpg', 'image', ?)""",
+        (json.dumps([{"url": "http://example.com/first.jpg", "type": "image"}, {"url": slide, "type": "image"}]),),
+    )
+    await db.commit()
+
+    assert await is_known_media_url(slide, db) is True
+
+
 async def test_mark_dead_ignores_item_that_lacks_the_url(db: aiosqlite.Connection) -> None:
     """R5: item_id is looked up on its own, so a caller could name any item id
     alongside any URL and have that item deleted."""

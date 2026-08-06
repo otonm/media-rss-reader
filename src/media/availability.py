@@ -10,6 +10,7 @@ feed poll.
 
 from __future__ import annotations
 
+import json
 import logging
 
 import aiosqlite
@@ -70,13 +71,19 @@ async def is_known_media_url(url: str, db: aiosqlite.Connection) -> bool:
     Two-tier: the indexed primary lookup covers single-media items and a
     gallery's primary URL; the media_json scan covers gallery slide URLs that
     live only in the JSON array. Exact membership is verified in Python after
-    the LIKE prefilter, so LIKE special characters in `url` cannot cause a
-    false negative to slip past (the LIKE is a prefilter only).
+    the LIKE prefilter, so the prefilter can only ever be too generous.
+
+    The pattern is built with json.dumps so it carries the same escaping the
+    column holds. media_json is written with the default ensure_ascii=True, so
+    a URL containing `é` is stored as `caf\\u00e9`; a pattern built from the raw
+    value could never match it, and every gallery slide with a non-ASCII
+    character answered 404 (M3).
     """
     async with db.execute("SELECT 1 FROM items WHERE media_url = ? LIMIT 1", (url,)) as cur:
         if await cur.fetchone() is not None:
             return True
-    pattern = f'%"{_escape_like(url)}"%'
+    # json.dumps(url)[1:-1] is the escaped body without the surrounding quotes.
+    pattern = f'%"{_escape_like(json.dumps(url)[1:-1])}"%'
     async with db.execute(
         "SELECT id, media_url, media_type, media_json FROM items WHERE media_json LIKE ? ESCAPE '\\'",
         (pattern,),
