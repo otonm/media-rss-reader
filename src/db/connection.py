@@ -13,7 +13,6 @@ import asyncio
 import contextlib
 import logging
 from collections.abc import AsyncIterator, Awaitable, Callable
-from contextlib import asynccontextmanager
 from pathlib import Path
 from typing import Annotated
 
@@ -56,10 +55,10 @@ async def get_db(request: Request) -> aiosqlite.Connection:
     connection's worker thread, so DB access queues app-wide; with WAL and
     queries this small that is cheaper than a thread per request.
 
-    Sharing one connection means sharing one implicit transaction: anything
-    here that writes more than a single statement has to serialise itself
-    (write_transaction) rather than assume it owns the connection. The
-    scheduler is kept on a separate connection for the same reason.
+    Sharing one connection means sharing one implicit transaction: any write
+    here, single statement or not, has to go through write_transaction rather
+    than assume it owns the connection. The scheduler is kept on a separate
+    connection for the same reason.
 
     Work that outlives the request still needs run_with_own_db — a streaming
     body or a warm task running after the route returned must not borrow a
@@ -77,15 +76,18 @@ DbDep = Annotated[aiosqlite.Connection, Depends(get_db)]
 _write_lock = asyncio.Lock()
 
 
-@asynccontextmanager
+@contextlib.asynccontextmanager
 async def write_transaction(db: aiosqlite.Connection) -> AsyncIterator[None]:
-    """Serialise a multi-statement write on the shared connection, then commit.
+    """Serialise a write on the shared connection, then commit.
 
     get_db hands every request the same connection, and sqlite3 opens one
-    implicit transaction per connection rather than per coroutine. Without this
-    two overlapping writers share a transaction and either one's ROLLBACK
-    discards the other's statements, leaving seen_media written and
-    items.seen_at not (F11) — or discarding a TOTP secret mid-setup.
+    implicit transaction per connection rather than per coroutine. Every write
+    needs this, not just a multi-statement one: a bare single-statement
+    execute + commit by one coroutine commits whatever another coroutine has
+    in flight. Without this two overlapping writers share a transaction and
+    either one's ROLLBACK discards the other's statements, leaving seen_media
+    written and items.seen_at not (F11) — or discarding a TOTP secret
+    mid-setup.
 
     BaseException rather than Exception: a CancelledError arriving at any await
     inside the block would otherwise unwind past the rollback and leave the
@@ -101,7 +103,7 @@ async def write_transaction(db: aiosqlite.Connection) -> AsyncIterator[None]:
             yield
             await db.commit()
         except BaseException:
-            with contextlib.suppress(Exception):
+            with contextlib.suppress(BaseException):
                 await db.rollback()
             raise
 
