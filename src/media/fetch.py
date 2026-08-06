@@ -124,8 +124,11 @@ async def _check_url(url: str) -> list[str]:
 
 async def open_upstream(
     url: str, item_id: str | None, client: httpx.AsyncClient, request_id: str | None = None
-) -> httpx.Response:
+) -> tuple[httpx.Response, str]:
     """Open a streaming upstream response, or raise UpstreamError.
+
+    Returns (response, content_type): the caller must not re-derive the type
+    from response.headers itself, since this is where it was validated.
 
     The body is left unread so the caller can tee it. Ownership of the response
     passes to tee_to_cache, which always closes it.
@@ -206,7 +209,7 @@ async def open_upstream(
         f"length={response.headers.get('content-length', 'unknown')} "
         f"request_id={request_id}"
     )
-    return response
+    return response, content_type
 
 
 async def tee_to_cache(url: str, response: httpx.Response, request_id: str | None = None) -> AsyncIterator[bytes]:
@@ -297,7 +300,7 @@ async def fetch_to_cache(url: str, item_id: str, client: httpx.AsyncClient, requ
             return
         try:
             logger.debug(f"fetch_to_cache: warming {url} (item_id={item_id}, request_id={request_id})")
-            response = await open_upstream(url, item_id, client, request_id=request_id)
+            response, _ = await open_upstream(url, item_id, client, request_id=request_id)
             async for _ in tee_to_cache(url, response, request_id=request_id):
                 pass
             logger.debug(f"fetch_to_cache: warmed {url} (request_id={request_id})")

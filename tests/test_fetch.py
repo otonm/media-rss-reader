@@ -34,7 +34,7 @@ async def test_tee_streams_bytes_and_fills_cache(tmp_path: Path, monkeypatch: py
             return_value=httpx.Response(200, content=PAYLOAD, headers={"content-type": "image/jpeg"})
         )
         async with httpx.AsyncClient() as client:
-            response = await open_upstream(URL, None, client)
+            response, _ = await open_upstream(URL, None, client)
             received = b"".join([chunk async for chunk in tee_to_cache(URL, response)])
 
     assert received == PAYLOAD
@@ -58,7 +58,7 @@ async def test_abandoned_stream_leaves_no_cache_entry(tmp_path: Path, monkeypatc
             return_value=httpx.Response(200, content=PAYLOAD, headers={"content-type": "image/jpeg"})
         )
         async with httpx.AsyncClient() as client:
-            response = await open_upstream(URL, None, client)
+            response, _ = await open_upstream(URL, None, client)
             stream = tee_to_cache(URL, response)
             first = await anext(stream)
             assert len(first) < len(PAYLOAD)  # genuinely mid-transfer
@@ -228,7 +228,7 @@ async def test_open_upstream_follows_public_redirect(tmp_path: Path, monkeypatch
         return_value=httpx.Response(200, content=b"bytes", headers={"content-type": "image/jpeg"})
     )
     async with httpx.AsyncClient() as client:
-        response = await open_upstream("http://example.com/x.jpg", None, client)
+        response, _ = await open_upstream("http://example.com/x.jpg", None, client)
         assert response.status_code == 200
         await response.aclose()
 
@@ -242,7 +242,7 @@ async def test_open_upstream_allows_private_when_configured(tmp_path: Path, monk
             return_value=httpx.Response(200, content=b"bytes", headers={"content-type": "image/jpeg"})
         )
         async with httpx.AsyncClient() as client:
-            response = await open_upstream("http://10.0.0.5/x.jpg", None, client)
+            response, _ = await open_upstream("http://10.0.0.5/x.jpg", None, client)
             assert response.status_code == 200
             await response.aclose()
 
@@ -304,7 +304,7 @@ async def test_tee_to_cache_aborts_past_the_byte_budget(tmp_path: Path, monkeypa
         return_value=httpx.Response(200, headers={"content-type": "video/mp4"}, stream=httpx.ByteStream(b"x" * 1000))
     )
     async with httpx.AsyncClient() as client:
-        response = await open_upstream(url, None, client)
+        response, _ = await open_upstream(url, None, client)
         with pytest.raises(UpstreamError):
             async for _ in tee_to_cache(url, response):
                 pass
@@ -355,7 +355,7 @@ async def test_open_upstream_refuses_dns_rebinding(monkeypatch: pytest.MonkeyPat
     with respx.mock:
         respx.get(fetch_mod._pinned_url(url, "93.184.216.34")).mock(side_effect=_handler)
         async with httpx.AsyncClient() as client:
-            resp = await fetch_mod.open_upstream(url, None, client)
+            resp, _ = await fetch_mod.open_upstream(url, None, client)
             assert resp.status_code == 200
             await resp.aclose()
     # The request must go to the one validated IP, not to the hostname that
@@ -392,7 +392,7 @@ async def test_tee_to_cache_server_abort_logs_warning(tmp_path: Path, caplog: py
                 )
             )
             async with httpx.AsyncClient() as client:
-                resp = await fetch_mod.open_upstream(url, None, client)
+                resp, _ = await fetch_mod.open_upstream(url, None, client)
                 caplog.set_level(logging.DEBUG)
                 with pytest.raises(fetch_mod.UpstreamError, match="MEDIA_MAX_BYTES"):
                     async for _ in fetch_mod.tee_to_cache(url, resp):
@@ -423,7 +423,7 @@ async def test_tee_to_cache_client_disconnect_logs_debug(tmp_path: Path, caplog:
                 return_value=httpx.Response(200, content=b"abcdefghij", headers={"content-type": "image/jpeg"})
             )
             async with httpx.AsyncClient() as client:
-                resp = await fetch_mod.open_upstream(url, None, client)
+                resp, _ = await fetch_mod.open_upstream(url, None, client)
                 caplog.set_level(logging.DEBUG)
                 gen = fetch_mod.tee_to_cache(url, resp)
                 await gen.__anext__()  # pull one chunk then abandon
@@ -469,7 +469,7 @@ async def test_tee_to_cache_non_client_abort_not_mislabeled(
         )
         caplog.set_level(logging.DEBUG)
         async with httpx.AsyncClient() as client:
-            resp = await fetch_mod.open_upstream(url, None, client)
+            resp, _ = await fetch_mod.open_upstream(url, None, client)
             with pytest.raises(OSError, match="simulated cache write failure"):
                 async for _ in fetch_mod.tee_to_cache(url, resp):
                     pass

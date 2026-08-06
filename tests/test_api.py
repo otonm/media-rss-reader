@@ -553,6 +553,20 @@ async def test_proxy_cache_miss(
     assert (tmp_path / f"{fname}.meta").read_text() == "image/jpeg"  # type: ignore[operator]
 
 
+async def test_proxy_still_refuses_an_unknown_url_after_the_reorder(
+    client: AsyncClient, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The gate moves behind the cache lookup because a hit cannot escape
+    CACHE_DIR (the key is sha256(url)) and can only exist because the URL
+    passed the gate earlier. This test is what stops a future reorder from
+    dropping the gate entirely."""
+    from src.config import settings
+
+    monkeypatch.setattr(settings, "cache_dir", str(tmp_path))
+    resp = await client.get("/api/media/proxy", params={"url": "http://evil.example/x.jpg"})
+    assert resp.status_code == 404
+
+
 async def test_proxy_rejects_html_upstream(
     client: AsyncClient,
     tmp_path: object,
@@ -1071,33 +1085,47 @@ async def test_items_cursor_does_not_skip_when_a_feed_gains_an_older_row(
     assert not missing, f"the cursor skipped {missing}"
 
 
-async def test_proxy_cache_hit_evicted_before_send_refetches(
-    client: AsyncClient,
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-    mock_http: respx.MockRouter,
-    db: aiosqlite.Connection,
+async def test_proxy_cache_hit_evicted_before_send_is_not_a_500(
+    client: AsyncClient, db: aiosqlite.Connection, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """R2: cache_lookup stats the file itself, so a path that does not exist
-    is a miss and the request falls through to upstream — the outcome this test
-    has always wanted, now without a window in between."""
-    import src.media.cache as cache_mod
+    """Starlette's FileResponse stats by path before http.response.start and
+    opens by path after it, so evict() unlinking between the two is real and
+    cannot be closed from here. What it must not do is raise RuntimeError with
+    the container's cache path in the log, after the handler has returned and
+    outside every except clause it has (minor 1).
 
-    monkeypatch.setattr(cache_mod.settings, "cache_dir", str(tmp_path))
-    url = "http://example.com/gone.jpg"
-    await _register_proxy_url(db, url)
-    # cache_lookup stats the file itself, so a path that does not exist is a
-    # miss and the request falls through to upstream — the outcome this test
-    # has always wanted, now without a window in between.
-    monkeypatch.setattr(cache_mod, "_cache_path", lambda _url: tmp_path / "evicted")
+    The two tests this replaces both patched _cache_path to a path that never
+    existed, so cache_lookup returned None and they took the ordinary miss path.
+    """
+    from src.config import settings
+    from src.media import cache as cache_mod
 
-    mock_http.get(_pinned(url)).mock(
-        return_value=httpx.Response(200, content=b"refetched", headers={"content-type": "image/jpeg"})
+    monkeypatch.setattr(settings, "cache_dir", str(tmp_path))
+    url = "http://example.com/evicted.jpg"
+    await _insert_feed(db, "f1")
+    await db.execute(
+        "INSERT INTO items(id, feed_id, guid, media_url, media_type) VALUES ('i1','f1','g1',?,'image')",
+        (url,),
     )
-    resp = await client.get(f"/api/media/proxy?url={url}")
+    await db.commit()
 
-    assert resp.status_code == 200
-    assert resp.content == b"refetched"
+    path = cache_mod._cache_path(url)
+    path.write_bytes(b"cached")
+    path.with_suffix(".meta").write_text("image/jpeg", encoding="ascii")
+
+    real_lookup = cache_mod.cache_lookup
+
+    def _lookup_then_evict(u: str) -> tuple[Path, str] | None:
+        result = real_lookup(u)
+        path.unlink(missing_ok=True)  # evict() lands here
+        return result
+
+    monkeypatch.setattr("src.api.media.cache_lookup", _lookup_then_evict)
+    monkeypatch.setattr(client._transport, "raise_app_exceptions", False)
+
+    resp = await client.get("/api/media/proxy", params={"url": url})
+    assert resp.status_code == 503
+    assert str(tmp_path) not in resp.text
 
 
 async def test_proxy_upstream_error_logged_at_warning(
@@ -1340,34 +1368,6 @@ async def test_list_items_logs_db_duration(
     assert any(re.search(r"db=\S*ms", r.getMessage()) and "list_items" in r.getMessage() for r in caplog.records), (
         "list_items exit log must include the DB query duration"
     )
-
-
-async def test_proxy_eviction_fallthrough_refetches(
-    client: AsyncClient,
-    db: aiosqlite.Connection,
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    """R2: cache_lookup stats the file itself, so a file evicted between the
-    cache lookup and FileResponse is a miss by construction. The request falls
-    through to upstream and refetches, rather than raising RuntimeError."""
-    import src.media.cache as cache_mod
-    from src.media import fetch as fetch_mod
-
-    monkeypatch.setattr(cache_mod.settings, "cache_dir", str(tmp_path))
-    url = "http://example.com/evicted.jpg"
-    await _register_proxy_url(db, url)
-    # _cache_path returns a path that does not exist → cache_lookup returns None
-    monkeypatch.setattr(cache_mod, "_cache_path", lambda _url: tmp_path / "evicted")
-
-    with respx.mock:
-        respx.get(fetch_mod._pinned_url(url, "93.184.216.34")).mock(
-            return_value=httpx.Response(200, content=b"refetched", headers={"content-type": "image/jpeg"})
-        )
-        resp = await client.get(f"/api/media/proxy?url={url}")
-
-    assert resp.status_code == 200
-    assert resp.content == b"refetched"
 
 
 async def test_proxy_exception_uses_logger_exception(

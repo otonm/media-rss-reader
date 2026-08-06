@@ -2,9 +2,11 @@
 
 import asyncio
 import logging
+from pathlib import Path
 
 from fastapi import APIRouter, HTTPException, Query, Response
 from fastapi.responses import FileResponse, StreamingResponse
+from starlette.types import Receive, Scope, Send
 
 from src.api.schemas import PrefetchHint
 from src.db.connection import DbDep
@@ -19,6 +21,34 @@ from src.timing import timer
 router = APIRouter()
 
 logger = logging.getLogger(__name__)
+
+
+class CacheFileResponse(FileResponse):
+    """FileResponse that answers 503 when the cached file vanished mid-request.
+
+    evict() runs after every refresh cycle and can unlink an entry between our
+    cache_lookup and Starlette's own os.stat. Starlette stats at
+    responses.py:350 and opens at 392, both by path, so no descriptor we hold
+    closes the window — and its RuntimeError is raised after proxy_media has
+    returned, outside every except clause the handler has. That reached the
+    browser as a 500 with the container's cache path in the error log.
+
+    503 with Retry-After: the next request takes the miss path and refetches.
+
+    ponytail: the window is narrowed, not closed. Closing it needs an in-flight
+    registry that evict() consults before unlinking; evict is the only unlinker
+    and runs in this process, so that is a contained change if the 503s are ever
+    observed in practice.
+    """
+
+    async def __call__(self, scope: Scope, receive: Receive, send: Send) -> None:
+        try:
+            await super().__call__(scope, receive, send)
+        except RuntimeError:
+            if Path(self.path).exists():  # noqa: ASYNC240 — one stat on a rare error path
+                raise
+            logger.warning(f"proxy_media: cached file for {self.path} vanished before send, answering 503")
+            await Response(status_code=503, headers={"Retry-After": "1"})(scope, receive, send)
 
 
 @router.get("/media/proxy", response_model=None)
@@ -50,31 +80,29 @@ async def proxy_media(
     streaming misses through is what prevents the black-screen stall on first
     paint (F7).
     """
-    gate_elapsed = timer()
-    known = await is_known_media_url(url, db)
-    logger.debug(f"proxy_media: url gate for {url} -> {known} in {gate_elapsed():.1f}ms")
-    if not known:
-        logger.info(f"proxy_media: refusing unknown url {url}")
-        raise HTTPException(status_code=404, detail="not a known media url")
+    # The cache lookup goes first. It is one stat against a sha256-derived name;
+    # the gate's second tier is `media_json LIKE '%...%'`, which no index can
+    # serve, so it was running a full scan of items for every slide of every
+    # gallery — on the same aiosqlite worker thread /api/items queues on. A hit
+    # needs no gate: the key is sha256(url), so it cannot escape CACHE_DIR, and
+    # a URL can only be in the cache because it passed the gate earlier.
     hit = await asyncio.to_thread(cache_lookup, url)
     if hit is not None:
         path, media_type = hit
         logger.debug(f"proxy_media: HIT {url} -> {path.name} (type={media_type})")
-        # cache_lookup's stat is deliberately not forwarded: passing a
-        # stat_result suppresses Starlette's own os.stat inside
-        # FileResponse.__call__, which is the check that fails before any bytes
-        # go out. evict() runs after every refresh cycle, and with the stat
-        # suppressed the client received a 200 with a correct Content-Length and
-        # a body that died mid-flight (R2).
-        return FileResponse(
-            path,
-            media_type=media_type,
-        )
+        return CacheFileResponse(path, media_type=media_type)
+
+    gate_elapsed = timer()
+    known = await is_known_media_url(url, db)
+    logger.debug(f"proxy_media: url gate for {url!r} -> {known} in {gate_elapsed():.1f}ms")
+    if not known:
+        logger.debug(f"proxy_media: refusing unknown url {url!r}")
+        raise HTTPException(status_code=404, detail="not a known media url")
 
     logger.debug(f"proxy_media: MISS {url} (item_id={item_id}), streaming from upstream")
     try:
         upstream_elapsed = timer()
-        response = await open_upstream(url, item_id, client, request_id=current_request_id())
+        response, content_type = await open_upstream(url, item_id, client, request_id=current_request_id())
     except UpstreamError as exc:
         # A failed user-visible request, and on 404/410 a destructive state
         # change (the URL marked dead, a fully-dead item dropped). This used to
@@ -94,7 +122,6 @@ async def proxy_media(
         logger.exception(f"proxy_media: upstream fetch failed for {url}: {type(exc).__name__}: {exc}")
         raise HTTPException(status_code=502, detail="upstream fetch failed") from exc
 
-    content_type = response.headers.get("content-type", "application/octet-stream")
     logger.debug(
         f"proxy_media: MISS ok {url} -> {response.status_code} type={content_type} upstream={upstream_elapsed():.1f}ms"
     )
