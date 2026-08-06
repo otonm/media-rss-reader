@@ -95,6 +95,14 @@ async def list_items(
     none, because the tiebreak is (rn, feed_id, id) and their same-rank rows
     were never delivered under the old numbering either.
 
+    min(issued, resolved) only recovers rows ahead of the cursor — rows that
+    already existed and were due to be delivered next. A row inserted behind
+    the cursor is not: the routine case is an undated entry, which ROW_NUMBER
+    ranks first in its feed, landing below any cursor already past position 1.
+    That row is not delivered until the client reloads from the top. This is
+    ordinary forward pagination, not M2 — M2 lost rows ahead of the cursor that
+    had never been delivered at all.
+
     after_rn is optional so a page cached in a browser from before this change
     degrades to the old behaviour instead of 422-ing.
 
@@ -121,7 +129,7 @@ async def list_items(
         if bound_rn != anchor["rn"]:
             logger.info(
                 f"list_items: anchor {after_id} rank moved {after_rn}->{anchor['rn']}, "
-                f"paging from {bound_rn} so nothing is skipped"
+                f"paging from {bound_rn} so no undelivered row ahead of the cursor is skipped"
             )
         logger.debug(
             f"list_items: anchor {after_id} resolved to rn={anchor['rn']} "
