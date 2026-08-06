@@ -241,7 +241,10 @@ async def test_fetch_to_cache_cache_write_failure_logs_exactly_one_warning(
     orig = fetch_mod.cache_stream_tee
 
     async def _failing_tee(
-        url: str, chunks: collections.abc.AsyncIterable[bytes], content_type: str = "application/octet-stream"
+        url: str,
+        chunks: collections.abc.AsyncIterable[bytes],
+        content_type: str = "application/octet-stream",
+        request_id: str | None = None,
     ) -> None:
         async for chunk in orig(url, chunks, content_type):
             yield chunk
@@ -545,7 +548,10 @@ async def test_tee_to_cache_non_client_abort_not_mislabeled(
     orig = fetch_mod.cache_stream_tee
 
     async def _failing_tee(
-        url: str, chunks: collections.abc.AsyncIterable[bytes], content_type: str = "application/octet-stream"
+        url: str,
+        chunks: collections.abc.AsyncIterable[bytes],
+        content_type: str = "application/octet-stream",
+        request_id: str | None = None,
     ) -> None:
         yielded = 0
         async for chunk in orig(url, chunks, content_type):

@@ -86,7 +86,10 @@ def download_claim(url: str) -> Iterator[bool]:
 
 
 async def cache_stream_tee(
-    url: str, chunks: AsyncIterable[bytes], content_type: str = "application/octet-stream"
+    url: str,
+    chunks: AsyncIterable[bytes],
+    content_type: str = "application/octet-stream",
+    request_id: str | None = None,
 ) -> AsyncIterator[bytes]:
     """Write an async byte iterator to the cache file, yielding each chunk onward.
 
@@ -116,7 +119,7 @@ async def cache_stream_tee(
     fd, tmp_name = tempfile.mkstemp(dir=path.parent, suffix=".tmp")
     tmp = Path(tmp_name)
     written = 0
-    logger.debug(f"cache_stream_tee: start {url} -> {tmp.name} (type={content_type})")
+    logger.debug(f"cache_stream_tee: start {url} -> {tmp.name} (type={content_type}) (request_id={request_id})")
     try:
         with os.fdopen(fd, "wb") as fh:
             async for chunk in chunks:
@@ -128,12 +131,15 @@ async def cache_stream_tee(
         await asyncio.to_thread(tmp.chmod, 0o644)
         await asyncio.to_thread(_write_meta, _meta_path(url), content_type)
         await asyncio.to_thread(tmp.replace, path)
-        logger.debug(f"cache_stream_tee: cached {url} ({written} bytes, type={content_type}) as {path.name}")
+        logger.debug(
+            f"cache_stream_tee: cached {url} ({written} bytes, type={content_type}) as {path.name} "
+            f"(request_id={request_id})"
+        )
     except BaseException as exc:
         tmp.unlink(missing_ok=True)  # noqa: ASYNC240 — one metadata op on an error path
         logger.debug(
             f"cache_stream_tee: discarded partial {url} after {written} bytes "
-            f"({type(exc).__name__}); temp file {tmp.name} removed"
+            f"({type(exc).__name__}); temp file {tmp.name} removed (request_id={request_id})"
         )
         raise
 

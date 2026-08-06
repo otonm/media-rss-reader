@@ -1276,6 +1276,64 @@ async def test_proxy_dns_failure_logs_exactly_one_warning_across_both_loggers(
     assert len(warnings) == 1, [f"{r.name}: {r.message}" for r in warnings]
 
 
+async def test_proxy_502_carries_the_upstream_duration(
+    client: AsyncClient,
+    db: aiosqlite.Connection,
+    mock_http: respx.MockRouter,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """A 502 from an instant connection refusal and one from the 30s read
+    timeout produced identical lines, and duration is the field that separates
+    'the origin is gone' from 'the origin is slow' (minor 9).
+
+    proxy_media's own failure-exit logging stays at DEBUG (51f57d9: promoting
+    it to WARNING would double-log alongside open_upstream's own warning on
+    every failure), so this captures at DEBUG rather than WARNING.
+    """
+    from src.config import settings
+
+    monkeypatch.setattr(settings, "cache_dir", str(tmp_path))
+    caplog.set_level(logging.DEBUG)
+    url = "http://example.com/dead.jpg"
+    await _insert_feed(db, "f1")
+    await db.execute(
+        "INSERT INTO items(id, feed_id, guid, media_url, media_type) VALUES ('i1','f1','g1',?,'image')", (url,)
+    )
+    await db.commit()
+    mock_http.get(_pinned(url)).mock(return_value=httpx.Response(404))
+
+    resp = await client.get("/api/media/proxy", params={"url": url})
+    assert resp.status_code == 502
+    assert any("ms" in r.message for r in caplog.records if "502" in r.message)
+
+
+async def test_a_logged_url_is_escaped_and_truncated(
+    client: AsyncClient,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """A newline in a query parameter forges a whole log line against the
+    single-line format main.py installs (minor 19).
+
+    Scoped to the "src" logger (every app module's logger, not one leaf name —
+    the gap that let a prior double-log finding through review) rather than
+    root: unscoped DEBUG also captures aiosqlite's own parameter-echoing debug
+    log, which is third-party and out of this task's reach.
+    """
+    from src.config import settings
+
+    monkeypatch.setattr(settings, "cache_dir", str(tmp_path))
+    caplog.set_level(logging.DEBUG, logger="src")
+    await client.get("/api/media/proxy", params={"url": "http://x/\nFAKE LOG LINE" + "y" * 500})
+
+    for record in caplog.records:
+        assert "\nFAKE" not in record.message, "the newline must be escaped"
+        assert len(record.message) < 400, "the value must be truncated"
+
+
 async def test_proxy_serves_a_gallery_slide_with_a_non_ascii_url(
     client: AsyncClient,
     db: aiosqlite.Connection,

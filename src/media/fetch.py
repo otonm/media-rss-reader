@@ -251,7 +251,7 @@ async def tee_to_cache(
         # the one it is iterating, so an abandoned download would leave its temp
         # file behind until the event loop got round to finalising the inner
         # generator. aclosing makes the cleanup happen now.
-        cached = cache_stream_tee(url, response.aiter_bytes(CHUNK_SIZE), content_type)
+        cached = cache_stream_tee(url, response.aiter_bytes(CHUNK_SIZE), content_type, request_id=request_id)
         try:
             async with aclosing(cached):
                 try:

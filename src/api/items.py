@@ -8,6 +8,7 @@ from typing import Any
 import aiosqlite
 from fastapi import APIRouter, HTTPException, Query
 
+from src.api.media import _loggable
 from src.db.connection import DbDep, write_transaction
 from src.db.queries import ANCHOR_LOOKUP, INTERLEAVE_ORDER_BY, KEYSET_AFTER, RANKED_ITEMS_CTE
 from src.media.cache import cache_name, cache_present_names
@@ -131,7 +132,7 @@ async def list_items(
             anchor = await cur.fetchone()
         anchor_ms = anchor_elapsed()
         if anchor is None:
-            logger.info(f"list_items: 410, cursor anchor {after_id} no longer exists (db={anchor_ms:.1f}ms)")
+            logger.info(f"list_items: 410, cursor anchor {_loggable(after_id)} no longer exists (db={anchor_ms:.1f}ms)")
             raise HTTPException(status_code=410, detail="cursor expired")
         bound_rn = anchor["rn"] if after_rn is None else min(after_rn, anchor["rn"])
         if bound_rn != anchor["rn"]:
