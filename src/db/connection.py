@@ -1,7 +1,8 @@
 """Database connection factory.
 
-open_db() opens a connection held for the process lifetime. src/main.py opens two:
-one the requests share via get_db(), one the scheduler keeps to itself.
+open_db() opens a connection held for the process lifetime. src/main.py opens three:
+one the requests share via get_db(), one the scheduler keeps to itself, one
+installed via set_writer_db() for post-response writers.
 get_db() is a FastAPI dependency returning the request-side connection.
 run_with_own_db() is for work that outlives the request that started it.
 
@@ -108,6 +109,19 @@ async def write_transaction(db: aiosqlite.Connection) -> AsyncIterator[None]:
             raise
 
 
+# The connection post-response work writes on. Streaming bodies and warm tasks
+# run after the route returned, so they cannot borrow the request connection —
+# but opening one per call meant a blocking mkdir, an aiosqlite.connect that
+# spawns an OS thread and two PRAGMA round trips for every cached media file.
+_writer_db: aiosqlite.Connection | None = None
+
+
+def set_writer_db(db: aiosqlite.Connection | None) -> None:
+    """Install (or clear) the long-lived connection run_with_own_db writes on."""
+    global _writer_db
+    _writer_db = db
+
+
 async def run_with_own_db(
     label: str,
     write: Callable[[aiosqlite.Connection], Awaitable[object]],
@@ -120,6 +134,9 @@ async def run_with_own_db(
     Borrowing that connection raises "no active connection" instead.
     """
     try:
+        if _writer_db is not None:
+            await write(_writer_db)
+            return
         db = await open_db()
         try:
             await write(db)
