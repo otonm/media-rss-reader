@@ -25,6 +25,18 @@ async def test_feeds_empty(client: AsyncClient) -> None:
     assert resp.json() == []
 
 
+async def test_feeds_returns_what_the_overlay_reads(client: AsyncClient, db: aiosqlite.Connection) -> None:
+    """The only consumer is initDebugOverlay (controls.js:158-168), which
+    returns immediately unless UI_DEBUG is set — the default is 0 — and then
+    reads f.id and f.title. item_count, unseen_count, url and last_fetched_at
+    were computed by a LEFT JOIN over the whole items table and discarded
+    (minor 5)."""
+    await db.execute("INSERT INTO feeds(id, url, title) VALUES ('f1','http://x','X')")
+    await db.commit()
+    data = (await client.get("/api/feeds")).json()
+    assert data == [{"id": "f1", "title": "X"}]
+
+
 async def test_feeds_returns_feed_with_counts(client: AsyncClient, db: aiosqlite.Connection) -> None:
     await db.execute("INSERT INTO feeds (id, url, title) VALUES ('f1', 'http://x.com', 'X')")
     await db.execute(
@@ -41,8 +53,7 @@ async def test_feeds_returns_feed_with_counts(client: AsyncClient, db: aiosqlite
     data = resp.json()
     assert len(data) == 1
     assert data[0]["id"] == "f1"
-    assert data[0]["item_count"] == 2
-    assert data[0]["unseen_count"] == 1
+    assert data[0]["title"] == "X"
 
 
 async def test_feeds_ordered_by_title(client: AsyncClient, db: aiosqlite.Connection) -> None:
@@ -1802,15 +1813,6 @@ async def test_prefetch_hint_warms_cache(
     from src.media.cache import cache_read
 
     assert cache_read(url) is not None, "prefetch_hint must actually warm the cache"
-
-
-async def test_feeds_zero_item_counts(client: AsyncClient, db: aiosqlite.Connection) -> None:
-    await db.execute("INSERT INTO feeds(id, url, title) VALUES ('f0', 'http://x', 'Empty')")
-    await db.commit()
-    data = (await client.get("/api/feeds")).json()
-    feed = next(f for f in data if f["id"] == "f0")
-    assert feed["item_count"] == 0
-    assert feed["unseen_count"] == 0
 
 
 @pytest.mark.parametrize("size", [1, 200])

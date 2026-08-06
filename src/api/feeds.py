@@ -1,4 +1,4 @@
-"""GET /api/feeds — list all feeds with item counts."""
+"""GET /api/feeds — list all feeds."""
 
 import logging
 from typing import Any
@@ -14,22 +14,17 @@ router = APIRouter()
 
 @router.get("/feeds")
 async def list_feeds(db: DbDep) -> list[dict[str, Any]]:
-    """Return all feeds with total and unseen item counts.
+    """Return every feed's id and title.
 
-    The LEFT JOIN + conditional COUNT gives both counts in one query,
-    avoiding a second round-trip per feed.
+    The one consumer is initDebugOverlay (src/static/controls.js:158-168),
+    which builds a feed-id -> title map for the UI_DEBUG overlay. It used to
+    return item_count and unseen_count too, from a LEFT JOIN and GROUP BY over
+    the whole items table, defended by a docstring about the round-trips it
+    saved — for counts nobody requested.
     """
-    logger.debug("list_feeds querying all feeds with counts")
+    logger.debug("list_feeds querying all feeds")
     elapsed = timer()
-    async with db.execute(
-        """SELECT f.id, f.title, f.url, f.last_fetched_at,
-                  COUNT(i.id)                                  AS item_count,
-                  COUNT(CASE WHEN i.seen_at IS NULL THEN i.id END) AS unseen_count
-           FROM feeds f
-           LEFT JOIN items i ON i.feed_id = f.id
-           GROUP BY f.id
-           ORDER BY f.title COLLATE NOCASE"""
-    ) as cur:
+    async with db.execute("SELECT id, title FROM feeds ORDER BY title COLLATE NOCASE") as cur:
         rows = await cur.fetchall()
     logger.debug(f"list_feeds returned {len(rows)} feed(s); db={elapsed():.1f}ms")
     return [dict(row) for row in rows]
