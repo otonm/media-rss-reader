@@ -144,3 +144,21 @@ async def test_nosniff_on_every_response(db: aiosqlite.Connection) -> None:
                 assert resp.headers.get("x-content-type-options") == "nosniff", path
     finally:
         app.dependency_overrides.pop(get_db, None)
+
+
+async def test_lifespan_opens_and_closes_both_http_clients(db: aiosqlite.Connection) -> None:
+    """The status poll gets its own small pool so an absent companion cannot
+    starve the media proxy (M4)."""
+    import httpx
+
+    from src.main import app, lifespan
+
+    async with lifespan(app):
+        assert isinstance(app.state.http, httpx.AsyncClient)
+        assert isinstance(app.state.http_status, httpx.AsyncClient)
+        assert app.state.http is not app.state.http_status
+        media_client = app.state.http
+        status_client = app.state.http_status
+
+    assert media_client.is_closed
+    assert status_client.is_closed

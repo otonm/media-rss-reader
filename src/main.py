@@ -6,6 +6,7 @@ from collections.abc import AsyncGenerator
 from contextlib import asynccontextmanager
 from pathlib import Path
 
+import httpx
 from fastapi import FastAPI, Request
 from fastapi.responses import HTMLResponse
 from fastapi.staticfiles import StaticFiles
@@ -74,9 +75,18 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None]:
     # commits — sharing meant a mark_seen commit could land mid-refresh and
     # commit a partial feed, or its rollback discard one.
     scheduler_db = await open_db(settings.db_path)
+    # Two clients: the reddit-feeds poll must not share the media proxy's pool.
+    # It runs at 1 Hz against an optional service, and httpx's read timeout is
+    # the gap between reads, so a trickling companion on the shared pool held
+    # slots until every media request failed on pool timeout (M4).
+    app.state.http = httpx.AsyncClient()
+    app.state.http_status = httpx.AsyncClient(limits=httpx.Limits(max_connections=2))
+    logger.debug("lifespan: opened the media and status HTTP clients")
     await start_scheduler(scheduler_db)
     yield
     await stop_scheduler()
+    await app.state.http_status.aclose()
+    await app.state.http.aclose()
     await scheduler_db.close()
     await db.close()
 
