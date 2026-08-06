@@ -1,5 +1,6 @@
 import logging
 import re
+from collections.abc import AsyncGenerator
 from pathlib import Path
 
 import aiosqlite
@@ -1567,6 +1568,30 @@ async def test_reddit_feeds_status_caps_the_body(
     resp = await client.get("/api/reddit-feeds/status")
     assert resp.status_code == 502
     assert resp.json()["detail"] == "Reddit Feeds API body too large"
+
+
+async def test_reddit_feeds_status_bounds_the_whole_exchange(
+    client: AsyncClient, mock_http: respx.MockRouter, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """httpx's timeout is the gap between reads, so a companion that trickles
+    one byte at a time never trips it and never reaches MAX_STATUS_BYTES
+    either — the handler runs until the client goes away (M4)."""
+    import asyncio
+
+    from src.config import settings
+
+    monkeypatch.setattr(settings, "reddit_feeds_api_url", "http://rf.local")
+    monkeypatch.setattr("src.api.reddit_feeds.STATUS_TIMEOUT_S", 0.2)
+
+    async def _trickle() -> AsyncGenerator[bytes]:
+        for _ in range(100):
+            await asyncio.sleep(0.05)
+            yield b"x"
+
+    mock_http.get("http://rf.local/status").mock(return_value=httpx.Response(200, content=_trickle()))
+
+    resp = await client.get("/api/reddit-feeds/status")
+    assert resp.status_code == 502
 
 
 async def test_reddit_feeds_status_still_passes_a_normal_body_through(

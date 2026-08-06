@@ -1,5 +1,6 @@
 """GET /api/reddit-feeds/status — proxy the Reddit Feeds status endpoint."""
 
+import asyncio
 import json
 import logging
 
@@ -12,11 +13,15 @@ from src.timing import timer
 logger = logging.getLogger(__name__)
 router = APIRouter()
 
-# The status payload is a short JSON summary. src/media/fetch.py bounds an
-# upstream body the same way; httpx's timeout is per-operation, not a
-# whole-request budget, so a trickling companion could otherwise hold the
-# connection open and grow the buffer without limit.
+# Two bounds, because one is not enough. MAX_STATUS_BYTES caps memory;
+# asyncio.timeout caps the exchange. httpx's timeout is per-operation — each
+# arriving chunk resets the read clock — so a companion emitting one byte every
+# nine seconds trips neither the read timeout nor the byte cap, and the handler
+# runs until the client disconnects. The status client's own small pool
+# (src/http_client.py) is the third bound: even if both of these failed, an
+# absent companion cannot reach the media proxy's connections.
 MAX_STATUS_BYTES = 1 << 20
+STATUS_TIMEOUT_S = 10
 
 
 @router.get("/reddit-feeds/status", response_model=None)
@@ -37,7 +42,10 @@ async def reddit_feeds_status(client: StatusDep) -> Response:
     logger.debug(f"reddit_feeds_status fetching {url}")
     elapsed = timer()
     try:
-        async with client.stream("GET", url, timeout=10, follow_redirects=False) as resp:
+        async with (
+            asyncio.timeout(STATUS_TIMEOUT_S),
+            client.stream("GET", url, timeout=STATUS_TIMEOUT_S, follow_redirects=False) as resp,
+        ):
             if not resp.is_success:
                 logger.warning(
                     f"reddit_feeds_status upstream returned {resp.status_code} for {url} in {elapsed():.0f}ms"
