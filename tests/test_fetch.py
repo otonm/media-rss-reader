@@ -188,6 +188,79 @@ async def test_a_failing_warm_is_visible_without_debug(
     assert any(r.levelno >= logging.WARNING for r in caplog.records), "a broken prefetcher must be visible"
 
 
+def _warning_count(caplog: pytest.LogCaptureFixture) -> int:
+    return len([r for r in caplog.records if r.levelno == logging.WARNING])
+
+
+async def test_fetch_to_cache_cdn_403_logs_exactly_one_warning(
+    mock_http: respx.MockRouter, caplog: pytest.LogCaptureFixture, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """M6 follow-up: open_upstream's transient-status branch (the brief's named
+    'CDN answering 403' scenario) now warns once, at the site that knows why.
+    fetch_to_cache's split handler must not warn again for the same failure —
+    not zero WARNINGs (the original bug) and not two (the naive fix)."""
+    monkeypatch.setattr(cache_mod.settings, "cache_dir", str(tmp_path))
+    caplog.set_level(logging.DEBUG)
+    url = "http://example.com/forbidden.jpg"
+    mock_http.get(_pinned(url)).mock(return_value=httpx.Response(403))
+
+    async with httpx.AsyncClient() as c:
+        await fetch_to_cache(url, "item-1", c)
+
+    assert _warning_count(caplog) == 1, [r.message for r in caplog.records if r.levelno == logging.WARNING]
+
+
+async def test_fetch_to_cache_dns_failure_logs_exactly_one_warning(
+    caplog: pytest.LogCaptureFixture, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """M6's other named scenario ('DNS broken'). _check_url now warns once
+    before raising UpstreamError; fetch_to_cache must not add a second."""
+    monkeypatch.setattr(cache_mod.settings, "cache_dir", str(tmp_path))
+    monkeypatch.setattr(fetch_mod, "_resolve", lambda host: (_ for _ in ()).throw(OSError("nodename not known")))
+    caplog.set_level(logging.DEBUG)
+    url = "http://broken-dns.example.com/x.jpg"
+
+    async with httpx.AsyncClient() as c:
+        await fetch_to_cache(url, "item-1", c)
+
+    assert _warning_count(caplog) == 1, [r.message for r in caplog.records if r.levelno == logging.WARNING]
+
+
+async def test_fetch_to_cache_cache_write_failure_logs_exactly_one_warning(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+) -> None:
+    """Regression for the double-log bug the review caught: tee_to_cache used
+    to re-raise the raw OSError, which fell into fetch_to_cache's bare
+    `except Exception` and was warned about a second time for the same
+    failure. It is now wrapped into UpstreamError so it lands in the DEBUG
+    branch instead."""
+    monkeypatch.setattr(cache_mod.settings, "cache_dir", str(tmp_path))
+
+    import collections.abc
+
+    orig = fetch_mod.cache_stream_tee
+
+    async def _failing_tee(
+        url: str, chunks: collections.abc.AsyncIterable[bytes], content_type: str = "application/octet-stream"
+    ) -> None:
+        async for chunk in orig(url, chunks, content_type):
+            yield chunk
+            raise OSError("simulated cache write failure")
+
+    monkeypatch.setattr(fetch_mod, "cache_stream_tee", _failing_tee)
+
+    caplog.set_level(logging.DEBUG)
+    url = "http://example.com/boom.jpg"
+    with respx.mock:
+        respx.get(_pinned(url)).mock(
+            return_value=httpx.Response(200, content=b"x" * 4096, headers={"content-type": "image/jpeg"})
+        )
+        async with httpx.AsyncClient() as c:
+            await fetch_to_cache(url, "item-1", c)
+
+    assert _warning_count(caplog) == 1, [r.message for r in caplog.records if r.levelno == logging.WARNING]
+
+
 async def test_open_upstream_refuses_loopback(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     """R1 (blocker): the proxy and the prefetcher both reach this function with
     URLs from third-party feeds. A loopback target reaches anything on the
@@ -491,7 +564,9 @@ async def test_tee_to_cache_non_client_abort_not_mislabeled(
         caplog.set_level(logging.DEBUG)
         async with httpx.AsyncClient() as client:
             resp, content_type = await fetch_mod.open_upstream(url, None, client)
-            with pytest.raises(OSError, match="simulated cache write failure"):
+            # Wrapped into UpstreamError (M6 follow-up) so fetch_to_cache's split
+            # handler recognizes this as already-reported and does not warn twice.
+            with pytest.raises(fetch_mod.UpstreamError, match="simulated cache write failure"):
                 async for _ in fetch_mod.tee_to_cache(url, resp, content_type):
                     pass
 

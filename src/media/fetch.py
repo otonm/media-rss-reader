@@ -99,6 +99,7 @@ async def _check_url(url: str) -> list[str]:
         try:
             addrs = await asyncio.to_thread(_resolve, host)
         except OSError as exc:
+            logger.warning(f"_check_url: DNS resolution failed for {host} ({url}): {exc}")
             raise UpstreamError(f"cannot resolve {host} for {url}: {exc}") from exc
         validated: list[str] = []
         for addr in addrs:
@@ -168,6 +169,7 @@ async def open_upstream(
         logical = urljoin(logical, location)
         logger.debug(f"open_upstream: {url} redirected to {logical} (request_id={request_id})")
     else:
+        logger.warning(f"open_upstream: exceeded {MAX_REDIRECTS} redirects for {url} (request_id={request_id})")
         raise UpstreamError(f"more than {MAX_REDIRECTS} redirects for {url}")
     if not response.is_success:
         status = response.status_code
@@ -177,13 +179,13 @@ async def open_upstream(
         # re-insert it. A 429 or 503 from a busy CDN is transient, and marking
         # dead on those erased posts permanently (R5).
         if status in (404, 410):
-            logger.debug(f"open_upstream: {url} returned {status}, marking dead (request_id={request_id})")
+            logger.warning(f"open_upstream: {url} returned {status}, marking dead (request_id={request_id})")
             await run_with_own_db(
                 f"mark_url_dead_and_maybe_drop for {url}",
                 lambda db: mark_url_dead_and_maybe_drop(url, item_id, db),
             )
         else:
-            logger.debug(
+            logger.warning(
                 f"open_upstream: {url} returned {status}; transient, not marking dead (request_id={request_id})"
             )
         raise UpstreamError(f"upstream returned {status} for {url}")
@@ -200,6 +202,10 @@ async def open_upstream(
     declared = response.headers.get("content-length", "")
     if settings.media_max_bytes and declared.isdigit() and int(declared) > settings.media_max_bytes:
         await response.aclose()
+        logger.warning(
+            f"open_upstream: {url} declared {declared} bytes, over MEDIA_MAX_BYTES "
+            f"({settings.media_max_bytes}); refusing (request_id={request_id})"
+        )
         raise UpstreamError(
             f"upstream declared {declared} bytes for {url}, over MEDIA_MAX_BYTES ({settings.media_max_bytes})"
         )
@@ -270,7 +276,9 @@ async def tee_to_cache(
                         f"(request_id={request_id})"
                     )
                     non_client_abort = True
-                    raise
+                    # Wrapped so fetch_to_cache's split handler recognizes this as
+                    # already-reported and does not log it a second time.
+                    raise UpstreamError(f"tee_to_cache aborted for {url}: {type(exc).__name__}: {exc}") from exc
                 complete = True
         finally:
             await response.aclose()
@@ -310,7 +318,12 @@ async def fetch_to_cache(url: str, item_id: str, client: httpx.AsyncClient, requ
                 pass
             logger.debug(f"fetch_to_cache: warmed {url} (request_id={request_id})")
         except (UpstreamError, NonMediaUpstreamError) as exc:
-            # open_upstream already logged the real reason at WARNING.
+            # Every operationally-relevant raise site in _check_url, open_upstream
+            # and tee_to_cache (bad status, DNS failure, redirect loop, oversized
+            # body, cache-write failure) now warns once, at the point that knows
+            # why, before raising — logging it again here would double it. The
+            # handful of defensive branches that stay DEBUG-only (malformed
+            # scheme/host) are not reachable from real feed data.
             logger.debug(f"fetch_to_cache: {url} not cached — {exc}")
         except Exception as exc:
             # The only outcome signal the prefetcher has. At DEBUG a wholly broken
