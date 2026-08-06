@@ -751,7 +751,8 @@ async def test_prefetch_hint_unknown_item_404(client: AsyncClient, db: aiosqlite
 @pytest.mark.parametrize(
     "body",
     [
-        {"item_id": "x", "unseen": "false"},
+        # "false" is deliberately absent: unseen is a plain bool (minor 15), so
+        # /api/items' coercion applies here too and this string is valid input.
         {"item_id": "x", "unseen": None},
         {"item_id": 123},
         {"unseen": True},
@@ -764,6 +765,54 @@ async def test_prefetch_hint_rejects_bad_body(
     await _insert_item(db, "x", "feed1")
     resp = await client.post("/api/prefetch/hint", json=body)
     assert resp.status_code == 422
+
+
+async def test_prefetch_hint_defaults_to_the_same_filter_as_the_page(
+    client: AsyncClient, db: aiosqlite.Connection, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """prefetch_ahead's own default was the opposite of the model's, so the
+    model default was the only thing keeping the hint aligned with /api/items —
+    and flipping it kept all 303 tests green while restoring R12: with the
+    show-seen toggle on, the items about to be displayed are never warmed (M9).
+
+    The three existing tests that omit `unseen` each have one item in the DB, so
+    prefetch_ahead returns 0 queued and the filter is never exercised.
+    """
+    warmed: list[str] = []
+
+    async def _record(item_id: str, url: str, client_: object, request_id: str | None = None) -> None:
+        warmed.append(url)
+
+    monkeypatch.setattr("src.media.prefetch._warm", _record)
+
+    await _insert_feed(db, "f1")
+    for n, seen in ((0, None), (1, None), (2, "2026-01-01 00:00:00")):
+        await db.execute(
+            """INSERT INTO items(id, feed_id, guid, title, media_url, media_type, pub_date, seen_at)
+               VALUES (?, 'f1', ?, 'T', ?, 'image', ?, ?)""",
+            (f"i{n}", f"g{n}", f"http://img/{n}.jpg", f"2026-01-0{n + 1}", seen),
+        )
+    await db.commit()
+
+    resp = await client.post("/api/prefetch/hint", json={"item_id": "i0"})
+    assert resp.status_code == 200
+    await asyncio.sleep(0.05)
+    assert "http://img/2.jpg" in warmed, "the default must not filter seen items out"
+
+
+async def test_prefetch_hint_accepts_the_same_bool_domain_as_the_page(
+    client: AsyncClient, db: aiosqlite.Connection
+) -> None:
+    """`?unseen=1` parses on /api/items; `{"unseen": 1}` was a 422 on the hint."""
+    await _insert_feed(db, "f1")
+    await _insert_item(db, "i1", "f1")
+    resp = await client.post("/api/prefetch/hint", json={"item_id": "i1", "unseen": 1})
+    assert resp.status_code == 200
+
+
+async def test_prefetch_hint_rejects_an_oversized_id_and_unknown_fields(client: AsyncClient) -> None:
+    assert (await client.post("/api/prefetch/hint", json={"item_id": "x" * 129})).status_code == 422
+    assert (await client.post("/api/prefetch/hint", json={"item_id": "x", "unseen_only": True})).status_code == 422
 
 
 # ---------------------------------------------------------------------------

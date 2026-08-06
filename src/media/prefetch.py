@@ -95,7 +95,8 @@ async def prefetch_ahead(
     item_id: str,
     db: aiosqlite.Connection,
     client: httpx.AsyncClient,
-    unseen: bool = True,
+    *,
+    unseen: bool,
     request_id: str | None = None,
 ) -> int | None:
     """Fire background warm tasks for the next PREFETCH_AHEAD items after item_id.
@@ -105,10 +106,12 @@ async def prefetch_ahead(
     forward. Previously this queried pub_date < cursor, which under the current
     ASC display order warmed items the user had already scrolled past (F2).
 
-    `unseen` mirrors the filter the page itself used. It used to be hardcoded
-    to "seen_at IS NULL", so with the show-seen toggle on the client requested
-    unseen=false while the hint fired from the same scroll warmed only unseen
-    items — the items about to be displayed were never warmed (R12).
+    `unseen` mirrors the filter the page itself used and has no default of its
+    own — the caller must state the filter it paged with. It used to be
+    hardcoded to "seen_at IS NULL", so with the show-seen toggle on the client
+    requested unseen=false while the hint fired from the same scroll warmed
+    only unseen items — the items about to be displayed were never warmed
+    (R12).
 
     Returns the number of warm tasks queued, which the hint endpoint logs (R9),
     or None when item_id names no row — the hint turns that into F16's 404

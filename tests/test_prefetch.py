@@ -114,7 +114,7 @@ async def test_prefetch_ahead_fires_tasks(tmp_path: Path, monkeypatch: pytest.Mo
     with respx.mock:
         respx.get(_pinned("http://example.com/img.jpg")).mock(return_value=httpx.Response(200, content=b"data"))
         async with httpx.AsyncClient() as client:
-            await prefetch_ahead("item0", conn, client)
+            await prefetch_ahead("item0", conn, client, unseen=True)
             # Allow tasks to run
             await asyncio.sleep(0.1)
 
@@ -160,7 +160,7 @@ async def test_prefetch_ahead_warms_items_ahead_not_behind(tmp_path: Path, monke
         respx.get(_pinned("http://example.com/1.jpg")).mock(return_value=httpx.Response(200, content=b"d"))
         respx.get(_pinned("http://example.com/2.jpg")).mock(return_value=httpx.Response(200, content=b"d"))
         async with httpx.AsyncClient() as client:
-            await prefetch_ahead("i0", conn, client)
+            await prefetch_ahead("i0", conn, client, unseen=True)
             await asyncio.sleep(0.1)
 
     # i0 is the oldest (pub_date oldest). Ahead = i1, i2 (next in ASC order),
@@ -211,4 +211,4 @@ async def test_prefetch_ahead_returns_none_for_an_unknown_item(
     from src.media.prefetch import prefetch_ahead
 
     async with httpx.AsyncClient() as client:
-        assert await prefetch_ahead("nonexistent", db, client) is None
+        assert await prefetch_ahead("nonexistent", db, client, unseen=True) is None

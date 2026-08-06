@@ -3,12 +3,13 @@
 import asyncio
 import logging
 from pathlib import Path
+from typing import Annotated
 
 from fastapi import APIRouter, HTTPException, Query, Response
 from fastapi.responses import FileResponse, StreamingResponse
+from pydantic import BaseModel, ConfigDict, Field
 from starlette.types import Message, Receive, Scope, Send
 
-from src.api.schemas import PrefetchHint
 from src.db.connection import DbDep
 from src.http_client import HttpDep
 from src.media.availability import is_known_media_url
@@ -21,6 +22,30 @@ from src.timing import timer
 router = APIRouter()
 
 logger = logging.getLogger(__name__)
+
+
+class PrefetchHint(BaseModel):
+    """The only request body the API accepts.
+
+    max_length because item_id is a sha256 hex string everywhere it is produced
+    and neither uvicorn nor FastAPI caps body size by default — a 100 MB id
+    would be read, validated and bound as a SQL parameter before the 404.
+
+    extra="forbid" because a client typo (`unseen_only=true`) was otherwise
+    accepted silently with the default filter, re-arming the R12 mismatch this
+    model exists to prevent.
+
+    `unseen` is a plain bool, not StrictBool: /api/items coerces `?unseen=1`, and
+    a hint that rejects what the page it mirrors accepts is a 422 nothing logs
+    and the browser's `.catch(() => {})` does not see.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    item_id: Annotated[str, Field(min_length=1, max_length=128)]
+    # Matches /api/items' `unseen: bool = False`. prefetch_ahead has no default
+    # of its own any more, so this is the single place the filter is written.
+    unseen: bool = False
 
 
 class CacheFileResponse(FileResponse):
