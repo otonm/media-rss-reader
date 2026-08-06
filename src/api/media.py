@@ -136,19 +136,20 @@ async def proxy_media(
         upstream_elapsed = timer()
         response, content_type = await open_upstream(url, item_id, client, request_id=current_request_id())
     except UpstreamError as exc:
-        # A failed user-visible request, and on 404/410 a destructive state
-        # change (the URL marked dead, a fully-dead item dropped). This used to
-        # be debug, invisible at the default info level, while the *less*
-        # consequential handler below logged at warning (R10).
-        logger.warning(f"proxy_media: 502 for {url} (item_id={item_id}) — {exc}")
+        # Every UpstreamError raise site in open_upstream/_check_url/tee_to_cache
+        # now warns once, at the point that knows why (M6 follow-up) — R10's
+        # original reason for warning again here (those sites used to be silent)
+        # no longer applies, so this just records that the request became a 502.
+        logger.debug(f"proxy_media: 502 for {url} (item_id={item_id}) — {exc}")
         raise HTTPException(status_code=502, detail="upstream error") from exc
     except NonMediaUpstreamError as exc:
         # Deliberately not an UpstreamError: nothing was cached, nothing was
         # marked dead, and the condition can flip back. open_upstream has
         # already logged the real content type at WARNING one line up, so this
-        # needs no traceback — and the client is told what actually happened
-        # rather than that the fetch failed, which it did not.
-        logger.warning(f"proxy_media: 502 for {url} (item_id={item_id}) — {exc}")
+        # only records that the request became a 502 — and the client is told
+        # what actually happened rather than that the fetch failed, which it
+        # did not.
+        logger.debug(f"proxy_media: 502 for {url} (item_id={item_id}) — {exc}")
         raise HTTPException(status_code=502, detail="upstream content type not media") from exc
     except Exception as exc:
         logger.exception(f"proxy_media: upstream fetch failed for {url}: {type(exc).__name__}: {exc}")

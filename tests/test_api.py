@@ -1217,6 +1217,65 @@ async def test_proxy_upstream_error_logged_at_warning(
     assert any("i1" in m and url in m for m in caplog.messages)
 
 
+async def test_proxy_cdn_403_logs_exactly_one_warning_across_both_loggers(
+    client: AsyncClient,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    mock_http: respx.MockRouter,
+    caplog: pytest.LogCaptureFixture,
+    db: aiosqlite.Connection,
+) -> None:
+    """proxy_media's own `except UpstreamError` used to warn unconditionally on
+    top of whatever open_upstream already logged. That was harmless while
+    open_upstream's raise sites were DEBUG-only, but promoting them to WARNING
+    (M6 follow-up) turned it into a double-log on the higher-traffic proxy
+    path. caplog is captured unscoped (not filtered to one logger by name, the
+    gap that let the double-log through review) so a second WARNING from
+    either src.media.fetch or src.api.media would be visible here."""
+    import src.media.cache as cache_mod
+
+    monkeypatch.setattr(cache_mod.settings, "cache_dir", str(tmp_path))
+    url = "http://example.com/forbidden.jpg"
+    await _register_proxy_url(db, url)
+    mock_http.get(_pinned(url)).mock(return_value=httpx.Response(403))
+
+    caplog.set_level(logging.DEBUG)
+    resp = await client.get(f"/api/media/proxy?url={url}&item_id=i1")
+
+    assert resp.status_code == 502
+    warnings = [r for r in caplog.records if r.levelno == logging.WARNING]
+    assert len(warnings) == 1, [f"{r.name}: {r.message}" for r in warnings]
+
+
+async def test_proxy_dns_failure_logs_exactly_one_warning_across_both_loggers(
+    client: AsyncClient,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+    db: aiosqlite.Connection,
+) -> None:
+    """Same double-log risk as the 403 case above, for M6's other named
+    scenario ('DNS broken'), exercised end to end through the proxy route."""
+    import src.media.cache as cache_mod
+    from src.media import fetch as fetch_mod
+
+    monkeypatch.setattr(cache_mod.settings, "cache_dir", str(tmp_path))
+
+    def _dns_failure(host: str) -> list[str]:
+        raise OSError("nodename not known")
+
+    monkeypatch.setattr(fetch_mod, "_resolve", _dns_failure)
+    url = "http://broken-dns.example.com/x.jpg"
+    await _register_proxy_url(db, url)
+
+    caplog.set_level(logging.DEBUG)
+    resp = await client.get(f"/api/media/proxy?url={url}&item_id=i1")
+
+    assert resp.status_code == 502
+    warnings = [r for r in caplog.records if r.levelno == logging.WARNING]
+    assert len(warnings) == 1, [f"{r.name}: {r.message}" for r in warnings]
+
+
 async def test_proxy_serves_a_gallery_slide_with_a_non_ascii_url(
     client: AsyncClient,
     db: aiosqlite.Connection,

@@ -89,9 +89,11 @@ async def _check_url(url: str) -> list[str]:
     """
     parts = urlsplit(url)
     if parts.scheme not in ("http", "https"):
+        logger.warning(f"_check_url: refusing non-http(s) URL {url}")
         raise UpstreamError(f"refusing non-http(s) URL {url}")
     host = parts.hostname
     if not host:
+        logger.warning(f"_check_url: refusing URL with no host: {url}")
         raise UpstreamError(f"refusing URL with no host: {url}")
     if settings.allow_private_media_hosts:
         addrs = await asyncio.to_thread(_resolve, host)
@@ -119,6 +121,7 @@ async def _check_url(url: str) -> list[str]:
             validated.append(str(ip))
         addrs = validated
     if not addrs:
+        logger.warning(f"_check_url: {host} resolved to no usable address for {url}")
         raise UpstreamError(f"cannot resolve {host} for {url}")
     return addrs
 
@@ -179,7 +182,9 @@ async def open_upstream(
         # re-insert it. A 429 or 503 from a busy CDN is transient, and marking
         # dead on those erased posts permanently (R5).
         if status in (404, 410):
-            logger.warning(f"open_upstream: {url} returned {status}, marking dead (request_id={request_id})")
+            logger.warning(
+                f"open_upstream: {url} returned {status}, marking dead (item_id={item_id}, request_id={request_id})"
+            )
             await run_with_own_db(
                 f"mark_url_dead_and_maybe_drop for {url}",
                 lambda db: mark_url_dead_and_maybe_drop(url, item_id, db),
@@ -318,12 +323,9 @@ async def fetch_to_cache(url: str, item_id: str, client: httpx.AsyncClient, requ
                 pass
             logger.debug(f"fetch_to_cache: warmed {url} (request_id={request_id})")
         except (UpstreamError, NonMediaUpstreamError) as exc:
-            # Every operationally-relevant raise site in _check_url, open_upstream
-            # and tee_to_cache (bad status, DNS failure, redirect loop, oversized
-            # body, cache-write failure) now warns once, at the point that knows
-            # why, before raising — logging it again here would double it. The
-            # handful of defensive branches that stay DEBUG-only (malformed
-            # scheme/host) are not reachable from real feed data.
+            # Every raise site in _check_url, open_upstream and tee_to_cache warns
+            # once, at the point that knows why, before raising — logging it again
+            # here would double it.
             logger.debug(f"fetch_to_cache: {url} not cached — {exc}")
         except Exception as exc:
             # The only outcome signal the prefetcher has. At DEBUG a wholly broken
