@@ -41,7 +41,7 @@ def _row_to_item(row: aiosqlite.Row, cached_names: set[str]) -> dict[str, Any]:
     return item
 
 
-@router.get("/items", response_model=None)
+@router.get("/items")
 async def list_items(
     unseen: bool = False,
     after_id: str | None = None,
@@ -174,7 +174,7 @@ async def list_items(
     return items
 
 
-@router.post("/items/{item_id}/seen", response_model=None)
+@router.post("/items/{item_id}/seen")
 async def mark_seen(
     item_id: str,
     db: DbDep,

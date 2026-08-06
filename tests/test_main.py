@@ -210,3 +210,16 @@ async def test_lifespan_opens_and_closes_both_http_clients(db: aiosqlite.Connect
 
     assert media_client.is_closed
     assert status_client.is_closed
+
+
+def test_openapi_describes_the_response_bodies() -> None:
+    """Five response_model=None overrides left the OpenAPI document with no
+    response body for any endpoint in the app. Two were no-ops (FastAPI already
+    infers None for a Response-subclass return annotation), and the three
+    docstrings defending them described behaviour FastAPI does not have
+    (minor 16)."""
+    from src.main import app
+
+    schema = app.openapi()
+    items = schema["paths"]["/api/items"]["get"]["responses"]["200"]
+    assert "content" in items, "the page's response body is undocumented"

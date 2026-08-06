@@ -12,7 +12,7 @@ logger = logging.getLogger(__name__)
 router = APIRouter()
 
 
-@router.get("/feeds", response_model=None)
+@router.get("/feeds")
 async def list_feeds(db: DbDep) -> list[dict[str, Any]]:
     """Return all feeds with total and unseen item counts.
 

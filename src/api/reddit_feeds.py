@@ -45,16 +45,9 @@ def _log_outcome(reachable: bool, message: str, *, exc_info: bool = False) -> No
     _last_reachable = reachable
 
 
-@router.get("/reddit-feeds/status", response_model=None)
+@router.get("/reddit-feeds/status")
 async def reddit_feeds_status(client: StatusDep) -> Response:
     """Proxy the companion service's /status, or 502 with the reason.
-
-    The body is passed through as bytes rather than returned as a parsed value:
-    a `-> dict` annotation makes FastAPI validate the return *after* this
-    function exits, outside the try, so a JSON array (`[]` for "no feeds yet")
-    became a 500 instead of the 502-or-pass-through this endpoint promises (R4).
-    The parse below is a validity check only — an HTML login page from a
-    reverse proxy must not reach the browser as application/json.
 
     The companion is optional: many deployments do not run it, and the status
     modal polls at 1 Hz while it is open. Its absence is logged as recoverable.

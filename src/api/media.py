@@ -83,7 +83,7 @@ class CacheFileResponse(FileResponse):
             await Response(status_code=503, headers={"Retry-After": "1"})(scope, receive, send)
 
 
-@router.get("/media/proxy", response_model=None)
+@router.get("/media/proxy")
 async def proxy_media(
     url: str = Query(...),
     item_id: str | None = Query(None),
@@ -163,7 +163,7 @@ async def proxy_media(
     )
 
 
-@router.post("/prefetch/hint", response_model=None)
+@router.post("/prefetch/hint")
 async def prefetch_hint(
     body: PrefetchHint,
     db: DbDep,
@@ -176,10 +176,6 @@ async def prefetch_hint(
     for them, but it does await prefetch_ahead's two window-function queries
     over the items table, which are the cost of this endpoint and what db=
     measures.
-
-    response_model=None matters here as everywhere else: with a return
-    annotation and no override, FastAPI validates the returned value after this
-    function exits, outside its own error handling (R4).
     """
     logger.debug(f"prefetch_hint item_id={body.item_id} unseen={body.unseen}")
     elapsed = timer()
