@@ -13,13 +13,14 @@ from src.timing import timer
 logger = logging.getLogger(__name__)
 router = APIRouter()
 
-# Two bounds, because one is not enough. MAX_STATUS_BYTES caps memory;
+# Three bounds, because one is not enough. MAX_STATUS_BYTES caps memory;
 # asyncio.timeout caps the exchange. httpx's timeout is per-operation — each
-# arriving chunk resets the read clock — so a companion emitting one byte every
-# nine seconds trips neither the read timeout nor the byte cap, and the handler
-# runs until the client disconnects. The status client's own small pool
-# (src/http_client.py) is the third bound: even if both of these failed, an
-# absent companion cannot reach the media proxy's connections.
+# arriving chunk resets the read clock. Without the outer timeout, a companion
+# emitting one byte every nine seconds would trip neither the read timeout nor
+# the byte cap, and the handler would run until the client disconnects. The
+# status client's own small pool (src/http_client.py) is the third bound: even
+# if both of these failed, an absent companion cannot reach the media proxy's
+# connections.
 MAX_STATUS_BYTES = 1 << 20
 STATUS_TIMEOUT_S = 10
 
