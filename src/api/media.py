@@ -181,7 +181,7 @@ async def prefetch_hint(
     elapsed = timer()
     queued = await prefetch_ahead(body.item_id, db, client, unseen=body.unseen, request_id=current_request_id())
     if queued is None:
-        logger.debug(f"prefetch_hint: 404, item {body.item_id} not found")
+        logger.info(f"prefetch_hint: 404, item {body.item_id} not found (db={elapsed():.1f}ms)")
         raise HTTPException(status_code=404, detail="item not found")
     logger.debug(f"prefetch_hint item_id={body.item_id}: queued {queued} warm task(s); db={elapsed():.1f}ms")
     return {"status": "ok"}

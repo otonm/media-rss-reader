@@ -309,5 +309,11 @@ async def fetch_to_cache(url: str, item_id: str, client: httpx.AsyncClient, requ
             async for _ in tee_to_cache(url, response, content_type, request_id=request_id):
                 pass
             logger.debug(f"fetch_to_cache: warmed {url} (request_id={request_id})")
+        except (UpstreamError, NonMediaUpstreamError) as exc:
+            # open_upstream already logged the real reason at WARNING.
+            logger.debug(f"fetch_to_cache: {url} not cached — {exc}")
         except Exception as exc:
-            logger.debug(f"fetch_to_cache failed for {url}: {type(exc).__name__}: {exc} (request_id={request_id})")
+            # The only outcome signal the prefetcher has. At DEBUG a wholly broken
+            # warm path was invisible at the default level while the endpoint kept
+            # answering {"status": "ok"}.
+            logger.warning(f"fetch_to_cache failed for {url}: {type(exc).__name__}: {exc}", exc_info=True)

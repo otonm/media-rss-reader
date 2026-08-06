@@ -815,6 +815,18 @@ async def test_prefetch_hint_rejects_an_oversized_id_and_unknown_fields(client: 
     assert (await client.post("/api/prefetch/hint", json={"item_id": "x", "unseen_only": True})).status_code == 422
 
 
+async def test_prefetch_hint_404_is_visible_at_the_default_level(
+    client: AsyncClient, caplog: pytest.LogCaptureFixture
+) -> None:
+    """items.py logs the equivalent vanished-anchor case at INFO, so after a
+    prune the 410s are visible at the default level and the 404s from the same
+    cause are not (M6)."""
+    caplog.set_level(logging.INFO)
+    resp = await client.post("/api/prefetch/hint", json={"item_id": "gone"})
+    assert resp.status_code == 404
+    assert any(r.levelno == logging.INFO and "gone" in r.message for r in caplog.records)
+
+
 # ---------------------------------------------------------------------------
 # GET /api/reddit-feeds/status tests
 # ---------------------------------------------------------------------------

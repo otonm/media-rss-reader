@@ -167,6 +167,27 @@ async def test_fetch_to_cache_dedupes_concurrent_same_url(tmp_path: Path, monkey
     assert calls == 1, f"expected 1 upstream GET, got {calls}"
 
 
+async def test_a_failing_warm_is_visible_without_debug(
+    db: aiosqlite.Connection,
+    mock_http: respx.MockRouter,
+    caplog: pytest.LogCaptureFixture,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Every outcome log on the warm path was DEBUG, so a prefetcher failing
+    100% of the time is indistinguishable from one warming every item — and the
+    endpoint answers {"status": "ok"} either way (M6)."""
+    monkeypatch.setattr(cache_mod.settings, "cache_dir", str(tmp_path))
+    caplog.set_level(logging.INFO)
+    url = "http://example.com/broken.jpg"
+    mock_http.get(_pinned(url)).mock(side_effect=RuntimeError("boom"))
+
+    async with httpx.AsyncClient() as c:
+        await fetch_to_cache(url, "item-1", c)
+
+    assert any(r.levelno >= logging.WARNING for r in caplog.records), "a broken prefetcher must be visible"
+
+
 async def test_open_upstream_refuses_loopback(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     """R1 (blocker): the proxy and the prefetcher both reach this function with
     URLs from third-party feeds. A loopback target reaches anything on the
