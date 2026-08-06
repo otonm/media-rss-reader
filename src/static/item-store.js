@@ -65,7 +65,19 @@
       // for the next request, overriding cursorItem(back) until it either 410s
       // or a page appends something.
       let reanchor = null;
-      for (let back = 0; ; back = back === 0 ? 1 : back * 2) {
+      // A correct server converges in one or two re-anchor rounds: each
+      // round's tail is the page's max (rn, feed_id, id) tuple — the same
+      // ordering the keyset predicate compares against — so the next request
+      // strictly advances. This caps a server that doesn't hold that
+      // invariant, so a misbehaving one can't hot-loop fetch with no escape.
+      let reanchorAttempts = 0;
+      const MAX_REANCHOR_ATTEMPTS = 5;
+      // back only advances on a 410 (an anchor is confirmed gone). A
+      // re-anchor round is not a walk-back step — advancing back there would
+      // inflate the stride the walk-back uses once it takes over, stepping
+      // past anchors that are still perfectly good.
+      let back = 0;
+      for (;;) {
         const anchor = reanchor !== null ? reanchor : paginating ? cursorItem(back) : null;
         if (paginating && anchor === null) break; // walked past the oldest item we hold
         let url = `/api/items?unseen=${unseenParam()}&size=${cfg.feedInitialCount}`;
@@ -80,6 +92,7 @@
         if (resp.status === 410) {
           if (!paginating) break; // page one cannot 410; nothing left to step back to
           reanchor = null; // that anchor is gone too; fall back to walking held items
+          back = back === 0 ? 1 : back * 2;
           continue; // anchor gone, step further back
         }
         if (!resp.ok) return;
@@ -94,6 +107,7 @@
         const known = new Set(state.items.map((i) => i.id));
         const fresh = newItems.filter((i) => !known.has(i.id));
         if (fresh.length === 0) {
+          if (++reanchorAttempts > MAX_REANCHOR_ATTEMPTS) break; // not converging; stop rather than hot-loop
           // Every row was one we already hold: the bound resolved beneath our
           // position and the page came back as duplicates. Re-anchor on the
           // response's own last row so the next request moves past them,
@@ -107,7 +121,7 @@
         return;
       }
       state.hasMore = false;
-      console.warn("itemStore: every cursor anchor is gone (410), stopping pagination");
+      console.warn("itemStore: cursor exhausted (dead anchors or non-converging duplicates), stopping pagination");
     } finally {
       state.fetching = false;
     }

@@ -165,3 +165,57 @@ test("a page of pure duplicates re-anchors instead of stalling", async () => {
   assert.ok(urls[2].includes("after_rn=2"));
   assert.ok(store.getItems().some((i) => i.id === "c"), "pagination advanced");
 });
+
+test("a 410 after a re-anchor walks back from the true held position, not a doubled one", async () => {
+  // Regression for a bug where `back` (the walk-back stride) was advanced by
+  // the for-loop's update expression on every continue, including the
+  // re-anchor continue below. A re-anchor round is not a walk-back step; if
+  // it inflates the stride anyway, a 410 right after it skips past anchors
+  // that are still perfectly good — here, straight past b to a, instead of
+  // retrying from b as it should.
+  const urls = [];
+  const held = [
+    { id: "a", feed_id: "f", pub_date: null, rn: 1 },
+    { id: "b", feed_id: "f", pub_date: null, rn: 2 },
+    { id: "c", feed_id: "f", pub_date: null, rn: 3 },
+  ];
+  const store = makeStore((url) => {
+    urls.push(url);
+    if (urls.length === 1) return jsonResponse(held); // seed a, b, c
+    if (urls.length === 2) return jsonResponse(held); // anchored on c: bound resolved lower, comes back as duplicates
+    if (urls.length === 3) return goneResponse(); // re-anchored on c again: that row is gone too
+    return jsonResponse([{ id: "d", feed_id: "f", pub_date: null, rn: 4 }]); // walk-back from b succeeds
+  });
+
+  await store.fetchPage(); // seeds a, b, c
+  await store.fetchPage(); // duplicate page, then a 410, then the walk-back
+
+  assert.equal(urls.length, 4);
+  assert.ok(urls[3].includes("after_id=b"), `walk-back must retry from b, not skip past it: ${urls[3]}`);
+  assert.ok(urls[3].includes("after_rn=2"));
+  assert.ok(store.getItems().some((i) => i.id === "d"), "pagination recovered instead of stalling");
+  assert.ok(store.hasMoreItems());
+});
+
+test("re-anchoring twice in a row still reaches fresh data", async () => {
+  const urls = [];
+  const held = [
+    { id: "a", feed_id: "f", pub_date: null, rn: 1 },
+    { id: "b", feed_id: "f", pub_date: null, rn: 2 },
+  ];
+  const store = makeStore((url) => {
+    urls.push(url);
+    if (urls.length === 1) return jsonResponse(held); // seed a, b
+    if (urls.length === 2) return jsonResponse([held[0]]); // anchored on b: comes back holding only a
+    if (urls.length === 3) return jsonResponse([held[1]]); // re-anchored on a: comes back holding only b
+    return jsonResponse([{ id: "c", feed_id: "f", pub_date: null, rn: 3 }]); // re-anchored on b again: fresh at last
+  });
+
+  await store.fetchPage(); // seeds a, b
+  await store.fetchPage(); // two duplicate rounds, then fresh
+
+  assert.equal(urls.length, 4, "two re-anchor rounds plus the seed and the final fresh page");
+  assert.ok(urls[2].includes("after_id=a") && urls[2].includes("after_rn=1"), "first re-anchor lands on a");
+  assert.ok(urls[3].includes("after_id=b") && urls[3].includes("after_rn=2"), "second re-anchor lands on b");
+  assert.ok(store.getItems().some((i) => i.id === "c"), "pagination reached fresh data after two re-anchors");
+});
