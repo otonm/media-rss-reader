@@ -24,6 +24,26 @@ router = APIRouter()
 MAX_STATUS_BYTES = 1 << 20
 STATUS_TIMEOUT_S = 10
 
+# The last outcome, so repeats of an expected failure do not log at WARNING.
+# Module state is normally a smell; here it is the smallest a transition
+# detector can be, and it lives beside its only reader.
+_last_reachable: bool | None = None  # None = never polled
+
+
+def _log_outcome(reachable: bool, message: str, *, exc_info: bool = False) -> None:
+    """WARNING on the transition into failure, DEBUG while it persists, INFO on recovery."""
+    global _last_reachable
+    if reachable:
+        if _last_reachable is False:
+            logger.info(f"reddit_feeds_status recovered: {message}")
+        else:
+            logger.debug(f"reddit_feeds_status ok: {message}")
+    elif _last_reachable is False:
+        logger.debug(f"reddit_feeds_status still unreachable: {message}")
+    else:
+        logger.warning(message, exc_info=exc_info)
+    _last_reachable = reachable
+
 
 @router.get("/reddit-feeds/status", response_model=None)
 async def reddit_feeds_status(client: StatusDep) -> Response:
@@ -48,8 +68,8 @@ async def reddit_feeds_status(client: StatusDep) -> Response:
             client.stream("GET", url, timeout=STATUS_TIMEOUT_S, follow_redirects=False) as resp,
         ):
             if not resp.is_success:
-                logger.warning(
-                    f"reddit_feeds_status upstream returned {resp.status_code} for {url} in {elapsed():.0f}ms"
+                _log_outcome(
+                    False, f"reddit_feeds_status upstream returned {resp.status_code} for {url} in {elapsed():.0f}ms"
                 )
                 raise HTTPException(status_code=502, detail="Reddit Feeds API error")
             chunks: list[bytes] = []
@@ -73,23 +93,27 @@ async def reddit_feeds_status(client: StatusDep) -> Response:
         # condition, and the frontend already renders it as one. exc_info keeps
         # the traceback, which matters because httpx timeouts routinely
         # stringify to empty. from exc keeps __cause__ (R11).
-        logger.warning(
+        _log_outcome(
+            False,
             f"reddit_feeds_status unreachable: {type(exc).__name__} for {url} after {elapsed():.0f}ms",
             exc_info=True,
         )
         raise HTTPException(status_code=502, detail="Reddit Feeds API unreachable") from exc
 
+    if not body:
+        _log_outcome(False, f"reddit_feeds_status empty body from {url} status={status_code}")
+        raise HTTPException(status_code=502, detail="Reddit Feeds API returned an empty body")
+
     try:
         json.loads(body)
     except Exception as exc:
-        logger.warning(
+        _log_outcome(
+            False,
             f"reddit_feeds_status non-JSON body from {url}: {type(exc).__name__} "
             f"status={status_code} type={content_type}",
             exc_info=True,
         )
         raise HTTPException(status_code=502, detail="Reddit Feeds API returned non-JSON body") from exc
 
-    logger.debug(
-        f"reddit_feeds_status {status_code} from {url} in {elapsed():.0f}ms bytes={len(body)} type={content_type}"
-    )
+    _log_outcome(True, f"{status_code} from {url} in {elapsed():.0f}ms bytes={len(body)} type={content_type}")
     return Response(content=body, media_type="application/json")

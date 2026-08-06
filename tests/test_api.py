@@ -755,7 +755,9 @@ async def test_prefetch_hint_rejects_bad_body(
 # ---------------------------------------------------------------------------
 
 
-async def test_reddit_feeds_status_success(client: AsyncClient, mock_http: respx.MockRouter) -> None:
+async def test_reddit_feeds_status_success(
+    client: AsyncClient, mock_http: respx.MockRouter, reddit_api_url: str
+) -> None:
     upstream_json = {
         "feeds": [
             {
@@ -768,30 +770,16 @@ async def test_reddit_feeds_status_success(client: AsyncClient, mock_http: respx
         ],
         "last_run": "2026-07-27T14:02:05.654321+00:00",
     }
-    mock_http.get("http://127.0.0.1:9090/status").mock(return_value=httpx.Response(200, json=upstream_json))
+    mock_http.get(f"{reddit_api_url}/status").mock(return_value=httpx.Response(200, json=upstream_json))
     resp = await client.get("/api/reddit-feeds/status")
     assert resp.status_code == 200
     assert resp.json() == upstream_json
 
 
-async def test_reddit_feeds_status_unreachable(client: AsyncClient) -> None:
-    from src.http_client import get_status_http
-
-    fake_client = httpx.AsyncClient()
-
-    async def fake_get(url: str, **kwargs: object) -> httpx.Response:
-        raise httpx.ConnectError("Connection refused")
-
-    fake_client.get = fake_get  # type: ignore[method-assign]
-    client._transport.app.dependency_overrides[get_status_http] = lambda: fake_client
-
-    resp = await client.get("/api/reddit-feeds/status")
-    await fake_client.aclose()
-    assert resp.status_code == 502
-
-
-async def test_reddit_feeds_status_upstream_error(client: AsyncClient, mock_http: respx.MockRouter) -> None:
-    mock_http.get("http://127.0.0.1:9090/status").mock(return_value=httpx.Response(500))
+async def test_reddit_feeds_status_upstream_error(
+    client: AsyncClient, mock_http: respx.MockRouter, reddit_api_url: str
+) -> None:
+    mock_http.get(f"{reddit_api_url}/status").mock(return_value=httpx.Response(500))
     resp = await client.get("/api/reddit-feeds/status")
     assert resp.status_code == 502
 
@@ -799,13 +787,14 @@ async def test_reddit_feeds_status_upstream_error(client: AsyncClient, mock_http
 async def test_reddit_feeds_status_redirects_become_502(
     client: AsyncClient,
     mock_http: respx.MockRouter,
+    reddit_api_url: str,
 ) -> None:
     """Task 6: a 301 from the upstream must surface as 502 — the trusted URL
     must not be silently rewritten by an attacker-controlled Location header.
     follow_redirects=False is the contract (was True; F10/R13 fixed it then,
     Task 6 closed it for security)."""
-    mock_http.get("http://127.0.0.1:9090/status").mock(
-        return_value=httpx.Response(301, headers={"location": "http://127.0.0.1:9090/v2/status"})
+    mock_http.get(f"{reddit_api_url}/status").mock(
+        return_value=httpx.Response(301, headers={"location": f"{reddit_api_url}/v2/status"})
     )
     resp = await client.get("/api/reddit-feeds/status")
     assert resp.status_code == 502
@@ -814,9 +803,10 @@ async def test_reddit_feeds_status_redirects_become_502(
 async def test_reddit_feeds_status_401_maps_to_502(
     client: AsyncClient,
     mock_http: respx.MockRouter,
+    reddit_api_url: str,
 ) -> None:
     """F10: upstream 401 must not read as a failure of OUR session."""
-    mock_http.get("http://127.0.0.1:9090/status").mock(return_value=httpx.Response(401))
+    mock_http.get(f"{reddit_api_url}/status").mock(return_value=httpx.Response(401))
     resp = await client.get("/api/reddit-feeds/status")
     assert resp.status_code == 502
 
@@ -824,9 +814,10 @@ async def test_reddit_feeds_status_401_maps_to_502(
 async def test_reddit_feeds_status_non_json_body(
     client: AsyncClient,
     mock_http: respx.MockRouter,
+    reddit_api_url: str,
 ) -> None:
     """F10: a 200 with a non-JSON body must 502, not 500 with JSONDecodeError."""
-    mock_http.get("http://127.0.0.1:9090/status").mock(
+    mock_http.get(f"{reddit_api_url}/status").mock(
         return_value=httpx.Response(200, content=b"not json", headers={"content-type": "text/plain"})
     )
     resp = await client.get("/api/reddit-feeds/status")
@@ -1071,20 +1062,24 @@ async def test_prefetch_hint_logs_entry_and_queue_size(
     assert any("queued" in m for m in caplog.messages)
 
 
-async def test_reddit_feeds_status_passes_through_json_array(client: AsyncClient, mock_http: respx.MockRouter) -> None:
+async def test_reddit_feeds_status_passes_through_json_array(
+    client: AsyncClient, mock_http: respx.MockRouter, reddit_api_url: str
+) -> None:
     """R4: FastAPI derives a response model from the `-> dict` annotation and
     validates after the handler returns, outside the try. A companion answering
     200 with [] became a 500 — the opposite of dadd0d6's whole purpose."""
-    mock_http.get("http://127.0.0.1:9090/status").mock(return_value=httpx.Response(200, json=[]))
+    mock_http.get(f"{reddit_api_url}/status").mock(return_value=httpx.Response(200, json=[]))
     resp = await client.get("/api/reddit-feeds/status")
 
     assert resp.status_code == 200
     assert resp.json() == []
 
 
-async def test_reddit_feeds_status_non_200_success_is_not_502(client: AsyncClient, mock_http: respx.MockRouter) -> None:
+async def test_reddit_feeds_status_non_200_success_is_not_502(
+    client: AsyncClient, mock_http: respx.MockRouter, reddit_api_url: str
+) -> None:
     """A 202 from the companion is a success, not an error."""
-    mock_http.get("http://127.0.0.1:9090/status").mock(return_value=httpx.Response(202, json={"ok": True}))
+    mock_http.get(f"{reddit_api_url}/status").mock(return_value=httpx.Response(202, json={"ok": True}))
     resp = await client.get("/api/reddit-feeds/status")
 
     assert resp.status_code == 200
@@ -1094,11 +1089,12 @@ async def test_reddit_feeds_status_non_200_success_is_not_502(client: AsyncClien
 async def test_reddit_feeds_status_logs_the_exception(
     client: AsyncClient,
     mock_http: respx.MockRouter,
+    reddit_api_url: str,
     caplog: pytest.LogCaptureFixture,
 ) -> None:
     """R11: httpx timeouts frequently stringify to empty, degrading the line to
     'reddit_feeds_status unreachable:' with no exception type and no traceback."""
-    mock_http.get("http://127.0.0.1:9090/status").mock(side_effect=httpx.ConnectTimeout(""))
+    mock_http.get(f"{reddit_api_url}/status").mock(side_effect=httpx.ConnectTimeout(""))
 
     with caplog.at_level(logging.WARNING, logger="src.api.reddit_feeds"):
         resp = await client.get("/api/reddit-feeds/status")
@@ -1107,6 +1103,35 @@ async def test_reddit_feeds_status_logs_the_exception(
     record = next(r for r in caplog.records if r.name == "src.api.reddit_feeds")
     assert "ConnectTimeout" in record.getMessage()
     assert record.exc_info is not None
+
+
+async def test_reddit_feeds_status_logs_transitions_not_polls(
+    client: AsyncClient,
+    mock_http: respx.MockRouter,
+    reddit_api_url: str,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """The modal polls at 1 Hz against an optional service, so one WARNING per
+    poll with a full traceback is ~600 log lines a minute for a condition the
+    frontend already renders (M5)."""
+    caplog.set_level(logging.DEBUG, logger="src.api.reddit_feeds")
+    route = mock_http.get(f"{reddit_api_url}/status")
+    route.mock(side_effect=httpx.ConnectError("refused"))
+
+    for _ in range(3):
+        assert (await client.get("/api/reddit-feeds/status")).status_code == 502
+
+    warnings = [r for r in caplog.records if r.levelno == logging.WARNING]
+    assert len(warnings) == 1, "only the transition to unreachable warns"
+    assert warnings[0].exc_info is not None, "the traceback rides the transition"
+    debugs = [r for r in caplog.records if r.levelno == logging.DEBUG and "unreachable" in r.message]
+    assert len(debugs) == 2, "the repeats are debug"
+
+    caplog.clear()
+    route.mock(return_value=httpx.Response(200, json={"ok": True}))
+    assert (await client.get("/api/reddit-feeds/status")).status_code == 200
+    infos = [r for r in caplog.records if r.levelno == logging.INFO]
+    assert len(infos) == 1, "recovery is an important status change"
 
 
 async def test_proxy_cache_hit_honours_range(
@@ -1415,37 +1440,6 @@ async def test_proxy_non_media_content_type_is_not_an_error_log(
     assert not any(r.exc_info for r in media_records), "and must not carry a traceback"
 
 
-async def test_reddit_feeds_unreachable_logs_warning_with_traceback(
-    client: AsyncClient, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
-) -> None:
-    """The status modal polls at 1 Hz for as long as it is open, and the
-    default target is a companion service many deployments will not run.
-    logger.exception emitted one ERROR with a full httpx traceback every
-    second, forever, for an outcome the frontend renders as ordinary."""
-    import httpx
-
-    from src.config import settings
-    from src.http_client import get_status_http
-
-    monkeypatch.setattr(settings, "reddit_feeds_api_url", "http://rf.local")
-    caplog.set_level(logging.DEBUG, logger="src.api.reddit_feeds")
-
-    class _Boom:
-        async def get(self, *a: object, **k: object) -> object:
-            raise httpx.ConnectError("nope")
-
-    client._transport.app.dependency_overrides[get_status_http] = lambda: _Boom()
-    resp = await client.get("/api/reddit-feeds/status")
-
-    assert resp.status_code == 502
-    records = [r for r in caplog.records if r.name == "src.api.reddit_feeds"]
-    assert records, "the failure must still be logged"
-    assert all(r.levelno < logging.ERROR for r in records), "an absent optional service is recoverable"
-    assert any(r.levelno == logging.WARNING and r.exc_info for r in records), (
-        "the traceback is the point — httpx timeouts stringify to empty"
-    )
-
-
 async def test_proxy_hit_does_not_pass_stat_result_to_fileresponse(
     client: AsyncClient, db: aiosqlite.Connection, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -1606,3 +1600,45 @@ async def test_reddit_feeds_status_still_passes_a_normal_body_through(
     resp = await client.get("/api/reddit-feeds/status")
     assert resp.status_code == 200
     assert resp.json() == {"feeds": []}
+
+
+async def test_reddit_feeds_status_caps_a_body_that_arrives_in_chunks(
+    client: AsyncClient, mock_http: respx.MockRouter, reddit_api_url: str
+) -> None:
+    """The existing cap test hands respx one 2 MiB blob, so `size += len(chunk)`
+    and `size = len(chunk)` are indistinguishable — the accumulation across
+    chunks, which is what the trickling case needs, was never exercised."""
+    from src.api.reddit_feeds import MAX_STATUS_BYTES
+
+    chunk = b"x" * (MAX_STATUS_BYTES // 4)
+
+    async def _chunks() -> AsyncGenerator[bytes]:
+        for _ in range(6):
+            yield chunk
+
+    mock_http.get(f"{reddit_api_url}/status").mock(return_value=httpx.Response(200, content=_chunks()))
+    resp = await client.get("/api/reddit-feeds/status")
+    assert resp.status_code == 502
+
+
+async def test_reddit_feeds_status_allows_a_body_of_exactly_the_cap(
+    client: AsyncClient, mock_http: respx.MockRouter, reddit_api_url: str
+) -> None:
+    """The guard is `>` not `>=`, so exactly MAX_STATUS_BYTES must pass."""
+    from src.api.reddit_feeds import MAX_STATUS_BYTES
+
+    body = b'{"pad":"' + b"x" * (MAX_STATUS_BYTES - 10) + b'"}'
+    assert len(body) == MAX_STATUS_BYTES
+    mock_http.get(f"{reddit_api_url}/status").mock(return_value=httpx.Response(200, content=body))
+    resp = await client.get("/api/reddit-feeds/status")
+    assert resp.status_code == 200
+
+
+async def test_reddit_feeds_status_reports_an_empty_body_accurately(
+    client: AsyncClient, mock_http: respx.MockRouter, reddit_api_url: str
+) -> None:
+    """A companion answering 204, or 200 with no body, is not `non-JSON`."""
+    mock_http.get(f"{reddit_api_url}/status").mock(return_value=httpx.Response(200, content=b""))
+    resp = await client.get("/api/reddit-feeds/status")
+    assert resp.status_code == 502
+    assert "empty" in resp.json()["detail"].lower()

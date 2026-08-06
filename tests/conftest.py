@@ -96,6 +96,16 @@ from src.request_id import RequestIDMiddleware  # noqa: E402
 
 
 @pytest.fixture
+def reddit_api_url(monkeypatch: pytest.MonkeyPatch) -> str:
+    """Pin the companion URL so the reddit tests do not depend on whether the
+    machine running them exports REDDIT_FEEDS_API_URL."""
+    url = "http://rf.local"
+    monkeypatch.setattr(settings, "reddit_feeds_api_url", url)
+    monkeypatch.setattr("src.api.reddit_feeds._last_reachable", None)
+    return url
+
+
+@pytest.fixture
 def auth_settings(monkeypatch: pytest.MonkeyPatch) -> None:
     """Override settings attributes for auth tests. Resets after each test."""
     monkeypatch.setattr(settings, "auth_username", "admin")
