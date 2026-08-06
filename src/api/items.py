@@ -91,9 +91,11 @@ async def list_items(
     raise — which used to skip every undelivered row between the two ranks —
     into duplicates the client's known-set guard already drops. The volume is
     bounded at k+1 for k rows inserted before the anchor: the anchor itself plus
-    the rows in that feed pushed above the old bound. Other feeds contribute
-    none, because the tiebreak is (rn, feed_id, id) and their same-rank rows
-    were never delivered under the old numbering either.
+    the rows in that feed pushed above the old bound. Any other feed that also
+    gained a row below the bound contributes too — its existing rows shift into
+    the reopened window and come back as duplicates — so the count scales with
+    total insertions beneath the cursor across all feeds, not with the anchor's
+    feed alone.
 
     min(issued, resolved) only recovers rows ahead of the cursor — rows that
     already existed and were due to be delivered next. A row inserted behind
@@ -102,6 +104,17 @@ async def list_items(
     That row is not delivered until the client reloads from the top. This is
     ordinary forward pagination, not M2 — M2 lost rows ahead of the cursor that
     had never been delivered at all.
+
+    A page returned entirely as duplicates is a real risk, not just wasted
+    bandwidth: the client derives its next cursor from what it appended
+    (src/static/item-store.js), and appending nothing leaves after_id/after_rn
+    unchanged, so the next request repeats this one and pagination stalls until
+    reload. Reachable at the default feed_initial_count of 10 on a single-feed
+    install whose refresh delivers ten or more undated rows — a case that gets
+    none of M2's benefit to begin with, since the interleave needs at least two
+    feeds to desync, so there it is pure regression. The client must re-anchor
+    on the response's own last row whenever a page comes back non-empty, even
+    if every row in it was already held (Task 8).
 
     after_rn is optional so a page cached in a browser from before this change
     degrades to the old behaviour instead of 422-ing.

@@ -984,6 +984,44 @@ async def test_items_cursor_survives_prune_beneath_it(client: AsyncClient, db: a
     assert [i["id"] for i in page2.json()] == ["item5", "item6", "item7", "item8"]
 
 
+async def test_items_cursor_with_after_rn_survives_prune_beneath_it(
+    client: AsyncClient, db: aiosqlite.Connection
+) -> None:
+    """R3, with the client sending after_rn (Task 8's frontend).
+
+    bound_rn = min(after_rn, resolved) must take the *resolved* rank when a
+    prune has moved it below what was issued. A mutation that trusts after_rn
+    unconditionally — dropping the resolved value entirely — would still page
+    from the client's stale, too-high rank and skip the same rows R3 already
+    covers, but only for a client that sends after_rn. The after_id-only test
+    above never exercises this: min(2, 3) picked the issued side by
+    coincidence there, so a mutation that always trusts after_rn passes it too.
+    """
+    await _insert_feed(db)
+    for n in range(1, 9):
+        await db.execute(
+            """INSERT INTO items(id, feed_id, guid, title, media_url, media_type, pub_date)
+               VALUES (?, 'feed1', ?, 'T', 'http://example.com/img.jpg', 'image', ?)""",
+            (f"item{n}", f"g{n}", f"2026-01-0{n}T00:00:00"),
+        )
+    await db.commit()
+
+    page1 = await client.get("/api/items", params={"size": 4})
+    assert [i["id"] for i in page1.json()] == ["item1", "item2", "item3", "item4"]
+    last = page1.json()[-1]
+    assert "rn" in last
+
+    # A refresh cycle prunes the two oldest rows while the client holds its cursor.
+    await db.execute("DELETE FROM items WHERE id IN ('item1', 'item2')")
+    await db.commit()
+
+    page2 = await client.get(
+        "/api/items",
+        params={"after_id": last["id"], "after_rn": last["rn"], "size": 4},
+    )
+    assert [i["id"] for i in page2.json()] == ["item5", "item6", "item7", "item8"]
+
+
 async def test_items_cursor_does_not_skip_when_a_feed_gains_an_older_row(
     client: AsyncClient, db: aiosqlite.Connection
 ) -> None:
