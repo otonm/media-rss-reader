@@ -45,7 +45,7 @@ def cache_name(url: str) -> str:
     """The cache filename for `url` (sha256 hex, no extension).
 
     Single source of the naming contract: items.py compares this against
-    `cache_present_names()`'s set to set the `cached` hint, so the two must
+    `cache_names_present()`'s set to set the `cached` hint, so the two must
     not drift. Implemented as `_cache_path(url).name` so a scheme change here
     flips both sides at once.
     """
@@ -194,15 +194,19 @@ def cache_lookup(url: str) -> tuple[Path, str] | None:
     return path, cache_read_meta(url) or "application/octet-stream"
 
 
-def cache_present_names() -> set[str]:
-    """Return the set of cached data filenames (sha256 hex, no extension).
+def cache_names_present(names: set[str]) -> set[str]:
+    """Which of `names` are on disk. One thread hop, len(names) stats.
 
-    Excludes `.meta` sidecars and in-flight `.tmp` files. One iterdir syscall,
-    shared across a whole /api/items page so the event loop isn't hit per row
-    (F18). Cache may change between call and response; `cached` is a hint.
+    The previous shape iterated the whole cache directory: Path.iterdir yields
+    Paths with no cached stat, so is_file() issued one stat per entry — data
+    files and .meta sidecars both, ~1000 at the default cache_max_items — to
+    answer at most `size` questions, where the frontend's first page is 10.
+    Batching per-row checks into one to_thread keeps the single event-loop hop
+    (F18) and makes the cost scale with the page rather than the cache.
     """
+    cache_dir = Path(settings.cache_dir)
     try:
-        return {p.name for p in Path(settings.cache_dir).iterdir() if p.is_file() and p.suffix == ""}
+        return {name for name in names if (cache_dir / name).is_file()}
     except FileNotFoundError:
         return set()
 

@@ -209,11 +209,10 @@ def test_cache_name_is_the_single_source() -> None:
     assert cache_name(url) == _cache_path(url).name
 
 
-def test_cache_present_names_excludes_meta_and_tmp(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    """The `cached` hint on /api/items is a membership test on a bare sha256
-    name, so adding a .tmp or .meta entry to the returned set can never flip
-    it — deleting the suffix filter here kept that test green. This is the
-    only place the exclusion is observable.
+def test_cache_names_present_only_checks_requested_names(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """The new function checks only the names passed to it, not the whole
+    directory. This means the cost scales with the page (10 items) rather
+    than with the cache (500 items).
     """
     import src.media.cache as cache_mod
 
@@ -223,7 +222,7 @@ def test_cache_present_names_excludes_meta_and_tmp(tmp_path: Path, monkeypatch: 
     (tmp_path / f"{data_name}.meta").write_text("image/jpeg")
     (tmp_path / "abc123.tmp").write_bytes(b"partial")
 
-    assert cache_mod.cache_present_names() == {data_name}
+    assert cache_mod.cache_names_present({data_name}) == {data_name}
 
 
 def test_cache_lookup_returns_path_and_type_only(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -266,3 +265,30 @@ def test_cache_lookup_defaults_the_type_without_a_meta_sidecar(tmp_path: Path, m
     hit = cache_mod.cache_lookup(url)
     assert hit is not None
     assert hit[1] == "application/octet-stream"
+
+
+def test_cache_names_present_stats_only_what_it_was_asked_about(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """iterdir + is_file() stats every entry — data files and .meta sidecars,
+    ~1000 at the default cache_max_items=500 — to answer at most `size`
+    questions, where the frontend's first page is 10 (minor 18)."""
+    from src.config import settings
+    from src.media.cache import cache_name, cache_names_present
+
+    monkeypatch.setattr(settings, "cache_dir", str(tmp_path))
+    hit = cache_name("http://example.com/a.jpg")
+    (tmp_path / hit).write_bytes(b"x")
+    for n in range(50):
+        (tmp_path / f"unrelated{n}").write_bytes(b"x")
+
+    miss = cache_name("http://example.com/b.jpg")
+    assert cache_names_present({hit, miss}) == {hit}
+
+
+def test_cache_names_present_handles_a_missing_cache_dir(monkeypatch: pytest.MonkeyPatch) -> None:
+    from src.config import settings
+    from src.media.cache import cache_names_present
+
+    monkeypatch.setattr(settings, "cache_dir", "/nonexistent/path")
+    assert cache_names_present({"abc"}) == set()

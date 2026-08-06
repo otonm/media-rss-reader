@@ -11,7 +11,7 @@ from fastapi import APIRouter, HTTPException, Query
 from src.db.connection import DbDep, write_transaction
 from src.db.queries import ANCHOR_LOOKUP, INTERLEAVE_ORDER_BY, KEYSET_AFTER, RANKED_ITEMS_CTE
 from src.logging_utils import loggable
-from src.media.cache import cache_name, cache_present_names
+from src.media.cache import cache_name, cache_names_present
 from src.media.normalize import item_slides, media_key
 from src.timing import timer
 
@@ -164,8 +164,9 @@ async def list_items(
         rows = await cur.fetchall()
     db_ms = db_elapsed()
     cache_elapsed = timer()
-    cached_names = await asyncio.to_thread(cache_present_names)
-    logger.debug(f"list_items: cache_present_names returned {len(cached_names)} name(s) in {cache_elapsed():.1f}ms")
+    wanted = {cache_name(row["media_url"]) for row in rows}
+    cached_names = await asyncio.to_thread(cache_names_present, wanted) if wanted else set()
+    logger.debug(f"list_items: {len(cached_names)}/{len(wanted)} media cached, checked in {cache_elapsed():.1f}ms")
     items = [_row_to_item(row, cached_names) for row in rows]
     # The cached count is the number the browser can paint instantly; a low
     # ratio here is why a scroll feels slow, and it is what the UI_DEBUG
