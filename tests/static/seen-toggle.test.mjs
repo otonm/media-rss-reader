@@ -23,10 +23,11 @@ function setupHarness({ showSeen }) {
   ctx.fetchCalls = [];
   ctx.fetch = (url, opts) => {
     ctx.fetchCalls.push({ url, opts });
-    return Promise.resolve({
-      ok: true,
-      json: async () => [{ id: "x", feed_id: "f1", pub_date: "2026-01-01T00:00:00" }],
-    });
+    // A real server's keyset predicate is strict >, so it never hands back
+    // the anchor's own row again — a request anchored on "x" finds nothing
+    // past it.
+    const body = url.includes("after_id=x") ? [] : [{ id: "x", feed_id: "f1", pub_date: "2026-01-01T00:00:00" }];
+    return Promise.resolve({ ok: true, json: async () => body });
   };
   ctx.window.MRR.config = { feedInitialCount: 10 };
   loadScript(resolve(STATIC, "item-store.js"), ctx);
@@ -67,6 +68,21 @@ test("fetchPage uses a keyset cursor from the last held item, not a page offset"
   // The keyset cursor on (feed_id, pub_date, id) is the fix: it is the last
   // held item's immutable columns, so it stays valid across mark-seen (F17).
   const ctx = setupHarness({ showSeen: false });
+  // Two distinct items rather than setupHarness's default "x" forever: a
+  // page anchored on "y" needs a real, non-duplicate answer so hasMore stays
+  // true and the third fetchPage() below is a genuine round trip.
+  let calls = 0;
+  ctx.fetch = (url, opts) => {
+    ctx.fetchCalls.push({ url, opts });
+    calls++;
+    const body =
+      calls === 1
+        ? [{ id: "x", feed_id: "f1", pub_date: "2026-01-01T00:00:00" }]
+        : calls === 2
+          ? [{ id: "y", feed_id: "f1", pub_date: "2026-01-02T00:00:00" }]
+          : [];
+    return Promise.resolve({ ok: true, json: async () => body });
+  };
   const store = ctx.window.MRR.itemStore;
 
   await store.fetchPage();
@@ -79,12 +95,13 @@ test("fetchPage uses a keyset cursor from the last held item, not a page offset"
   itemsCalls = ctx.fetchCalls.filter((c) => c.url.startsWith("/api/items?"));
   assert.ok(itemsCalls[1].url.includes("after_id=x"), `cursor from held item: ${itemsCalls[1].url}`);
 
-  // Mark it seen: the cursor is immutable, so it does NOT change — that is
-  // the F17 guarantee (mark-seen must not renumber or skip later items).
-  store.markSeen("x", "2026-06-11T12:00:00");
+  // Mark the new cursor item seen: the cursor is immutable, so it does NOT
+  // change — that is the F17 guarantee (mark-seen must not renumber or skip
+  // later items).
+  store.markSeen("y", "2026-06-11T12:00:00");
   await store.fetchPage();
   itemsCalls = ctx.fetchCalls.filter((c) => c.url.startsWith("/api/items?"));
-  assert.ok(itemsCalls[2].url.includes("after_id=x"), `cursor stable after mark-seen: ${itemsCalls[2].url}`);
+  assert.ok(itemsCalls[2].url.includes("after_id=y"), `cursor stable after mark-seen: ${itemsCalls[2].url}`);
 });
 
 test("fetchPage cursor includes the held item's position when showSeen is on", async () => {
@@ -101,9 +118,21 @@ test("fetchPage cursor includes the held item's position when showSeen is on", a
 
 test("fetchPage does not append an item it already holds", async () => {
   const ctx = setupHarness({ showSeen: true });
+  // A real server never returns the anchor's own row again (the keyset
+  // predicate is strict >), so a third round trip inside the second
+  // fetchPage() runs dry rather than handing back "x" forever.
+  let calls = 0;
+  ctx.fetch = (url, opts) => {
+    ctx.fetchCalls.push({ url, opts });
+    calls++;
+    return Promise.resolve({
+      ok: true,
+      json: async () => (calls <= 2 ? [{ id: "x", feed_id: "f1", pub_date: "2026-01-01T00:00:00" }] : []),
+    });
+  };
   const store = ctx.window.MRR.itemStore;
   await store.fetchPage();
-  await store.fetchPage(); // the stub always returns the same item id
+  await store.fetchPage(); // second call re-sees "x" (duplicate), re-anchors, then the third round trip is empty
   assert.equal(store.getItems().length, 1);
   assert.equal(store.getItems()[0].id, "x");
 });

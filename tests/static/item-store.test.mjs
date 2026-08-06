@@ -123,3 +123,45 @@ test("a long run of dead anchors is crossed in log(n) requests, not abandoned", 
   assert.ok(store.hasMoreItems(), "pagination must survive the dead run");
   assert.equal(store.getItems().at(-1).id, "new");
 });
+
+test("fetchPage sends the rank the server issued with the anchor", async () => {
+  const urls = [];
+  const store = makeStore((url) => {
+    urls.push(url);
+    return urls.length === 1
+      ? jsonResponse([{ id: "a", feed_id: "f", pub_date: null, rn: 3 }])
+      : jsonResponse([]);
+  });
+
+  await store.fetchPage();
+  await store.fetchPage();
+
+  assert.ok(!urls[0].includes("after_rn"), "page one has no anchor");
+  assert.ok(urls[1].includes("after_id=a"), "page two anchors on the last item");
+  assert.ok(urls[1].includes("after_rn=3"), "and carries the rank it was issued");
+});
+
+test("a page of pure duplicates re-anchors instead of stalling", async () => {
+  const urls = [];
+  const held = [
+    { id: "a", feed_id: "f", pub_date: null, rn: 1 },
+    { id: "b", feed_id: "f", pub_date: null, rn: 2 },
+  ];
+  const store = makeStore((url) => {
+    urls.push(url);
+    // Call 1 seeds state.items with the held rows. Call 2 (the first cursored
+    // request of the next fetchPage) comes back as the exact same rows — the
+    // bound resolved beneath our position. Call 3 is the first genuinely new row.
+    if (urls.length === 1) return jsonResponse(held);
+    if (urls.length === 2) return jsonResponse(held);
+    return jsonResponse([{ id: "c", feed_id: "f", pub_date: null, rn: 3 }]);
+  });
+
+  await store.fetchPage(); // page one: seeds a, b
+  await store.fetchPage(); // page two: an all-duplicate page, then re-anchors onto c
+
+  assert.equal(urls.length, 3, "an all-duplicate page must not end the turn");
+  assert.ok(urls[2].includes("after_id=b"), "re-anchored on the response's last row");
+  assert.ok(urls[2].includes("after_rn=2"));
+  assert.ok(store.getItems().some((i) => i.id === "c"), "pagination advanced");
+});

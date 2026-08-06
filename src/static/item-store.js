@@ -30,12 +30,15 @@
     return state.showSeen ? "false" : "true";
   }
 
-  // The cursor is the id of an item we hold — one immutable column value. rn is
-  // NOT sent: the server recomputes it per request, so a pruned row beneath the
-  // cursor would shift it and we would skip exactly as many items as were
-  // pruned (R3). The server looks the id up in the same window that orders the
-  // page. pub_date is not sent either: an undated item serialised as the string
-  // "null", which the server compared as text against real dates.
+  // The cursor is the id of an item we hold, plus the rank (rn) the server
+  // issued it with. rn is ROW_NUMBER recomputed per request, so on its own
+  // it is not a valid cursor: a pruned row beneath it shifts it down, and a
+  // row inserted with an older pub_date shifts it up. Sending both lets the
+  // server bound the next page at min(after_rn, the anchor's resolved rank)
+  // — a shift in either direction turns into duplicates instead of a silent
+  // skip (R3), and the known-set guard below drops the duplicates. pub_date
+  // is not sent: an undated item serialised as the string "null", which the
+  // server compared as text against real dates.
   //
   // `back` steps the anchor towards items we received earlier. A 410 means that
   // anchor row is gone — pruned, or its feed left the OPML — and an earlier
@@ -47,9 +50,9 @@
   // fixed cap stopped pagination for good once the run outgrew it, and walking
   // one by one costs a request per dead row. Doubling finds a surviving anchor
   // in log(n) requests whenever one exists at all.
-  function cursorId(back) {
+  function cursorItem(back) {
     const idx = state.items.length - 1 - back;
-    return idx >= 0 ? state.items[idx].id : null;
+    return idx >= 0 ? state.items[idx] : null;
   }
 
   async function fetchPage() {
@@ -58,14 +61,25 @@
     try {
       const cfg = MRR.config;
       const paginating = state.items.length > 0;
+      // Set when a page comes back as pure duplicates (see below): the anchor
+      // for the next request, overriding cursorItem(back) until it either 410s
+      // or a page appends something.
+      let reanchor = null;
       for (let back = 0; ; back = back === 0 ? 1 : back * 2) {
-        const anchor = paginating ? cursorId(back) : null;
+        const anchor = reanchor !== null ? reanchor : paginating ? cursorItem(back) : null;
         if (paginating && anchor === null) break; // walked past the oldest item we hold
         let url = `/api/items?unseen=${unseenParam()}&size=${cfg.feedInitialCount}`;
-        if (anchor !== null) url += `&after_id=${encodeURIComponent(anchor)}`;
+        if (anchor !== null) {
+          url += `&after_id=${encodeURIComponent(anchor.id)}`;
+          // The rank the server issued with this item. rn is recomputed per
+          // request, so without it a feed gaining an older row moves the
+          // window past items we never received.
+          if (anchor.rn !== undefined) url += `&after_rn=${anchor.rn}`;
+        }
         const resp = await fetch(url);
         if (resp.status === 410) {
           if (!paginating) break; // page one cannot 410; nothing left to step back to
+          reanchor = null; // that anchor is gone too; fall back to walking held items
           continue; // anchor gone, step further back
         }
         if (!resp.ok) return;
@@ -78,7 +92,18 @@
         // hand back an item we already hold, which would give findIndexById two
         // candidates and desync currentIndex from the DOM.
         const known = new Set(state.items.map((i) => i.id));
-        state.items = state.items.concat(newItems.filter((i) => !known.has(i.id)));
+        const fresh = newItems.filter((i) => !known.has(i.id));
+        if (fresh.length === 0) {
+          // Every row was one we already hold: the bound resolved beneath our
+          // position and the page came back as duplicates. Re-anchor on the
+          // response's own last row so the next request moves past them,
+          // rather than re-sending the anchor that produced this page and
+          // getting the same page forever.
+          const tail = newItems[newItems.length - 1];
+          reanchor = { id: tail.id, rn: tail.rn };
+          continue;
+        }
+        state.items = state.items.concat(fresh);
         return;
       }
       state.hasMore = false;
