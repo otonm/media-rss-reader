@@ -34,8 +34,8 @@ async def test_tee_streams_bytes_and_fills_cache(tmp_path: Path, monkeypatch: py
             return_value=httpx.Response(200, content=PAYLOAD, headers={"content-type": "image/jpeg"})
         )
         async with httpx.AsyncClient() as client:
-            response, _ = await open_upstream(URL, None, client)
-            received = b"".join([chunk async for chunk in tee_to_cache(URL, response)])
+            response, content_type = await open_upstream(URL, None, client)
+            received = b"".join([chunk async for chunk in tee_to_cache(URL, response, content_type)])
 
     assert received == PAYLOAD
     path = cache_read(URL)
@@ -58,8 +58,8 @@ async def test_abandoned_stream_leaves_no_cache_entry(tmp_path: Path, monkeypatc
             return_value=httpx.Response(200, content=PAYLOAD, headers={"content-type": "image/jpeg"})
         )
         async with httpx.AsyncClient() as client:
-            response, _ = await open_upstream(URL, None, client)
-            stream = tee_to_cache(URL, response)
+            response, content_type = await open_upstream(URL, None, client)
+            stream = tee_to_cache(URL, response, content_type)
             first = await anext(stream)
             assert len(first) < len(PAYLOAD)  # genuinely mid-transfer
             await stream.aclose()  # the client went away
@@ -304,9 +304,9 @@ async def test_tee_to_cache_aborts_past_the_byte_budget(tmp_path: Path, monkeypa
         return_value=httpx.Response(200, headers={"content-type": "video/mp4"}, stream=httpx.ByteStream(b"x" * 1000))
     )
     async with httpx.AsyncClient() as client:
-        response, _ = await open_upstream(url, None, client)
+        response, content_type = await open_upstream(url, None, client)
         with pytest.raises(UpstreamError):
-            async for _ in tee_to_cache(url, response):
+            async for _ in tee_to_cache(url, response, content_type):
                 pass
     assert list(tmp_path.iterdir()) == []  # noqa: ASYNC240
 
@@ -392,10 +392,10 @@ async def test_tee_to_cache_server_abort_logs_warning(tmp_path: Path, caplog: py
                 )
             )
             async with httpx.AsyncClient() as client:
-                resp, _ = await fetch_mod.open_upstream(url, None, client)
+                resp, content_type = await fetch_mod.open_upstream(url, None, client)
                 caplog.set_level(logging.DEBUG)
                 with pytest.raises(fetch_mod.UpstreamError, match="MEDIA_MAX_BYTES"):
-                    async for _ in fetch_mod.tee_to_cache(url, resp):
+                    async for _ in fetch_mod.tee_to_cache(url, resp, content_type):
                         pass
     finally:
         monkeypatch_fetch.undo()
@@ -423,9 +423,9 @@ async def test_tee_to_cache_client_disconnect_logs_debug(tmp_path: Path, caplog:
                 return_value=httpx.Response(200, content=b"abcdefghij", headers={"content-type": "image/jpeg"})
             )
             async with httpx.AsyncClient() as client:
-                resp, _ = await fetch_mod.open_upstream(url, None, client)
+                resp, content_type = await fetch_mod.open_upstream(url, None, client)
                 caplog.set_level(logging.DEBUG)
-                gen = fetch_mod.tee_to_cache(url, resp)
+                gen = fetch_mod.tee_to_cache(url, resp, content_type)
                 await gen.__anext__()  # pull one chunk then abandon
                 await gen.aclose()
     finally:
@@ -469,9 +469,9 @@ async def test_tee_to_cache_non_client_abort_not_mislabeled(
         )
         caplog.set_level(logging.DEBUG)
         async with httpx.AsyncClient() as client:
-            resp, _ = await fetch_mod.open_upstream(url, None, client)
+            resp, content_type = await fetch_mod.open_upstream(url, None, client)
             with pytest.raises(OSError, match="simulated cache write failure"):
-                async for _ in fetch_mod.tee_to_cache(url, resp):
+                async for _ in fetch_mod.tee_to_cache(url, resp, content_type):
                     pass
 
     assert any(r.levelno == logging.WARNING and "aborted" in r.getMessage() for r in caplog.records), (

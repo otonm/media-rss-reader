@@ -212,8 +212,14 @@ async def open_upstream(
     return response, content_type
 
 
-async def tee_to_cache(url: str, response: httpx.Response, request_id: str | None = None) -> AsyncIterator[bytes]:
+async def tee_to_cache(
+    url: str, response: httpx.Response, content_type: str, request_id: str | None = None
+) -> AsyncIterator[bytes]:
     """Yield the response body onward while writing it into the cache.
+
+    `content_type` is the value open_upstream already resolved and validated —
+    not re-derived from response.headers here, so the streamed response and
+    the .meta sidecar it feeds always agree with what the gate checked.
 
     A client that disconnects mid-stream cancels this generator, so the partial
     download is discarded rather than cached — cache_stream_tee only publishes a
@@ -222,7 +228,6 @@ async def tee_to_cache(url: str, response: httpx.Response, request_id: str | Non
     The dedup digest is only recorded on a complete transfer, for the same
     reason: half a file has the wrong hash.
     """
-    content_type = response.headers.get("content-type", "application/octet-stream")
     digest = hashlib.sha256()
     sent = 0
     complete = False
@@ -300,8 +305,8 @@ async def fetch_to_cache(url: str, item_id: str, client: httpx.AsyncClient, requ
             return
         try:
             logger.debug(f"fetch_to_cache: warming {url} (item_id={item_id}, request_id={request_id})")
-            response, _ = await open_upstream(url, item_id, client, request_id=request_id)
-            async for _ in tee_to_cache(url, response, request_id=request_id):
+            response, content_type = await open_upstream(url, item_id, client, request_id=request_id)
+            async for _ in tee_to_cache(url, response, content_type, request_id=request_id):
                 pass
             logger.debug(f"fetch_to_cache: warmed {url} (request_id={request_id})")
         except Exception as exc:

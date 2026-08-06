@@ -6,7 +6,7 @@ from pathlib import Path
 
 from fastapi import APIRouter, HTTPException, Query, Response
 from fastapi.responses import FileResponse, StreamingResponse
-from starlette.types import Receive, Scope, Send
+from starlette.types import Message, Receive, Scope, Send
 
 from src.api.schemas import PrefetchHint
 from src.db.connection import DbDep
@@ -42,10 +42,17 @@ class CacheFileResponse(FileResponse):
     """
 
     async def __call__(self, scope: Scope, receive: Receive, send: Send) -> None:
+        started = False
+
+        async def _send(message: Message) -> None:
+            nonlocal started
+            started = True
+            await send(message)
+
         try:
-            await super().__call__(scope, receive, send)
+            await super().__call__(scope, receive, _send)
         except RuntimeError:
-            if Path(self.path).exists():  # noqa: ASYNC240 — one stat on a rare error path
+            if started or Path(self.path).exists():  # noqa: ASYNC240 — one stat on a rare error path
                 raise
             logger.warning(f"proxy_media: cached file for {self.path} vanished before send, answering 503")
             await Response(status_code=503, headers={"Retry-After": "1"})(scope, receive, send)
@@ -126,7 +133,7 @@ async def proxy_media(
         f"proxy_media: MISS ok {url} -> {response.status_code} type={content_type} upstream={upstream_elapsed():.1f}ms"
     )
     return StreamingResponse(
-        tee_to_cache(url, response, request_id=current_request_id()),
+        tee_to_cache(url, response, content_type, request_id=current_request_id()),
         media_type=content_type,
     )
 
