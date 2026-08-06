@@ -191,3 +191,18 @@ def _clear_prefetch_tasks() -> Iterator[None]:
     prefetch_mod._bg_tasks.clear()
     yield
     prefetch_mod._bg_tasks.clear()
+
+
+@pytest.fixture(autouse=True)
+def _reset_write_lock(monkeypatch: pytest.MonkeyPatch) -> None:
+    """_write_lock is a module-level asyncio.Lock shared for the process
+    lifetime. asyncio.Lock only binds to a running event loop the first time
+    it is actually contended (an uncontended acquire never calls
+    _get_loop()); pytest-asyncio hands each test function its own event loop,
+    so the first test that contends the lock binds it, and any later test
+    that also contends it raises 'bound to a different event loop'."""
+    import asyncio
+
+    import src.db.connection as connection_mod
+
+    monkeypatch.setattr(connection_mod, "_write_lock", asyncio.Lock())

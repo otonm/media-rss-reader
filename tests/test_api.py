@@ -1,3 +1,4 @@
+import contextlib
 import logging
 import re
 from collections.abc import AsyncGenerator
@@ -1659,6 +1660,109 @@ async def test_mark_seen_logs_when_it_rolls_back(
 
     assert resp.status_code == 500
     assert any("roll" in r.getMessage().lower() and "item1" in r.getMessage() for r in caplog.records)
+
+
+async def test_two_overlapping_mark_seen_requests_do_not_corrupt_each_other(
+    client: AsyncClient, db: aiosqlite.Connection
+) -> None:
+    """get_db hands both requests the same connection and sqlite3 opens one
+    implicit transaction per connection, not per coroutine, so without
+    serialisation one request's ROLLBACK discards the other's UPDATE and leaves
+    seen_media written with items.seen_at unset (M8, F11).
+
+    The lock had no test of any kind: deleting `async with _write_lock:` left
+    all 303 green.
+    """
+    import asyncio
+
+    await _insert_feed(db, "f1")
+    for n in range(6):
+        await db.execute(
+            "INSERT INTO items(id, feed_id, guid, media_url, media_type) VALUES (?,'f1',?,?,'image')",
+            (f"i{n}", f"g{n}", f"http://img/{n}.jpg"),
+        )
+    await db.commit()
+
+    responses = await asyncio.gather(*(client.post(f"/api/items/i{n}/seen") for n in range(6)))
+    assert all(r.status_code == 200 for r in responses)
+
+    async with db.execute("SELECT COUNT(*) AS n FROM items WHERE seen_at IS NOT NULL") as cur:
+        assert (await cur.fetchone())["n"] == 6
+    async with db.execute("SELECT COUNT(*) AS n FROM seen_media") as cur:
+        assert (await cur.fetchone())["n"] == 6, "every mark wrote both rows or neither"
+
+
+async def test_mark_seen_reports_the_original_error_when_rollback_also_fails(
+    client: AsyncClient,
+    db: aiosqlite.Connection,
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """The only unexecuted lines in src/api. Rollback is I/O on a possibly
+    broken connection; letting it propagate would replace the exception that
+    describes what actually went wrong (minor 20)."""
+    await _insert_feed(db, "f1")
+    await db.execute(
+        "INSERT INTO items(id, feed_id, guid, media_url, media_type) VALUES ('i1','f1','g1','http://a.jpg','image')"
+    )
+    await db.commit()
+
+    real_execute = db.execute
+
+    def _fail_on_seen_media(sql: str, params: tuple = ()):  # noqa: ANN202
+        if "seen_media" in sql:
+            raise RuntimeError("insert exploded")
+        return real_execute(sql, params)
+
+    async def _fail_rollback() -> None:
+        raise RuntimeError("rollback exploded")
+
+    monkeypatch.setattr(db, "execute", _fail_on_seen_media)
+    monkeypatch.setattr(db, "rollback", _fail_rollback)
+    monkeypatch.setattr(client._transport, "raise_app_exceptions", False)
+    caplog.set_level(logging.DEBUG)
+
+    resp = await client.post("/api/items/i1/seen")
+    assert resp.status_code == 500
+    warnings = [r for r in caplog.records if r.levelno == logging.WARNING and "write failed" in r.message]
+    assert warnings and warnings[0].exc_info is not None, "minor 8: the warning carries the exception"
+    # exc_info alone is not enough: a warning with SOME traceback is logged
+    # either way. The contract is which exception it carries — the original
+    # write failure, not the rollback's own — so pin the exception value.
+    assert str(warnings[0].exc_info[1]) == "insert exploded", (
+        "minor 20: the original exception must reach the client, not the rollback failure"
+    )
+
+
+async def test_setup_write_is_not_discarded_by_a_concurrent_mark_seen(
+    db: aiosqlite.Connection,
+) -> None:
+    """post_setup wrote and committed on the same shared connection without
+    taking the lock, so a concurrent mark_seen rollback discarded the TOTP
+    secret while the user was redirected to / as though setup succeeded
+    (minor 2)."""
+    import asyncio
+
+    from fastapi import HTTPException
+
+    from src.db.connection import write_transaction
+
+    async def setup_write() -> None:
+        async with write_transaction(db):
+            await db.execute("INSERT OR REPLACE INTO auth_config (key, value) VALUES ('totp_secret', 'S3CRET')")
+            await asyncio.sleep(0)
+
+    async def failing_mark() -> None:
+        with contextlib.suppress(HTTPException):
+            async with write_transaction(db):
+                await db.execute("UPDATE items SET seen_at = 'x' WHERE id = 'nope'")
+                raise HTTPException(status_code=404, detail="Not found")
+
+    await asyncio.gather(setup_write(), failing_mark())
+
+    async with db.execute("SELECT value FROM auth_config WHERE key = 'totp_secret'") as cur:
+        row = await cur.fetchone()
+    assert row is not None and row["value"] == "S3CRET"
 
 
 async def test_reddit_feeds_status_caps_the_body(
