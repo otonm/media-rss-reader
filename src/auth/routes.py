@@ -21,7 +21,7 @@ from src.auth.session import (
     verify_setup_cookie,
 )
 from src.config import settings
-from src.db.connection import DbDep
+from src.db.connection import DbDep, write_transaction
 
 logger = logging.getLogger(__name__)
 router = APIRouter()
@@ -186,8 +186,8 @@ async def post_setup(
 
     _lockout.reset(ip)
     logger.debug(f"post_setup ip={ip} success, persisting TOTP secret")
-    await db.execute("INSERT OR REPLACE INTO auth_config (key, value) VALUES ('totp_secret', ?)", (secret,))
-    await db.commit()
+    async with write_transaction(db):
+        await db.execute("INSERT OR REPLACE INTO auth_config (key, value) VALUES ('totp_secret', ?)", (secret,))
 
     response = RedirectResponse("/", status_code=303)
     _set_session_cookie(response)

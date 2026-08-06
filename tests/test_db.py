@@ -1,3 +1,4 @@
+import asyncio
 import os
 import tempfile
 
@@ -124,6 +125,48 @@ async def test_get_db_returns_the_process_wide_connection(monkeypatch: pytest.Mo
     sentinel = object()
     request = SimpleNamespace(app=SimpleNamespace(state=SimpleNamespace(db=sentinel)))
     assert await conn_mod.get_db(request) is sentinel
+
+
+async def test_write_transaction_commits_on_success(db: aiosqlite.Connection) -> None:
+    from src.db.connection import write_transaction
+
+    async with write_transaction(db):
+        await db.execute("INSERT INTO feeds(id, url, title) VALUES ('f1','http://x','X')")
+
+    async with db.execute("SELECT COUNT(*) AS n FROM feeds") as cur:
+        assert (await cur.fetchone())["n"] == 1
+
+
+async def test_write_transaction_rolls_back_on_any_exception(db: aiosqlite.Connection) -> None:
+    """BaseException, not Exception: a CancelledError arriving mid-write would
+    otherwise unwind past the rollback and leave the shared connection holding
+    a RESERVED lock, which is what the 404 path was fixed for."""
+    from src.db.connection import write_transaction
+
+    with pytest.raises(asyncio.CancelledError):
+        async with write_transaction(db):
+            await db.execute("INSERT INTO feeds(id, url, title) VALUES ('f1','http://x','X')")
+            raise asyncio.CancelledError
+
+    async with db.execute("SELECT COUNT(*) AS n FROM feeds") as cur:
+        assert (await cur.fetchone())["n"] == 0
+
+
+async def test_write_transaction_serialises_two_writers(db: aiosqlite.Connection) -> None:
+    """get_db hands every request the same connection and sqlite3 opens one
+    implicit transaction per connection, not per coroutine (F11)."""
+    from src.db.connection import write_transaction
+
+    order: list[str] = []
+
+    async def writer(name: str) -> None:
+        async with write_transaction(db):
+            order.append(f"{name}-in")
+            await asyncio.sleep(0)
+            order.append(f"{name}-out")
+
+    await asyncio.gather(writer("a"), writer("b"))
+    assert order in (["a-in", "a-out", "b-in", "b-out"], ["b-in", "b-out", "a-in", "a-out"])
 
 
 def test_both_sides_of_the_interleave_share_one_keyset_predicate() -> None:

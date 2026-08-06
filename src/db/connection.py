@@ -9,8 +9,11 @@ DbDep is the annotated dependency four modules in two other packages import;
 it is deliberately public.
 """
 
+import asyncio
+import contextlib
 import logging
-from collections.abc import Awaitable, Callable
+from collections.abc import AsyncIterator, Awaitable, Callable
+from contextlib import asynccontextmanager
 from pathlib import Path
 from typing import Annotated
 
@@ -55,8 +58,8 @@ async def get_db(request: Request) -> aiosqlite.Connection:
 
     Sharing one connection means sharing one implicit transaction: anything
     here that writes more than a single statement has to serialise itself
-    (src/api/items.py's _write_lock) rather than assume it owns the connection.
-    The scheduler is kept on a separate connection for the same reason.
+    (write_transaction) rather than assume it owns the connection. The
+    scheduler is kept on a separate connection for the same reason.
 
     Work that outlives the request still needs run_with_own_db — a streaming
     body or a warm task running after the route returned must not borrow a
@@ -66,6 +69,41 @@ async def get_db(request: Request) -> aiosqlite.Connection:
 
 
 DbDep = Annotated[aiosqlite.Connection, Depends(get_db)]
+
+# The shared connection's write lock. It lived in src/api/items.py as a private
+# name while this module's get_db docstring named it from another package, so
+# no other writer could take it — and post_setup, the other request-path writer,
+# did not. The invariant belongs with the resource it protects.
+_write_lock = asyncio.Lock()
+
+
+@asynccontextmanager
+async def write_transaction(db: aiosqlite.Connection) -> AsyncIterator[None]:
+    """Serialise a multi-statement write on the shared connection, then commit.
+
+    get_db hands every request the same connection, and sqlite3 opens one
+    implicit transaction per connection rather than per coroutine. Without this
+    two overlapping writers share a transaction and either one's ROLLBACK
+    discards the other's statements, leaving seen_media written and
+    items.seen_at not (F11) — or discarding a TOTP secret mid-setup.
+
+    BaseException rather than Exception: a CancelledError arriving at any await
+    inside the block would otherwise unwind past the rollback and leave the
+    connection holding a RESERVED lock, with every run_with_own_db write then
+    waiting out the 30 s busy timeout and WAL unable to checkpoint.
+
+    The rollback is suppressed because it is I/O on a possibly-broken
+    connection; letting it propagate would replace the exception that describes
+    what actually went wrong.
+    """
+    async with _write_lock:
+        try:
+            yield
+            await db.commit()
+        except BaseException:
+            with contextlib.suppress(Exception):
+                await db.rollback()
+            raise
 
 
 async def run_with_own_db(
