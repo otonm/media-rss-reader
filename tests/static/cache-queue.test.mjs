@@ -68,8 +68,10 @@ test("rebuild fires POST /api/prefetch/hint with the current item id", async () 
   // Give the microtask queue a chance to run before rebuild.
   await Promise.resolve();
   ctx.window.MRR.cacheQueue.rebuild(0, 10, items);
+  // The hint is debounced; advance the clock to fire it.
+  ctx.clock.advance(300);
   // The hint call is fire-and-forget; the rebuild doesn't await it, but
-  // the fetch is invoked synchronously inside rebuild.
+  // the fetch is invoked after the debounce timeout.
   const hintCalls = ctx.fetchCalls.filter((c) => c.url === "/api/prefetch/hint");
   assert.equal(hintCalls.length, 1, "expected exactly one /api/prefetch/hint call");
   assert.equal(hintCalls[0].opts.method, "POST");
@@ -145,5 +147,39 @@ test("a successful load clears the deadline and reports how long it took", async
   assert.equal(loaded.length, 1);
   assert.equal(loaded[0].id, "id0");
   assert.equal(typeof loaded[0].ms, "number");
-  assert.equal(ctx.clock.pending(), 0, "the deadline timer must be cleared");
+  // Fire the debounced hint timer before checking that all timers are cleared.
+  ctx.clock.advance(300);
+  assert.equal(ctx.clock.pending(), 0, "the deadline timer and hint timer must be cleared");
+});
+
+test("the prefetch hint is debounced across a burst of rebuilds", async () => {
+  const hints = [];
+  const ctx = createDomContext();
+  ctx.clock = fakeTimeout(ctx);
+  ctx.fetch = async (url, opts) => {
+    if (opts && opts.method === "POST") {
+      hints.push(JSON.parse(opts.body));
+    }
+    return { ok: true, json: async () => ({ status: "ok" }) };
+  };
+
+  const items = [
+    { id: "a", media: [{ url: "http://x/a.jpg", type: "image" }] },
+    { id: "b", media: [{ url: "http://x/b.jpg", type: "image" }] },
+    { id: "c", media: [{ url: "http://x/c.jpg", type: "image" }] },
+  ];
+  ctx.window.MRR = { cacheQueue: {}, itemStore: { getShowSeen: () => false } };
+  loadScript(resolve(STATIC, "cache-queue.js"), ctx);
+
+  // Simulate a burst of scroll snaps changing the current item
+  ctx.window.MRR.cacheQueue.rebuild(0, 5, items); // hints item "a"
+  ctx.window.MRR.cacheQueue.rebuild(1, 5, items); // hints item "b"
+  ctx.window.MRR.cacheQueue.rebuild(2, 5, items); // hints item "c"
+  // Advance the clock past the debounce timeout (250ms)
+  ctx.clock.advance(400);
+  await Promise.resolve();
+
+  assert.equal(hints.length, 1, "one hint per burst, not one per scroll snap");
+  assert.equal(hints[0].item_id, "c", "the trailing call must use the newest item id");
+  assert.equal(ctx.clock.pending(), 0, "timer must be cleared after hint is sent");
 });

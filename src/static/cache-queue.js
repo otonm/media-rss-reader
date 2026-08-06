@@ -146,6 +146,22 @@
     state.loading = new Set();
     state.cached = new Set();
   }
+  // rebuild() runs on every scroll snap (scroll-controller.js:62). Each hint
+  // costs the server two ROW_NUMBER passes over the whole items table on the
+  // connection /api/items shares, so an undebounced burst made the endpoint
+  // that exists to smooth scrolling compete with the scroll itself.
+  let hintTimer = null;
+  function sendHint(itemId, unseen) {
+    if (hintTimer !== null) clearTimeout(hintTimer);
+    hintTimer = setTimeout(() => {
+      hintTimer = null;
+      fetch("/api/prefetch/hint", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ item_id: itemId, unseen }),
+      }).catch(() => {});
+    }, 250);
+  }
   function rebuild(currentIndex, lookaheadN, items) {
     priorityRebuild(currentIndex, lookaheadN, items);
     pump();
@@ -153,12 +169,7 @@
     // PREFETCH_AHEAD items warmed while the browser-side workers are busy
     // downloading the lookahead. Fire-and-forget; failures are silent.
     if (currentIndex >= 0 && currentIndex < items.length) {
-      const itemId = items[currentIndex].id;
-      fetch("/api/prefetch/hint", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ item_id: itemId, unseen: !MRR.itemStore.getShowSeen() }),
-      }).catch(() => {});
+      sendHint(items[currentIndex].id, !MRR.itemStore.getShowSeen());
     }
   }
 
