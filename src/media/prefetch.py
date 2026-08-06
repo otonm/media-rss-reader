@@ -29,9 +29,20 @@ _bg_tasks: set[asyncio.Task] = set()
 
 # One cap for both entry points. warm_startup_cache had its own Semaphore(10);
 # the request-driven path had none at all, so a fast scroll (a hint per scroll
-# snap) accumulated unbounded tasks and outbound connections — download_claim
-# only collapses duplicates of the *same* URL (R6).
+# snap) accumulated unbounded tasks and outbound connections — the semaphore
+# capped concurrency (in-flight requests), not existence. A task waiting on it
+# is still a live task strongly referenced in _bg_tasks, so the backlog still
+# grew monotonically and drained against windows scrolled past minutes ago
+# (R6/minor 12).
 _sem = asyncio.Semaphore(10)
+
+# _sem caps how many warm tasks run at once; it does not cap how many exist. A
+# task waiting on the semaphore is still a live task holding a strong reference
+# in _bg_tasks, and the hint endpoint applies no coalescing, so a fast scroll
+# grew the set without bound and the backlog then drained against a window the
+# user passed minutes ago. A newer scroll position supersedes an older one, so
+# dropping the new hint when the backlog is full is the right direction.
+MAX_BACKLOG = 50
 
 
 def _track(task: asyncio.Task) -> None:
@@ -129,6 +140,9 @@ async def prefetch_ahead(
     if cursor is None:
         logger.debug(f"prefetch_ahead: item {loggable(item_id)} not found, warming nothing")
         return None
+    if len(_bg_tasks) >= MAX_BACKLOG:
+        logger.info(f"prefetch_ahead for {loggable(item_id)}: backlog at {len(_bg_tasks)}, dropping the hint")
+        return 0
     seen_filter = "seen_at IS NULL AND " if unseen else ""
     async with db.execute(
         f"""{RANKED_ITEMS_CTE}

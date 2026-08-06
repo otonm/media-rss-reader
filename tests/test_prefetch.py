@@ -212,3 +212,50 @@ async def test_prefetch_ahead_returns_none_for_an_unknown_item(
 
     async with httpx.AsyncClient() as client:
         assert await prefetch_ahead("nonexistent", db, client, unseen=True) is None
+
+
+async def test_prefetch_ahead_drops_the_hint_when_the_backlog_is_full(
+    db: aiosqlite.Connection, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """_sem bounds how many tasks run, but a task blocked on it is still live
+    and strongly referenced, so a fast scroller grew _bg_tasks monotonically
+    and the backlog drained against a window scrolled past minutes ago. The
+    comment claimed the semaphore fixed 'unbounded tasks and outbound
+    connections'; it fixed the connections half (minor 12)."""
+    # Set up DB with multiple items (so prefetch_ahead would normally queue something)
+    await db.execute("INSERT INTO feeds(id, url, title) VALUES ('f1', 'http://x.com/feed', 'F')")
+    for i in range(10):
+        await db.execute(
+            "INSERT INTO items(id, feed_id, guid, title, media_url, media_type, pub_date) "
+            "VALUES (?, 'f1', ?, 'T', ?, 'image', datetime('now', ?))",
+            (f"item{i}", f"guid{i}", f"http://example.com/{i}.jpg", f"-{i} seconds"),
+        )
+    await db.commit()
+
+    # Mock _warm so prefetch_ahead can queue tasks without making HTTP requests
+    async def _fake_warm(item_id: str, url: str, client: object, request_id: str | None = None) -> None:
+        pass
+
+    monkeypatch.setattr("src.media.prefetch._warm", _fake_warm)
+
+    # Fill the backlog to MAX_BACKLOG with dummy tasks
+    async def _never() -> None:
+        await asyncio.Event().wait()
+
+    filler = [asyncio.create_task(_never()) for _ in range(prefetch_mod.MAX_BACKLOG)]
+    for t in filler:
+        prefetch_mod._track(t)
+
+    # Verify backlog is full
+    assert len(prefetch_mod._bg_tasks) == prefetch_mod.MAX_BACKLOG
+
+    # Now prefetch_ahead should return 0 immediately without attempting to queue anything
+    async with httpx.AsyncClient() as client:
+        queued = await prefetch_mod.prefetch_ahead("item0", db, client, unseen=False)
+
+    # When backlog is full, it returns 0 (not None, which would mean item not found)
+    assert queued == 0
+
+    # Clean up filler tasks
+    for t in filler:
+        t.cancel()
