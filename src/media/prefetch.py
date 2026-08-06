@@ -19,6 +19,7 @@ import httpx
 
 from src.config import settings
 from src.db.queries import ANCHOR_LOOKUP, INTERLEAVE_ORDER_BY, KEYSET_AFTER, RANKED_ITEMS_CTE
+from src.logging_utils import loggable
 from src.media.cache import cache_read
 from src.media.fetch import fetch_to_cache
 
@@ -126,7 +127,7 @@ async def prefetch_ahead(
     async with db.execute(ANCHOR_LOOKUP, (item_id,)) as cur:
         cursor = await cur.fetchone()
     if cursor is None:
-        logger.debug(f"prefetch_ahead: item {item_id} not found, warming nothing")
+        logger.debug(f"prefetch_ahead: item {loggable(item_id)} not found, warming nothing")
         return None
     seen_filter = "seen_at IS NULL AND " if unseen else ""
     async with db.execute(
@@ -137,7 +138,7 @@ async def prefetch_ahead(
         (cursor["rn"], cursor["feed_id"], cursor["id"], settings.prefetch_ahead),
     ) as cur:
         rows = await cur.fetchall()
-    logger.debug(f"prefetch_ahead for {item_id}: {len(rows)} item(s) ahead (unseen={unseen})")
+    logger.debug(f"prefetch_ahead for {loggable(item_id)}: {len(rows)} item(s) ahead (unseen={unseen})")
     for row in rows:
         t = asyncio.create_task(_warm(row["id"], row["media_url"], client, request_id=request_id))
         _track(t)

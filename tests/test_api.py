@@ -1416,6 +1416,52 @@ async def test_item_id_is_escaped_through_open_upstream_and_mark_dead(
         assert "\nFAKE" not in record.message, f"{record.name}: raw newline reached a log record"
 
 
+async def test_mark_seen_item_id_is_escaped(
+    client: AsyncClient,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """mark_seen's item_id is a path parameter (POST /items/{item_id}/seen) —
+    completely unbounded, unlike the proxy's item_id — and was never named by
+    any finding until the final sweep flagged it explicitly (review round 4).
+
+    quote(..., safe="") mirrors what a real client does: a raw newline is not
+    a legal URL byte, so it travels percent-encoded and FastAPI decodes it
+    back to the raw string mark_seen receives as `item_id`.
+    """
+    from urllib.parse import quote
+
+    item_id = "item1\nFAKE LOG LINE" + "y" * 500
+    caplog.set_level(logging.DEBUG, logger="src")
+    resp = await client.post(f"/api/items/{quote(item_id, safe='')}/seen")
+
+    assert resp.status_code == 404  # no such item, but mark_seen's own debug line fires before the lookup
+    assert any("mark_seen item_id=" in r.message for r in caplog.records), "must reach mark_seen's own logging"
+    for record in caplog.records:
+        assert "\nFAKE" not in record.message, f"{record.name}: raw newline reached a log record"
+
+
+async def test_prefetch_hint_item_id_is_escaped(
+    client: AsyncClient,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """The prefetch hint's item_id is bounded to 128 chars by PrefetchHint,
+    but bounded is not the same as escaped — a newline still fits well inside
+    128 chars and still forges a line (review round 4's second named site,
+    plus src.api.media's own prefetch_hint lines the same sweep found sharing
+    the unescaped value)."""
+    item_id = "i1\nFAKE" + "y" * 100  # under PrefetchHint's max_length=128
+    caplog.set_level(logging.DEBUG, logger="src")
+    resp = await client.post("/api/prefetch/hint", json={"item_id": item_id})
+
+    assert resp.status_code == 404  # no such item, but prefetch_hint's entry debug line fires before the lookup
+    assert any("prefetch_hint item_id=" in r.message for r in caplog.records), "must reach prefetch_hint's logging"
+    assert any("prefetch_ahead: item" in r.message for r in caplog.records), (
+        "must reach prefetch_ahead in src/media/prefetch.py, not just the route handler"
+    )
+    for record in caplog.records:
+        assert "\nFAKE" not in record.message, f"{record.name}: raw newline reached a log record"
+
+
 async def test_proxy_serves_a_gallery_slide_with_a_non_ascii_url(
     client: AsyncClient,
     db: aiosqlite.Connection,

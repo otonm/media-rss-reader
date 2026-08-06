@@ -197,7 +197,7 @@ async def mark_seen(
     which it discards; the response shape is kept stable for symmetry with
     the optimistic local mark (F20).
     """
-    logger.debug(f"mark_seen item_id={item_id}")
+    logger.debug(f"mark_seen item_id={loggable(item_id)}")
     now = dt.datetime.now(dt.UTC).strftime("%Y-%m-%d %H:%M:%S")
     try:
         async with write_transaction(db):
@@ -209,7 +209,7 @@ async def mark_seen(
                 row = await cur.fetchone()
             update_ms = update_elapsed()
             if row is None:
-                logger.debug(f"mark_seen item_id={item_id} not found")
+                logger.debug(f"mark_seen item_id={loggable(item_id)} not found")
                 raise HTTPException(status_code=404, detail="Not found")
             insert_elapsed = timer()
             await db.execute(
@@ -220,10 +220,13 @@ async def mark_seen(
     except HTTPException:
         raise
     except Exception:
-        logger.warning(f"mark_seen item_id={item_id}: write failed, rolling back the seen mark", exc_info=True)
+        logger.warning(
+            f"mark_seen item_id={loggable(item_id)}: write failed, rolling back the seen mark", exc_info=True
+        )
         raise
 
     logger.debug(
-        f"mark_seen item_id={item_id} seen_at={row['seen_at']} update={update_ms:.1f}ms insert={insert_ms:.1f}ms"
+        f"mark_seen item_id={loggable(item_id)} seen_at={row['seen_at']} "
+        f"update={update_ms:.1f}ms insert={insert_ms:.1f}ms"
     )
     return {"seen_at": row["seen_at"]}

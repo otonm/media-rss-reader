@@ -189,11 +189,11 @@ async def prefetch_hint(
     over the items table, which are the cost of this endpoint and what db=
     measures.
     """
-    logger.debug(f"prefetch_hint item_id={body.item_id} unseen={body.unseen}")
+    logger.debug(f"prefetch_hint item_id={loggable(body.item_id)} unseen={body.unseen}")
     elapsed = timer()
     queued = await prefetch_ahead(body.item_id, db, client, unseen=body.unseen, request_id=current_request_id())
     if queued is None:
-        logger.info(f"prefetch_hint: 404, item {body.item_id} not found (db={elapsed():.1f}ms)")
+        logger.info(f"prefetch_hint: 404, item {loggable(body.item_id)} not found (db={elapsed():.1f}ms)")
         raise HTTPException(status_code=404, detail="item not found")
-    logger.debug(f"prefetch_hint item_id={body.item_id}: queued {queued} warm task(s); db={elapsed():.1f}ms")
+    logger.debug(f"prefetch_hint item_id={loggable(body.item_id)}: queued {queued} warm task(s); db={elapsed():.1f}ms")
     return {"status": "ok"}
