@@ -124,3 +124,25 @@ async def test_get_db_returns_the_process_wide_connection(monkeypatch: pytest.Mo
     sentinel = object()
     request = SimpleNamespace(app=SimpleNamespace(state=SimpleNamespace(db=sentinel)))
     assert await conn_mod.get_db(request) is sentinel
+
+
+def test_both_sides_of_the_interleave_share_one_keyset_predicate() -> None:
+    """src/db/queries.py exists to hold these. It got the CTE and the ORDER BY;
+    the anchor lookup and the keyset predicate stayed as byte-identical copies
+    in items.py and prefetch.py, and the next edit to the tiebreak would have
+    had to land in both or the prefetcher warms a different window than the
+    page serves."""
+    import inspect
+
+    from src.api import items as items_mod
+    from src.db.queries import ANCHOR_LOOKUP, KEYSET_AFTER
+    from src.media import prefetch as prefetch_mod
+
+    assert "(rn, feed_id, id) > (?, ?, ?)" in KEYSET_AFTER
+    assert "FROM ranked WHERE id = ?" in ANCHOR_LOOKUP
+
+    for module in (items_mod, prefetch_mod):
+        source = inspect.getsource(module)
+        assert "(rn, feed_id, id) > (?, ?, ?)" not in source, (
+            f"{module.__name__} has a private copy of the keyset predicate"
+        )

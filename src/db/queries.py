@@ -23,3 +23,11 @@ RANKED_ITEMS_CTE = """
 """
 
 INTERLEAVE_ORDER_BY = "ORDER BY rn ASC, feed_id ASC, id ASC"
+
+# The anchor lookup and the keyset predicate. These used to be verbatim copies
+# in src/api/items.py and src/media/prefetch.py while this module's docstring
+# claimed both sides imported from here — it held for the CTE and the ORDER BY
+# only. Adding a column to the tiebreak now lands in one place.
+ANCHOR_LOOKUP = f"{RANKED_ITEMS_CTE} SELECT rn, feed_id, id FROM ranked WHERE id = ?"  # noqa: S608
+
+KEYSET_AFTER = "(rn, feed_id, id) > (?, ?, ?)"

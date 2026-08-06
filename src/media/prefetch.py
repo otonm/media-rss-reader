@@ -18,7 +18,7 @@ import aiosqlite
 import httpx
 
 from src.config import settings
-from src.db.queries import INTERLEAVE_ORDER_BY, RANKED_ITEMS_CTE
+from src.db.queries import ANCHOR_LOOKUP, INTERLEAVE_ORDER_BY, KEYSET_AFTER, RANKED_ITEMS_CTE
 from src.media.cache import cache_read
 from src.media.fetch import fetch_to_cache
 
@@ -120,10 +120,7 @@ async def prefetch_ahead(
     tee_to_cache already accept it.
     """
     # Interpolated SQL fragments are source-controlled; request values remain bound.
-    async with db.execute(
-        f"{RANKED_ITEMS_CTE} SELECT rn, feed_id, id FROM ranked WHERE id = ?",  # noqa: S608
-        (item_id,),
-    ) as cur:
+    async with db.execute(ANCHOR_LOOKUP, (item_id,)) as cur:
         cursor = await cur.fetchone()
     if cursor is None:
         logger.debug(f"prefetch_ahead: item {item_id} not found, warming nothing")
@@ -132,7 +129,7 @@ async def prefetch_ahead(
     async with db.execute(
         f"""{RANKED_ITEMS_CTE}
             SELECT id, media_url FROM ranked
-            WHERE {seen_filter}(rn, feed_id, id) > (?, ?, ?)
+            WHERE {seen_filter}{KEYSET_AFTER}
             {INTERLEAVE_ORDER_BY} LIMIT ?""",  # noqa: S608
         (cursor["rn"], cursor["feed_id"], cursor["id"], settings.prefetch_ahead),
     ) as cur:

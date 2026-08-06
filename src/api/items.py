@@ -9,7 +9,7 @@ import aiosqlite
 from fastapi import APIRouter, HTTPException, Query
 
 from src.db.connection import DbDep
-from src.db.queries import INTERLEAVE_ORDER_BY, RANKED_ITEMS_CTE
+from src.db.queries import ANCHOR_LOOKUP, INTERLEAVE_ORDER_BY, KEYSET_AFTER, RANKED_ITEMS_CTE
 from src.media.cache import cache_name, cache_present_names
 from src.media.normalize import item_slides, media_key
 from src.timing import timer
@@ -102,16 +102,13 @@ async def list_items(
         conditions.append("seen_at IS NULL")
     if after_id is not None:
         # Same CTE, same partition, same tiebreak as the page query below.
-        async with db.execute(
-            f"{RANKED_ITEMS_CTE} SELECT rn, feed_id, id FROM ranked WHERE id = ?",  # noqa: S608
-            (after_id,),
-        ) as cur:
+        async with db.execute(ANCHOR_LOOKUP, (after_id,)) as cur:
             anchor = await cur.fetchone()
         if anchor is None:
             logger.info(f"list_items: 410, cursor anchor {after_id} no longer exists")
             raise HTTPException(status_code=410, detail="cursor expired")
         logger.debug(f"list_items: anchor {after_id} resolved to rn={anchor['rn']} feed_id={anchor['feed_id']}")
-        conditions.append("(rn, feed_id, id) > (?, ?, ?)")
+        conditions.append(KEYSET_AFTER)
         params.extend([anchor["rn"], anchor["feed_id"], anchor["id"]])
     where_clause = ("WHERE " + " AND ".join(conditions)) if conditions else ""
     params.append(size)
