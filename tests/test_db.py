@@ -146,3 +146,4 @@ def test_both_sides_of_the_interleave_share_one_keyset_predicate() -> None:
         assert "(rn, feed_id, id) > (?, ?, ?)" not in source, (
             f"{module.__name__} has a private copy of the keyset predicate"
         )
+        assert "FROM ranked WHERE id = ?" not in source, f"{module.__name__} has a private copy of the anchor lookup"
