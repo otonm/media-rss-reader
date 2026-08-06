@@ -12,7 +12,6 @@ from fastapi.encoders import jsonable_encoder
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import HTMLResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
-from starlette.requests import Request as StarletteRequest
 
 from src.api import feeds, items, media, reddit_feeds
 from src.auth import routes as auth_routes
@@ -107,7 +106,7 @@ app.mount("/static", StaticFiles(directory=str(_static_dir)), name="static")
 
 
 @app.exception_handler(RequestValidationError)
-async def _log_validation_error(request: StarletteRequest, exc: RequestValidationError) -> JSONResponse:
+async def _log_validation_error(request: Request, exc: RequestValidationError) -> JSONResponse:
     """FastAPI rejects a bad body before the route runs, so nothing in this
     project logged it — and cache-queue.js attaches only `.catch(() => {})`,
     which does not fire for an HTTP 422. A client-side change that serialises a

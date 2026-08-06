@@ -1,7 +1,9 @@
+import logging
 from pathlib import Path
 from unittest.mock import patch
 
 import aiosqlite
+import pytest
 from httpx import ASGITransport, AsyncClient
 
 
@@ -144,6 +146,52 @@ async def test_nosniff_on_every_response(db: aiosqlite.Connection) -> None:
                 assert resp.headers.get("x-content-type-options") == "nosniff", path
     finally:
         app.dependency_overrides.pop(get_db, None)
+
+
+async def test_validation_error_handler_logs_and_matches_fastapi_default(
+    db: aiosqlite.Connection, caplog: pytest.LogCaptureFixture
+) -> None:
+    """The handler is new code a future edit could regress silently: an
+    accidental `raise` instead of `return`, or a signature typo, falls back to
+    FastAPI's default handler and drops the log line that is the whole reason
+    this handler exists — with nothing in the suite to catch it."""
+    import httpx
+
+    from src.auth.session import SESSION_COOKIE, sign_session
+    from src.config import settings
+    from src.db.connection import get_db
+    from src.http_client import get_http
+    from src.main import app
+
+    async def _override_db() -> aiosqlite.Connection:
+        return db
+
+    async with httpx.AsyncClient() as http_client:
+
+        async def _override_http() -> httpx.AsyncClient:
+            return http_client
+
+        app.dependency_overrides[get_db] = _override_db
+        app.dependency_overrides[get_http] = _override_http
+        try:
+            async with AsyncClient(
+                transport=ASGITransport(app=app),
+                base_url="https://test",
+                headers={"x-forwarded-proto": "https"},
+                cookies={SESSION_COOKIE: sign_session(settings.auth_secret_key)},
+                follow_redirects=False,
+            ) as c:
+                with caplog.at_level(logging.WARNING, logger="src.main"):
+                    resp = await c.post("/api/prefetch/hint", json={})
+        finally:
+            app.dependency_overrides.pop(get_db, None)
+            app.dependency_overrides.pop(get_http, None)
+
+    assert resp.status_code == 422
+    assert resp.json() == {
+        "detail": [{"type": "missing", "loc": ["body", "item_id"], "msg": "Field required", "input": {}}]
+    }
+    assert any("422 on POST /api/prefetch/hint" in m and "item_id" in m for m in caplog.messages)
 
 
 async def test_lifespan_opens_and_closes_both_http_clients(db: aiosqlite.Connection) -> None:
