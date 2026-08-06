@@ -122,6 +122,17 @@ def set_writer_db(db: aiosqlite.Connection | None) -> None:
     _writer_db = db
 
 
+# Post-response writers used to get a private connection each, so they could
+# not interleave. Sharing one brings back the hazard write_transaction exists
+# to prevent — these writers do multi-statement writes with a bare commit and
+# no rollback. The private-connection fallback needs no lock.
+#
+# Its own lock, not _write_lock: that one guards the request connection, a
+# different connection entirely. Merging them would serialise two unrelated
+# connections against each other for no benefit.
+_writer_lock = asyncio.Lock()
+
+
 async def run_with_own_db(
     label: str,
     write: Callable[[aiosqlite.Connection], Awaitable[object]],
@@ -135,7 +146,8 @@ async def run_with_own_db(
     """
     try:
         if _writer_db is not None:
-            await write(_writer_db)
+            async with _writer_lock:
+                await write(_writer_db)
             return
         db = await open_db()
         try:
