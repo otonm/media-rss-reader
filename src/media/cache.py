@@ -24,6 +24,7 @@ from collections.abc import AsyncIterable, AsyncIterator, Iterator
 from pathlib import Path
 
 from src.config import settings
+from src.logging_utils import loggable
 
 logger = logging.getLogger(__name__)
 
@@ -70,10 +71,11 @@ def download_claim(url: str) -> Iterator[bool]:
     """
     first = url not in _inflight
     _inflight[url] = _inflight.get(url, 0) + 1
+    safe_url = loggable(url)
     if first:
-        logger.debug(f"download_claim: claimed {url} ({len(_inflight)} URL(s) in flight)")
+        logger.debug(f"download_claim: claimed {safe_url} ({len(_inflight)} URL(s) in flight)")
     else:
-        logger.debug(f"download_claim: {url} already claimed by {_inflight[url] - 1} other downloader(s)")
+        logger.debug(f"download_claim: {safe_url} already claimed by {_inflight[url] - 1} other downloader(s)")
     try:
         yield first
     finally:
@@ -82,7 +84,7 @@ def download_claim(url: str) -> Iterator[bool]:
             _inflight[url] = remaining
         else:
             del _inflight[url]
-            logger.debug(f"download_claim: released {url} ({len(_inflight)} URL(s) still in flight)")
+            logger.debug(f"download_claim: released {safe_url} ({len(_inflight)} URL(s) still in flight)")
 
 
 async def cache_stream_tee(
@@ -119,7 +121,8 @@ async def cache_stream_tee(
     fd, tmp_name = tempfile.mkstemp(dir=path.parent, suffix=".tmp")
     tmp = Path(tmp_name)
     written = 0
-    logger.debug(f"cache_stream_tee: start {url} -> {tmp.name} (type={content_type}) (request_id={request_id})")
+    safe_url = loggable(url)
+    logger.debug(f"cache_stream_tee: start {safe_url} -> {tmp.name} (type={content_type}) (request_id={request_id})")
     try:
         with os.fdopen(fd, "wb") as fh:
             async for chunk in chunks:
@@ -132,13 +135,13 @@ async def cache_stream_tee(
         await asyncio.to_thread(_write_meta, _meta_path(url), content_type)
         await asyncio.to_thread(tmp.replace, path)
         logger.debug(
-            f"cache_stream_tee: cached {url} ({written} bytes, type={content_type}) as {path.name} "
+            f"cache_stream_tee: cached {safe_url} ({written} bytes, type={content_type}) as {path.name} "
             f"(request_id={request_id})"
         )
     except BaseException as exc:
         tmp.unlink(missing_ok=True)  # noqa: ASYNC240 — one metadata op on an error path
         logger.debug(
-            f"cache_stream_tee: discarded partial {url} after {written} bytes "
+            f"cache_stream_tee: discarded partial {safe_url} after {written} bytes "
             f"({type(exc).__name__}); temp file {tmp.name} removed (request_id={request_id})"
         )
         raise

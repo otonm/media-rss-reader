@@ -12,6 +12,7 @@ from starlette.types import Message, Receive, Scope, Send
 
 from src.db.connection import DbDep
 from src.http_client import HttpDep
+from src.logging_utils import loggable
 from src.media.availability import is_known_media_url
 from src.media.cache import cache_lookup
 from src.media.fetch import NonMediaUpstreamError, UpstreamError, open_upstream, tee_to_cache
@@ -22,16 +23,6 @@ from src.timing import timer
 router = APIRouter()
 
 logger = logging.getLogger(__name__)
-
-
-def _loggable(value: str) -> str:
-    """A client-supplied string, safe to put in a single-line log record.
-
-    repr escapes the newlines that would otherwise forge a whole record against
-    the format src/main.py installs, and the slice bounds a value nothing else
-    bounds.
-    """
-    return repr(value[:200])
 
 
 class PrefetchHint(BaseModel):
@@ -131,17 +122,17 @@ async def proxy_media(
     hit = await asyncio.to_thread(cache_lookup, url)
     if hit is not None:
         path, media_type = hit
-        logger.debug(f"proxy_media: HIT {_loggable(url)} -> {path.name} (type={media_type})")
+        logger.debug(f"proxy_media: HIT {loggable(url)} -> {path.name} (type={media_type})")
         return CacheFileResponse(path, media_type=media_type)
 
     gate_elapsed = timer()
     known = await is_known_media_url(url, db)
-    logger.debug(f"proxy_media: url gate for {_loggable(url)} -> {known} in {gate_elapsed():.1f}ms")
+    logger.debug(f"proxy_media: url gate for {loggable(url)} -> {known} in {gate_elapsed():.1f}ms")
     if not known:
-        logger.debug(f"proxy_media: refusing unknown url {_loggable(url)}")
+        logger.debug(f"proxy_media: refusing unknown url {loggable(url)}")
         raise HTTPException(status_code=404, detail="not a known media url")
 
-    logger.debug(f"proxy_media: MISS {_loggable(url)} (item_id={item_id}), streaming from upstream")
+    logger.debug(f"proxy_media: MISS {loggable(url)} (item_id={loggable(item_id)}), streaming from upstream")
     try:
         upstream_elapsed = timer()
         response, content_type = await open_upstream(url, item_id, client)
@@ -152,7 +143,9 @@ async def proxy_media(
         # no longer applies, so this just records that the request became a 502.
         # The duration still matters at this level: an instant connection
         # refusal and a 30s read timeout otherwise log identically.
-        logger.debug(f"proxy_media: 502 for {_loggable(url)} (item_id={item_id}) in {upstream_elapsed():.1f}ms — {exc}")
+        logger.debug(
+            f"proxy_media: 502 for {loggable(url)} (item_id={loggable(item_id)}) in {upstream_elapsed():.1f}ms — {exc}"
+        )
         raise HTTPException(status_code=502, detail="upstream error") from exc
     except NonMediaUpstreamError as exc:
         # Deliberately not an UpstreamError: nothing was cached, nothing was
@@ -161,17 +154,19 @@ async def proxy_media(
         # only records that the request became a 502 — and the client is told
         # what actually happened rather than that the fetch failed, which it
         # did not.
-        logger.debug(f"proxy_media: 502 for {_loggable(url)} (item_id={item_id}) in {upstream_elapsed():.1f}ms — {exc}")
+        logger.debug(
+            f"proxy_media: 502 for {loggable(url)} (item_id={loggable(item_id)}) in {upstream_elapsed():.1f}ms — {exc}"
+        )
         raise HTTPException(status_code=502, detail="upstream content type not media") from exc
     except Exception as exc:
         logger.exception(
-            f"proxy_media: upstream fetch failed for {_loggable(url)} in {upstream_elapsed():.1f}ms: "
+            f"proxy_media: upstream fetch failed for {loggable(url)} in {upstream_elapsed():.1f}ms: "
             f"{type(exc).__name__}: {exc}"
         )
         raise HTTPException(status_code=502, detail="upstream fetch failed") from exc
 
     logger.debug(
-        f"proxy_media: MISS ok {_loggable(url)} -> {response.status_code} type={content_type} "
+        f"proxy_media: MISS ok {loggable(url)} -> {response.status_code} type={content_type} "
         f"upstream={upstream_elapsed():.1f}ms"
     )
     return StreamingResponse(

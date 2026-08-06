@@ -1334,6 +1334,46 @@ async def test_a_logged_url_is_escaped_and_truncated(
         assert len(record.message) < 400, "the value must be truncated"
 
 
+async def test_a_logged_url_is_escaped_past_the_gate_too(
+    client: AsyncClient,
+    db: aiosqlite.Connection,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """The gate-rejection test above 404s before _check_url, open_upstream or
+    cache_stream_tee ever run — it cannot prove those downstream sites are
+    safe (Critical 2 on this branch's review: url logged raw three call-frames
+    past the gate, at WARNING).
+
+    Registering the malicious url as a real item's media_url lets it clear
+    the gate; a non-http(s) scheme then trips _check_url's very first check,
+    which raises before any network call — so this needs no upstream mock and
+    still walks url through proxy_media -> open_upstream -> _check_url.
+    """
+    from src.config import settings
+
+    monkeypatch.setattr(settings, "cache_dir", str(tmp_path))
+    url = "ftp://evil.example/\nFAKE LOG LINE" + "y" * 500
+    await _register_proxy_url(db, url)
+
+    caplog.set_level(logging.DEBUG, logger="src")
+    resp = await client.get("/api/media/proxy", params={"url": url})
+
+    assert resp.status_code == 502
+    assert any("_check_url: refusing non-http(s) URL" in r.message for r in caplog.records), (
+        "the test must actually reach _check_url, not just the gate"
+    )
+    for record in caplog.records:
+        assert "\nFAKE" not in record.message, f"{record.name}: raw newline reached a log record"
+        # 600, not 400: proxy_media's own 502 line embeds the escaped url twice
+        # (once directly, once inside the UpstreamError str() it also renders),
+        # so two ~200-char truncated copies plus surrounding text lands here —
+        # still bounded, just not by the single-occurrence budget the other
+        # escaping test uses.
+        assert len(record.message) < 600, f"{record.name}: unbounded value reached a log record"
+
+
 async def test_proxy_serves_a_gallery_slide_with_a_non_ascii_url(
     client: AsyncClient,
     db: aiosqlite.Connection,

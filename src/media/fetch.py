@@ -31,6 +31,7 @@ import httpx
 
 from src.config import settings
 from src.db.connection import run_with_own_db
+from src.logging_utils import loggable
 from src.media.availability import mark_url_dead_and_maybe_drop
 from src.media.cache import cache_stream_tee, download_claim
 from src.media.dedup import record_media_hash
@@ -87,22 +88,28 @@ async def _check_url(url: str) -> list[str]:
     Host header + SNI) so httpx cannot re-resolve the host and reach a
     different address than the one validated here (DNS-rebinding TOCTOU).
     """
+    # Escaped once here rather than at each call site below: this value also
+    # ends up embedded raw in every UpstreamError message this function
+    # raises, and those messages resurface — unescaped, if this weren't done —
+    # in whatever outer log line later renders the exception via `{exc}`
+    # (e.g. proxy_media's "502 for ... — {exc}").
+    safe_url = loggable(url)
     parts = urlsplit(url)
     if parts.scheme not in ("http", "https"):
-        logger.warning(f"_check_url: refusing non-http(s) URL {url}")
-        raise UpstreamError(f"refusing non-http(s) URL {url}")
+        logger.warning(f"_check_url: refusing non-http(s) URL {safe_url}")
+        raise UpstreamError(f"refusing non-http(s) URL {safe_url}")
     host = parts.hostname
     if not host:
-        logger.warning(f"_check_url: refusing URL with no host: {url}")
-        raise UpstreamError(f"refusing URL with no host: {url}")
+        logger.warning(f"_check_url: refusing URL with no host: {safe_url}")
+        raise UpstreamError(f"refusing URL with no host: {safe_url}")
     if settings.allow_private_media_hosts:
         addrs = await asyncio.to_thread(_resolve, host)
     else:
         try:
             addrs = await asyncio.to_thread(_resolve, host)
         except OSError as exc:
-            logger.warning(f"_check_url: DNS resolution failed for {host} ({url}): {exc}")
-            raise UpstreamError(f"cannot resolve {host} for {url}: {exc}") from exc
+            logger.warning(f"_check_url: DNS resolution failed for {host} ({safe_url}): {exc}")
+            raise UpstreamError(f"cannot resolve {host} for {safe_url}: {exc}") from exc
         validated: list[str] = []
         for addr in addrs:
             ip = ipaddress.ip_address(addr)
@@ -116,13 +123,13 @@ async def _check_url(url: str) -> list[str]:
                 or ip.is_reserved
                 or ip.is_unspecified
             ):
-                logger.warning(f"_check_url: refusing {url} — {host} resolves to non-public address {ip}")
-                raise UpstreamError(f"refusing non-public address {ip} for {url}")
+                logger.warning(f"_check_url: refusing {safe_url} — {host} resolves to non-public address {ip}")
+                raise UpstreamError(f"refusing non-public address {ip} for {safe_url}")
             validated.append(str(ip))
         addrs = validated
     if not addrs:
-        logger.warning(f"_check_url: {host} resolved to no usable address for {url}")
-        raise UpstreamError(f"cannot resolve {host} for {url}")
+        logger.warning(f"_check_url: {host} resolved to no usable address for {safe_url}")
+        raise UpstreamError(f"cannot resolve {host} for {safe_url}")
     return addrs
 
 
@@ -147,8 +154,12 @@ async def open_upstream(
     non-media content type raises NonMediaUpstreamError instead: the URL is
     NOT marked dead, but the response is closed and nothing is cached (F5).
     """
+    # Escaped once here, same reasoning as _check_url's safe_url: this also
+    # feeds UpstreamError/NonMediaUpstreamError messages and run_with_own_db's
+    # label, both of which resurface in log lines this function does not own.
+    safe_url = loggable(url)
     logger.debug(
-        f"open_upstream: GET {url} (item_id={item_id}, timeout={UPSTREAM_TIMEOUT_S}s, request_id={request_id})"
+        f"open_upstream: GET {safe_url} (item_id={item_id}, timeout={UPSTREAM_TIMEOUT_S}s, request_id={request_id})"
     )
     logical = url
     for _ in range(MAX_REDIRECTS + 1):
@@ -170,10 +181,10 @@ async def open_upstream(
         # Join the location against the LOGICAL url (original host), not the
         # pinned IP, so the original hostname survives relative redirects.
         logical = urljoin(logical, location)
-        logger.debug(f"open_upstream: {url} redirected to {logical} (request_id={request_id})")
+        logger.debug(f"open_upstream: {safe_url} redirected to {loggable(logical)} (request_id={request_id})")
     else:
-        logger.warning(f"open_upstream: exceeded {MAX_REDIRECTS} redirects for {url} (request_id={request_id})")
-        raise UpstreamError(f"more than {MAX_REDIRECTS} redirects for {url}")
+        logger.warning(f"open_upstream: exceeded {MAX_REDIRECTS} redirects for {safe_url} (request_id={request_id})")
+        raise UpstreamError(f"more than {MAX_REDIRECTS} redirects for {safe_url}")
     if not response.is_success:
         status = response.status_code
         await response.aclose()
@@ -183,17 +194,18 @@ async def open_upstream(
         # dead on those erased posts permanently (R5).
         if status in (404, 410):
             logger.warning(
-                f"open_upstream: {url} returned {status}, marking dead (item_id={item_id}, request_id={request_id})"
+                f"open_upstream: {safe_url} returned {status}, marking dead "
+                f"(item_id={item_id}, request_id={request_id})"
             )
             await run_with_own_db(
-                f"mark_url_dead_and_maybe_drop for {url}",
+                f"mark_url_dead_and_maybe_drop for {safe_url}",
                 lambda db: mark_url_dead_and_maybe_drop(url, item_id, db),
             )
         else:
             logger.warning(
-                f"open_upstream: {url} returned {status}; transient, not marking dead (request_id={request_id})"
+                f"open_upstream: {safe_url} returned {status}; transient, not marking dead (request_id={request_id})"
             )
-        raise UpstreamError(f"upstream returned {status} for {url}")
+        raise UpstreamError(f"upstream returned {status} for {safe_url}")
     content_type = response.headers.get("content-type", "application/octet-stream")
     media_type = content_type.split(";")[0].strip().lower()
     # SVG starts with image/ but is an active document: served from our own
@@ -202,20 +214,20 @@ async def open_upstream(
         media_type.startswith("image/") or media_type.startswith("video/") or media_type == "application/octet-stream"
     ):
         await response.aclose()
-        logger.warning(f"open_upstream: refusing non-media content-type {content_type} for {url}")
-        raise NonMediaUpstreamError(f"upstream returned non-media content type {content_type} for {url}")
+        logger.warning(f"open_upstream: refusing non-media content-type {content_type} for {safe_url}")
+        raise NonMediaUpstreamError(f"upstream returned non-media content type {content_type} for {safe_url}")
     declared = response.headers.get("content-length", "")
     if settings.media_max_bytes and declared.isdigit() and int(declared) > settings.media_max_bytes:
         await response.aclose()
         logger.warning(
-            f"open_upstream: {url} declared {declared} bytes, over MEDIA_MAX_BYTES "
+            f"open_upstream: {safe_url} declared {declared} bytes, over MEDIA_MAX_BYTES "
             f"({settings.media_max_bytes}); refusing (request_id={request_id})"
         )
         raise UpstreamError(
-            f"upstream declared {declared} bytes for {url}, over MEDIA_MAX_BYTES ({settings.media_max_bytes})"
+            f"upstream declared {declared} bytes for {safe_url}, over MEDIA_MAX_BYTES ({settings.media_max_bytes})"
         )
     logger.debug(
-        f"open_upstream: {url} -> {response.status_code} "
+        f"open_upstream: {safe_url} -> {response.status_code} "
         f"type={response.headers.get('content-type', '?')} "
         f"length={response.headers.get('content-length', 'unknown')} "
         f"request_id={request_id}"
@@ -244,6 +256,7 @@ async def tee_to_cache(
     complete = False
     server_abort = False
     non_client_abort = False
+    safe_url = loggable(url)
     # Held for the whole transfer so the prefetcher leaves this URL alone while
     # a client is already pulling it.
     with download_claim(url):
@@ -264,12 +277,12 @@ async def tee_to_cache(
                             # letting an undeclared stream fill the volume (R7).
                             server_abort = True
                             logger.warning(
-                                f"tee_to_cache: server aborted {url} after {sent} bytes "
+                                f"tee_to_cache: server aborted {safe_url} after {sent} bytes "
                                 f"(over MEDIA_MAX_BYTES={settings.media_max_bytes}); client sees a truncated file "
                                 f"(request_id={request_id})"
                             )
                             raise UpstreamError(
-                                f"upstream body for {url} passed MEDIA_MAX_BYTES "
+                                f"upstream body for {safe_url} passed MEDIA_MAX_BYTES "
                                 f"({settings.media_max_bytes}) after {sent} bytes; aborting"
                             )
                         yield chunk
@@ -277,30 +290,30 @@ async def tee_to_cache(
                     raise
                 except Exception as exc:
                     logger.warning(
-                        f"tee_to_cache: aborted {url} after {sent} bytes: {type(exc).__name__}: {exc} "
+                        f"tee_to_cache: aborted {safe_url} after {sent} bytes: {type(exc).__name__}: {exc} "
                         f"(request_id={request_id})"
                     )
                     non_client_abort = True
                     # Wrapped so fetch_to_cache's split handler recognizes this as
                     # already-reported and does not log it a second time.
-                    raise UpstreamError(f"tee_to_cache aborted for {url}: {type(exc).__name__}: {exc}") from exc
+                    raise UpstreamError(f"tee_to_cache aborted for {safe_url}: {type(exc).__name__}: {exc}") from exc
                 complete = True
         finally:
             await response.aclose()
             if complete:
                 logger.debug(
-                    f"tee_to_cache: streamed {sent} bytes of {url} to client and cache (request_id={request_id})"
+                    f"tee_to_cache: streamed {sent} bytes of {safe_url} to client and cache (request_id={request_id})"
                 )
             elif server_abort or non_client_abort:
                 pass  # already logged at WARNING above
             else:
                 logger.debug(
-                    f"tee_to_cache: client stopped reading {url} after {sent} bytes; "
+                    f"tee_to_cache: client stopped reading {safe_url} after {sent} bytes; "
                     f"nothing cached, the prefetcher will warm it later (request_id={request_id})"
                 )
 
     await run_with_own_db(
-        f"record_media_hash for {url}",
+        f"record_media_hash for {safe_url}",
         lambda db: record_media_hash(url, digest.hexdigest(), db),
     )
 
@@ -312,23 +325,24 @@ async def fetch_to_cache(url: str, item_id: str, client: httpx.AsyncClient, requ
     prefetch hint fires on every scroll event and re-queues overlapping windows,
     and those windows overlap what the browser is fetching through the proxy.
     """
+    safe_url = loggable(url)
     with download_claim(url) as first:
         if not first:
-            logger.debug(f"fetch_to_cache: {url} already in flight, skipping (request_id={request_id})")
+            logger.debug(f"fetch_to_cache: {safe_url} already in flight, skipping (request_id={request_id})")
             return
         try:
-            logger.debug(f"fetch_to_cache: warming {url} (item_id={item_id}, request_id={request_id})")
+            logger.debug(f"fetch_to_cache: warming {safe_url} (item_id={item_id}, request_id={request_id})")
             response, content_type = await open_upstream(url, item_id, client, request_id=request_id)
             async for _ in tee_to_cache(url, response, content_type, request_id=request_id):
                 pass
-            logger.debug(f"fetch_to_cache: warmed {url} (request_id={request_id})")
+            logger.debug(f"fetch_to_cache: warmed {safe_url} (request_id={request_id})")
         except (UpstreamError, NonMediaUpstreamError) as exc:
             # Every raise site in _check_url, open_upstream and tee_to_cache warns
             # once, at the point that knows why, before raising — logging it again
             # here would double it.
-            logger.debug(f"fetch_to_cache: {url} not cached — {exc}")
+            logger.debug(f"fetch_to_cache: {safe_url} not cached — {exc}")
         except Exception as exc:
             # The only outcome signal the prefetcher has. At DEBUG a wholly broken
             # warm path was invisible at the default level while the endpoint kept
             # answering {"status": "ok"}.
-            logger.warning(f"fetch_to_cache failed for {url}: {type(exc).__name__}: {exc}", exc_info=True)
+            logger.warning(f"fetch_to_cache failed for {safe_url}: {type(exc).__name__}: {exc}", exc_info=True)

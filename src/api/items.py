@@ -8,9 +8,9 @@ from typing import Any
 import aiosqlite
 from fastapi import APIRouter, HTTPException, Query
 
-from src.api.media import _loggable
 from src.db.connection import DbDep, write_transaction
 from src.db.queries import ANCHOR_LOOKUP, INTERLEAVE_ORDER_BY, KEYSET_AFTER, RANKED_ITEMS_CTE
+from src.logging_utils import loggable
 from src.media.cache import cache_name, cache_present_names
 from src.media.normalize import item_slides, media_key
 from src.timing import timer
@@ -121,7 +121,7 @@ async def list_items(
     table: page one of the global interleave, which the client's known-set
     filter discards, leaving a cursor that never advances.
     """
-    logger.debug(f"list_items unseen={unseen} after_id={after_id} after_rn={after_rn} size={size}")
+    logger.debug(f"list_items unseen={unseen} after_id={loggable(after_id)} after_rn={after_rn} size={size}")
     conditions: list[str] = []
     params: list[str | int] = []
     if unseen:
@@ -132,16 +132,16 @@ async def list_items(
             anchor = await cur.fetchone()
         anchor_ms = anchor_elapsed()
         if anchor is None:
-            logger.info(f"list_items: 410, cursor anchor {_loggable(after_id)} no longer exists (db={anchor_ms:.1f}ms)")
+            logger.info(f"list_items: 410, cursor anchor {loggable(after_id)} no longer exists (db={anchor_ms:.1f}ms)")
             raise HTTPException(status_code=410, detail="cursor expired")
         bound_rn = anchor["rn"] if after_rn is None else min(after_rn, anchor["rn"])
         if bound_rn != anchor["rn"]:
             logger.info(
-                f"list_items: anchor {after_id} rank moved {after_rn}->{anchor['rn']}, "
+                f"list_items: anchor {loggable(after_id)} rank moved {after_rn}->{anchor['rn']}, "
                 f"paging from {bound_rn} so no undelivered row ahead of the cursor is skipped"
             )
         logger.debug(
-            f"list_items: anchor {after_id} resolved to rn={anchor['rn']} "
+            f"list_items: anchor {loggable(after_id)} resolved to rn={anchor['rn']} "
             f"feed_id={anchor['feed_id']} bound={bound_rn} (db={anchor_ms:.1f}ms)"
         )
         conditions.append(KEYSET_AFTER)
