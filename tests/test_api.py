@@ -984,6 +984,55 @@ async def test_items_cursor_survives_prune_beneath_it(client: AsyncClient, db: a
     assert [i["id"] for i in page2.json()] == ["item5", "item6", "item7", "item8"]
 
 
+async def test_items_cursor_does_not_skip_when_a_feed_gains_an_older_row(
+    client: AsyncClient, db: aiosqlite.Connection
+) -> None:
+    """rn is ROW_NUMBER recomputed per request. A row inserted into a feed that
+    sorts before the client's anchor raises the anchor's rn, so the next page
+    asks for a window past rows the client never received. The trigger is
+    routine: _parse_pub_date returns None for an undated entry and ROW_NUMBER
+    sorts NULLs first, renumbering that feed's whole partition (M2)."""
+    await _insert_feed(db, "fa", "http://a.example/feed.xml")
+    await _insert_feed(db, "fb", "http://b.example/feed.xml")
+    for feed in ("fa", "fb"):
+        for n in range(4):
+            await db.execute(
+                """INSERT INTO items(id, feed_id, guid, title, media_url, media_type, pub_date)
+                   VALUES (?, ?, ?, 'T', ?, 'image', ?)""",
+                (f"{feed}{n}", feed, f"{feed}{n}", f"http://img/{feed}{n}.jpg", f"2026-01-0{n + 1}"),
+            )
+    await db.commit()
+
+    first = await client.get("/api/items?size=3")
+    assert first.status_code == 200
+    page1 = first.json()
+    assert len(page1) == 3
+    last = page1[-1]
+    assert "rn" in last, "the client cannot send back a rank it was never given"
+
+    # An undated entry arrives in feed fa and renumbers its whole partition.
+    await db.execute(
+        """INSERT INTO items(id, feed_id, guid, title, media_url, media_type, pub_date)
+           VALUES ('fa_new', 'fa', 'fa_new', 'T', 'http://img/fa_new.jpg', 'image', NULL)"""
+    )
+    await db.commit()
+
+    second = await client.get(f"/api/items?size=8&after_id={last['id']}&after_rn={last['rn']}")
+    assert second.status_code == 200
+
+    got = {i["id"] for i in page1} | {i["id"] for i in second.json()}
+    async with db.execute("SELECT id FROM items") as cur:
+        every = {row["id"] for row in await cur.fetchall()}
+    # fa_new itself now ranks rn=1 in feed fa — below fa0, which was already
+    # delivered in page1 at the old rn=1. No forward cursor bounded by the last
+    # item's own rank can reach a row that ranks before content already shown;
+    # that would need a fresh page-1 load, not a page turn. What M2 promises is
+    # that a row which already existed and was merely displaced (fb1, whose rn
+    # the fa-partition insert never touched) is not skipped.
+    missing = every - got - {"fa_new"}
+    assert not missing, f"the cursor skipped {missing}"
+
+
 async def test_proxy_cache_hit_evicted_before_send_refetches(
     client: AsyncClient,
     tmp_path: Path,
@@ -1206,11 +1255,12 @@ async def test_proxy_rejects_unknown_url(client: AsyncClient, tmp_path: object, 
     assert resp.json()["detail"] == "not a known media url"
 
 
-async def test_items_response_omits_rn(client: AsyncClient, db: aiosqlite.Connection) -> None:
+async def test_items_response_includes_rn(client: AsyncClient, db: aiosqlite.Connection) -> None:
+    """rn must reach the client so it can be sent back as after_rn (M2)."""
     await _insert_feed(db)
     await _insert_item(db, "item1", "feed1")
     data = (await client.get("/api/items")).json()
-    assert data and "rn" not in data[0]
+    assert data and "rn" in data[0]
 
 
 async def test_list_items_logs_db_duration(

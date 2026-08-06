@@ -28,9 +28,10 @@ _write_lock = asyncio.Lock()
 def _row_to_item(row: aiosqlite.Row, cached_names: set[str]) -> dict[str, Any]:
     """Convert an items row to the API shape, expanding media_json to `media`.
 
-    Rows predating migration v5 have media_json NULL; they fall back to a
-    1-element list built from media_url/media_type so the frontend always
-    receives a `media` array.
+    `rn` is returned so the client can send it back as after_rn. It was removed
+    once as a dead column; it is not dead, and deleting it re-arms M2 — the
+    cursor silently skipping items when a feed gains a row that ranks before
+    the anchor.
 
     `cached` tells the browser which items are already on disk so it can
     download those first — they decode in milliseconds, while a miss waits on
@@ -51,6 +52,7 @@ def _row_to_item(row: aiosqlite.Row, cached_names: set[str]) -> dict[str, Any]:
 async def list_items(
     unseen: bool = False,
     after_id: str | None = None,
+    after_rn: int | None = None,
     size: int = Query(50, ge=1, le=200),
     *,
     db: DbDep,
@@ -68,8 +70,10 @@ async def list_items(
     and the client would skip exactly as many items as were pruned beneath it
     (R3). Instead the anchor's (rn, feed_id, id) is looked up in the same CTE
     that orders this page, which is what src/media/prefetch.py does with the
-    same cursor — the two sides of the interleave contract now use one
-    derivation rather than two.
+    same fragments (src/db/queries.py). The fragments are shared; the window is
+    not — the prefetcher resolves its own anchor from the item id it was
+    handed, so after a refresh it can warm a window a few rows off the one this
+    page serves. That is a hint, not a contract.
 
     Reading rn from the window rather than reconstructing it by counting is
     what makes a NULL pub_date harmless: ROW_NUMBER sorts NULLs first and ranks
@@ -80,15 +84,19 @@ async def list_items(
     counting over ceases to be a prefix of the server's ranking the moment any
     item changes seen state (F17).
 
-    Limitation: a newly inserted item with an older pub_date shifts its feed's
-    rn values and can invalidate an outstanding cursor. Two statements rather
-    than one widens that to a window *inside* the request — the anchor's rank is
-    read before the page is — so a feed refresh landing in between can shift it.
-    Rare in practice (new feed entries vs. per-scroll mark-seen), and the
-    client's known-set guard dedups the duplicate side. Collapsing to one
-    statement would close the window but costs the 410 below: a missing anchor
-    would become an empty page instead, with no signal to the client and no log
-    line.
+    The cursor carries the rank it was issued alongside the id, and the page is
+    bounded by min(issued, resolved). rn is recomputed per request, so it moves
+    under an outstanding cursor in both directions: a prune lowers it, and a row
+    inserted with an older pub_date raises it. Taking the lower bound turns the
+    raise — which used to skip every undelivered row between the two ranks —
+    into duplicates the client's known-set guard already drops. The volume is
+    bounded at k+1 for k rows inserted before the anchor: the anchor itself plus
+    the rows in that feed pushed above the old bound. Other feeds contribute
+    none, because the tiebreak is (rn, feed_id, id) and their same-rank rows
+    were never delivered under the old numbering either.
+
+    after_rn is optional so a page cached in a browser from before this change
+    degrades to the old behaviour instead of 422-ing.
 
     An anchor that no longer exists — pruned, or its feed left the OPML and the
     rows cascaded — answers 410. Resolving it to a position instead is what
@@ -96,20 +104,31 @@ async def list_items(
     table: page one of the global interleave, which the client's known-set
     filter discards, leaving a cursor that never advances.
     """
+    logger.debug(f"list_items unseen={unseen} after_id={after_id} after_rn={after_rn} size={size}")
     conditions: list[str] = []
     params: list[str | int] = []
     if unseen:
         conditions.append("seen_at IS NULL")
     if after_id is not None:
-        # Same CTE, same partition, same tiebreak as the page query below.
+        anchor_elapsed = timer()
         async with db.execute(ANCHOR_LOOKUP, (after_id,)) as cur:
             anchor = await cur.fetchone()
+        anchor_ms = anchor_elapsed()
         if anchor is None:
-            logger.info(f"list_items: 410, cursor anchor {after_id} no longer exists")
+            logger.info(f"list_items: 410, cursor anchor {after_id} no longer exists (db={anchor_ms:.1f}ms)")
             raise HTTPException(status_code=410, detail="cursor expired")
-        logger.debug(f"list_items: anchor {after_id} resolved to rn={anchor['rn']} feed_id={anchor['feed_id']}")
+        bound_rn = anchor["rn"] if after_rn is None else min(after_rn, anchor["rn"])
+        if bound_rn != anchor["rn"]:
+            logger.info(
+                f"list_items: anchor {after_id} rank moved {after_rn}->{anchor['rn']}, "
+                f"paging from {bound_rn} so nothing is skipped"
+            )
+        logger.debug(
+            f"list_items: anchor {after_id} resolved to rn={anchor['rn']} "
+            f"feed_id={anchor['feed_id']} bound={bound_rn} (db={anchor_ms:.1f}ms)"
+        )
         conditions.append(KEYSET_AFTER)
-        params.extend([anchor["rn"], anchor["feed_id"], anchor["id"]])
+        params.extend([bound_rn, anchor["feed_id"], anchor["id"]])
     where_clause = ("WHERE " + " AND ".join(conditions)) if conditions else ""
     params.append(size)
 
@@ -117,13 +136,12 @@ async def list_items(
     query = f"""
         {RANKED_ITEMS_CTE}
         SELECT id, feed_id, title, media_url, media_type, media_json,
-               pub_date, fetched_at, seen_at
+               pub_date, fetched_at, seen_at, rn
         FROM ranked
         {where_clause}
         {INTERLEAVE_ORDER_BY}
         LIMIT ?
     """  # noqa: S608
-    logger.debug(f"list_items unseen={unseen} after_id={after_id} size={size}")
     db_elapsed = timer()
     async with db.execute(query, params) as cur:
         rows = await cur.fetchall()
