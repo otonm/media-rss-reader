@@ -24,6 +24,7 @@ from pathlib import Path
 import aiosqlite
 
 from src.config import settings
+from src.logging_utils import loggable
 from src.media.cache import cache_read
 
 logger = logging.getLogger(__name__)
@@ -76,7 +77,7 @@ async def _compute_phash(url: str) -> str | None:
     try:
         bits = await asyncio.to_thread(_phash, path)
     except Exception as exc:
-        logger.debug(f"_compute_phash: no perceptual hash for {url}: {exc}")
+        logger.debug(f"_compute_phash: no perceptual hash for {loggable(url)}: {exc}")
         return None
     return f"{bits:0{PHASH_BITS // 4}x}"
 
@@ -97,7 +98,7 @@ async def _similar_urls(db: aiosqlite.Connection, url: str, phash: str) -> list[
     for row in rows:
         distance = (bits ^ int(row["phash"], 16)).bit_count()
         if (PHASH_BITS - distance) * 100 // PHASH_BITS > settings.dedup_similarity:
-            logger.debug(f"_similar_urls: {url} within {distance} bits of {row['url']}")
+            logger.debug(f"_similar_urls: {loggable(url)} within {distance} bits of {loggable(row['url'])}")
             matches.append(row["url"])
     return matches
 
@@ -160,16 +161,16 @@ async def record_media_hash(url: str, digest: str, db: aiosqlite.Connection) -> 
     ) as cur:
         twins = [row["url"] for row in await cur.fetchall()]
 
-    reason = f"identical bytes to {twins[0]}" if twins else ""
+    reason = f"identical bytes to {loggable(twins[0])}" if twins else ""
     if not twins and phash is not None:
         twins = await _similar_urls(db, url, phash)
-        reason = f"visually identical to {twins[0]}" if twins else ""
+        reason = f"visually identical to {loggable(twins[0])}" if twins else ""
 
     if not twins:
         await db.commit()
         return None
 
-    logger.debug(f"record_media_hash: {url} duplicates {len(twins)} other url(s)")
+    logger.debug(f"record_media_hash: {loggable(url)} duplicates {len(twins)} other url(s)")
     row = await _newer_item_for_url(db, url, twins)
     if row is None:
         await db.commit()

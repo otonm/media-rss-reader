@@ -157,9 +157,13 @@ async def open_upstream(
     # Escaped once here, same reasoning as _check_url's safe_url: this also
     # feeds UpstreamError/NonMediaUpstreamError messages and run_with_own_db's
     # label, both of which resurface in log lines this function does not own.
+    # item_id is the same unbounded Query(None) value url is — proxy_media
+    # passes both straight through from the query string.
     safe_url = loggable(url)
+    safe_item_id = loggable(item_id)
     logger.debug(
-        f"open_upstream: GET {safe_url} (item_id={item_id}, timeout={UPSTREAM_TIMEOUT_S}s, request_id={request_id})"
+        f"open_upstream: GET {safe_url} (item_id={safe_item_id}, timeout={UPSTREAM_TIMEOUT_S}s, "
+        f"request_id={request_id})"
     )
     logical = url
     for _ in range(MAX_REDIRECTS + 1):
@@ -195,7 +199,7 @@ async def open_upstream(
         if status in (404, 410):
             logger.warning(
                 f"open_upstream: {safe_url} returned {status}, marking dead "
-                f"(item_id={item_id}, request_id={request_id})"
+                f"(item_id={safe_item_id}, request_id={request_id})"
             )
             await run_with_own_db(
                 f"mark_url_dead_and_maybe_drop for {safe_url}",
@@ -331,7 +335,7 @@ async def fetch_to_cache(url: str, item_id: str, client: httpx.AsyncClient, requ
             logger.debug(f"fetch_to_cache: {safe_url} already in flight, skipping (request_id={request_id})")
             return
         try:
-            logger.debug(f"fetch_to_cache: warming {safe_url} (item_id={item_id}, request_id={request_id})")
+            logger.debug(f"fetch_to_cache: warming {safe_url} (item_id={loggable(item_id)}, request_id={request_id})")
             response, content_type = await open_upstream(url, item_id, client, request_id=request_id)
             async for _ in tee_to_cache(url, response, content_type, request_id=request_id):
                 pass

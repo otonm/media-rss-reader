@@ -1374,6 +1374,48 @@ async def test_a_logged_url_is_escaped_past_the_gate_too(
         assert len(record.message) < 600, f"{record.name}: unbounded value reached a log record"
 
 
+async def test_item_id_is_escaped_through_open_upstream_and_mark_dead(
+    client: AsyncClient,
+    db: aiosqlite.Connection,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    mock_http: respx.MockRouter,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """The two escaping tests above only ever inject a malicious url — item_id
+    reached open_upstream's GET line and its "marking dead" warning raw, and
+    mark_url_dead_and_maybe_drop (src/media/availability.py) logged both url
+    and item_id raw through a lambda that closed over the unescaped originals
+    (review round 3's two Criticals).
+
+    A 404 response drives the request through open_upstream's mark-dead
+    branch into mark_url_dead_and_maybe_drop, so both fetch.py's item_id
+    sites and availability.py's site are exercised by one request.
+    """
+    from src.config import settings
+
+    monkeypatch.setattr(settings, "cache_dir", str(tmp_path))
+    url = "http://example.com/dead.jpg"
+    item_id = "i1\nFAKE LOG LINE" + "y" * 500
+    await _insert_feed(db, "f1")
+    await db.execute(
+        "INSERT INTO items(id, feed_id, guid, media_url, media_type) VALUES ('i1','f1','g1',?,'image')", (url,)
+    )
+    await db.commit()
+    mock_http.get(_pinned(url)).mock(return_value=httpx.Response(404))
+
+    caplog.set_level(logging.DEBUG, logger="src")
+    resp = await client.get("/api/media/proxy", params={"url": url, "item_id": item_id})
+
+    assert resp.status_code == 502
+    assert any("marking dead" in r.message for r in caplog.records), "must reach open_upstream's mark-dead branch"
+    assert any("mark_url_dead_and_maybe_drop: recording dead" in r.message for r in caplog.records), (
+        "must reach mark_url_dead_and_maybe_drop itself, not just its label"
+    )
+    for record in caplog.records:
+        assert "\nFAKE" not in record.message, f"{record.name}: raw newline reached a log record"
+
+
 async def test_proxy_serves_a_gallery_slide_with_a_non_ascii_url(
     client: AsyncClient,
     db: aiosqlite.Connection,

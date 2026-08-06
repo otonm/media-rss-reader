@@ -15,6 +15,7 @@ import logging
 
 import aiosqlite
 
+from src.logging_utils import loggable
 from src.media.normalize import item_slides
 
 logger = logging.getLogger(__name__)
@@ -109,7 +110,7 @@ async def mark_url_dead_and_maybe_drop(url: str, item_id: str | None, db: aiosql
     """Record `url` as dead. For every item that contains it, if every URL
     of that item is now dead, DELETE the row and tombstone it. Returns the
     IDs of items dropped by this call."""
-    logger.debug(f"mark_url_dead_and_maybe_drop: recording dead url={url} item_id={item_id}")
+    logger.debug(f"mark_url_dead_and_maybe_drop: recording dead url={loggable(url)} item_id={loggable(item_id)}")
     await db.execute("INSERT OR IGNORE INTO dead_urls (url) VALUES (?)", (url,))
 
     candidates = await _candidate_items(db, url, item_id)
