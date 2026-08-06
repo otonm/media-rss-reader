@@ -49,6 +49,9 @@ def _log_outcome(reachable: bool, message: str, *, exc_info: bool = False) -> No
 async def reddit_feeds_status(client: StatusDep) -> Response:
     """Proxy the companion service's /status, or 502 with the reason.
 
+    The parse below is a validity check only — an HTML login page from a
+    reverse proxy must not reach the browser as application/json.
+
     The companion is optional: many deployments do not run it, and the status
     modal polls at 1 Hz while it is open. Its absence is logged as recoverable.
     """

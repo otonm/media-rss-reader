@@ -223,3 +223,6 @@ def test_openapi_describes_the_response_bodies() -> None:
     schema = app.openapi()
     items = schema["paths"]["/api/items"]["get"]["responses"]["200"]
     assert "content" in items, "the page's response body is undocumented"
+    schema_obj = items["content"]["application/json"]["schema"]
+    assert schema_obj != {}, "the response schema must be populated, not empty"
+    assert schema_obj.get("type") == "array", "the response should describe an array"
