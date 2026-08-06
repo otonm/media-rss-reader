@@ -29,13 +29,6 @@ class _State:
 _state = _State()
 
 
-def get_http_client() -> httpx.AsyncClient:
-    """Return the shared HTTP client. Raises if called before start_scheduler()."""
-    if _state.client is None:
-        raise RuntimeError("HTTP client not initialised — call start_scheduler first")
-    return _state.client
-
-
 async def _opml_sync_loop(db: aiosqlite.Connection, client: httpx.AsyncClient) -> None:
     logger.debug(f"OPML sync loop started (interval={settings.opml_sync_interval}s)")
     while _state.running:

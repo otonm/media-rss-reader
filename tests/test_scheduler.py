@@ -1,8 +1,6 @@
 from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock, patch
 
-import pytest
-
 import src.scheduler as sched_mod
 from src.db.connection import open_db
 from src.db.migrations import run_migrations
@@ -20,11 +18,10 @@ async def test_start_and_stop_scheduler(tmp_path: Path) -> None:
 
     with patch.object(sched_mod.settings, "opml_path", str(opml_file)):
         await sched_mod.start_scheduler(conn)
-        assert sched_mod.get_http_client() is not None
+        assert sched_mod._state.client is not None
         await sched_mod.stop_scheduler()
 
-    with pytest.raises(RuntimeError):
-        sched_mod.get_http_client()
+    assert sched_mod._state.client is None
 
     await conn.close()
 

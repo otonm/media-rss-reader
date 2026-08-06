@@ -21,6 +21,7 @@ from src.api import reddit_feeds as reddit_feeds_router
 from src.db.connection import get_db, open_db
 from src.db.migrations import run_migrations
 from src.db.schema import create_schema
+from src.http_client import get_http, get_status_http
 
 
 @pytest.fixture
@@ -53,7 +54,19 @@ def mock_http() -> respx.MockRouter:
 
 
 @pytest.fixture
-async def client(db: aiosqlite.Connection) -> AsyncGenerator[HttpxAsyncClient]:
+async def http_client() -> AsyncGenerator[HttpxAsyncClient]:
+    """The client the routes receive, in place of app.state.http.
+
+    One override replaces the monkeypatch-per-call-site the scheduler global
+    used to need. respx's MockRouter intercepts this client's transport like
+    any other, so `mock_http` still works unchanged.
+    """
+    async with HttpxAsyncClient() as c:
+        yield c
+
+
+@pytest.fixture
+async def client(db: aiosqlite.Connection, http_client: HttpxAsyncClient) -> AsyncGenerator[HttpxAsyncClient]:
     test_app = FastAPI()
     test_app.add_middleware(RequestIDMiddleware)
     test_app.include_router(feeds_router.router, prefix="/api")
@@ -64,7 +77,12 @@ async def client(db: aiosqlite.Connection) -> AsyncGenerator[HttpxAsyncClient]:
     async def _override_db() -> aiosqlite.Connection:
         return db
 
+    async def _override_http() -> HttpxAsyncClient:
+        return http_client
+
     test_app.dependency_overrides[get_db] = _override_db
+    test_app.dependency_overrides[get_http] = _override_http
+    test_app.dependency_overrides[get_status_http] = _override_http
 
     async with HttpxAsyncClient(transport=ASGITransport(app=test_app), base_url="http://test") as c:
         yield c

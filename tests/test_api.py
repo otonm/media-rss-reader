@@ -540,10 +540,7 @@ async def test_proxy_cache_miss(
         respx.get(_pinned(url)).mock(
             return_value=httpx.Response(200, content=b"freshdata", headers={"content-type": "image/jpeg"})
         )
-        real_client = httpx.AsyncClient()
-        monkeypatch.setattr("src.api.media.get_http_client", lambda: real_client)
         resp = await client.get(f"/api/media/proxy?url={url}")
-        await real_client.aclose()
 
     assert resp.status_code == 200
     assert resp.content == b"freshdata"
@@ -575,10 +572,7 @@ async def test_proxy_rejects_html_upstream(
         respx.get(_pinned(url)).mock(
             return_value=httpx.Response(200, content=b"<html/>", headers={"content-type": "text/html"})
         )
-        real_client = httpx.AsyncClient()
-        monkeypatch.setattr("src.api.media.get_http_client", lambda: real_client)
         resp = await client.get(f"/api/media/proxy?url={url}")
-        await real_client.aclose()
     assert resp.status_code == 502
 
 
@@ -600,10 +594,7 @@ async def test_proxy_image_passes_with_nosniff(
         respx.get(_pinned(url)).mock(
             return_value=httpx.Response(200, content=b"jpgdata", headers={"content-type": "image/jpeg"})
         )
-        real_client = httpx.AsyncClient()
-        monkeypatch.setattr("src.api.media.get_http_client", lambda: real_client)
         resp = await client.get(f"/api/media/proxy?url={url}")
-        await real_client.aclose()
     assert resp.status_code == 200
     assert resp.headers["content-type"].startswith("image/jpeg")
 
@@ -627,10 +618,7 @@ async def test_proxy_octet_stream_upstream_passes(
         respx.get(_pinned(url)).mock(
             return_value=httpx.Response(200, content=b"jpgdata", headers={"content-type": "application/octet-stream"})
         )
-        real_client = httpx.AsyncClient()
-        monkeypatch.setattr("src.api.media.get_http_client", lambda: real_client)
         resp = await client.get(f"/api/media/proxy?url={url}")
-        await real_client.aclose()
     assert resp.status_code == 200
     assert resp.headers["content-type"].startswith("application/octet-stream")
 
@@ -666,10 +654,7 @@ async def test_proxy_404_marks_item_unavailable(
 
     with respx.mock:
         respx.get(_pinned(url)).mock(return_value=httpx.Response(404))
-        real_client = httpx.AsyncClient()
-        monkeypatch.setattr("src.api.media.get_http_client", lambda: real_client)
         resp = await client.get(f"/api/media/proxy?url={url}&item_id={item_id}")
-        await real_client.aclose()
 
     assert resp.status_code == 502
     async with db.execute("SELECT url FROM dead_urls") as cur:
@@ -702,10 +687,7 @@ async def test_proxy_404_without_item_id_still_returns_502(
 
     with respx.mock:
         respx.get(_pinned(url)).mock(return_value=httpx.Response(404))
-        real_client = httpx.AsyncClient()
-        monkeypatch.setattr("src.api.media.get_http_client", lambda: real_client)
         resp = await client.get(f"/api/media/proxy?url={url}")
-        await real_client.aclose()
 
     assert resp.status_code == 502
     async with db.execute("SELECT url FROM dead_urls") as cur:
@@ -718,11 +700,7 @@ async def test_proxy_404_without_item_id_still_returns_502(
 # ---------------------------------------------------------------------------
 
 
-async def test_prefetch_hint(client: AsyncClient, db: aiosqlite.Connection, monkeypatch: object) -> None:
-    import httpx
-
-    import src.api.media as media_mod
-
+async def test_prefetch_hint(client: AsyncClient, db: aiosqlite.Connection) -> None:
     await db.execute("INSERT INTO feeds(id, url, title) VALUES ('f1', 'http://x.com/feed', 'F')")
     await db.execute(
         "INSERT INTO items(id, feed_id, guid, title, media_url, media_type, pub_date) "
@@ -730,7 +708,6 @@ async def test_prefetch_hint(client: AsyncClient, db: aiosqlite.Connection, monk
     )
     await db.commit()
 
-    monkeypatch.setattr(media_mod, "get_http_client", lambda: httpx.AsyncClient())
     resp = await client.post("/api/prefetch/hint", json={"item_id": "i1"})
     assert resp.status_code == 200
     assert resp.json() == {"status": "ok"}
@@ -748,11 +725,8 @@ async def test_prefetch_hint_rejects_absent_or_empty_item_id(client: AsyncClient
         assert isinstance(resp.json()["detail"], list), body
 
 
-async def test_prefetch_hint_unknown_item_404(
-    client: AsyncClient, db: aiosqlite.Connection, monkeypatch: pytest.MonkeyPatch
-) -> None:
+async def test_prefetch_hint_unknown_item_404(client: AsyncClient, db: aiosqlite.Connection) -> None:
     """F16: a typo'd item_id must be 404, not indistinguishable from ok."""
-    monkeypatch.setattr("src.api.media.get_http_client", lambda: httpx.AsyncClient())
     resp = await client.post("/api/prefetch/hint", json={"item_id": "nonexistent"})
     assert resp.status_code == 404
 
@@ -780,9 +754,7 @@ async def test_prefetch_hint_rejects_bad_body(
 # ---------------------------------------------------------------------------
 
 
-async def test_reddit_feeds_status_success(
-    client: AsyncClient, mock_http: respx.MockRouter, monkeypatch: pytest.MonkeyPatch
-) -> None:
+async def test_reddit_feeds_status_success(client: AsyncClient, mock_http: respx.MockRouter) -> None:
     upstream_json = {
         "feeds": [
             {
@@ -796,16 +768,13 @@ async def test_reddit_feeds_status_success(
         "last_run": "2026-07-27T14:02:05.654321+00:00",
     }
     mock_http.get("http://127.0.0.1:9090/status").mock(return_value=httpx.Response(200, json=upstream_json))
-    real_client = httpx.AsyncClient()
-    monkeypatch.setattr("src.api.reddit_feeds.get_http_client", lambda: real_client)
     resp = await client.get("/api/reddit-feeds/status")
-    await real_client.aclose()
     assert resp.status_code == 200
     assert resp.json() == upstream_json
 
 
-async def test_reddit_feeds_status_unreachable(client: AsyncClient, monkeypatch: pytest.MonkeyPatch) -> None:
-    import src.api.reddit_feeds as rf_mod
+async def test_reddit_feeds_status_unreachable(client: AsyncClient) -> None:
+    from src.http_client import get_status_http
 
     fake_client = httpx.AsyncClient()
 
@@ -813,27 +782,22 @@ async def test_reddit_feeds_status_unreachable(client: AsyncClient, monkeypatch:
         raise httpx.ConnectError("Connection refused")
 
     fake_client.get = fake_get  # type: ignore[method-assign]
-    monkeypatch.setattr(rf_mod, "get_http_client", lambda: fake_client)
+    client._transport.app.dependency_overrides[get_status_http] = lambda: fake_client
 
     resp = await client.get("/api/reddit-feeds/status")
+    await fake_client.aclose()
     assert resp.status_code == 502
 
 
-async def test_reddit_feeds_status_upstream_error(
-    client: AsyncClient, mock_http: respx.MockRouter, monkeypatch: pytest.MonkeyPatch
-) -> None:
+async def test_reddit_feeds_status_upstream_error(client: AsyncClient, mock_http: respx.MockRouter) -> None:
     mock_http.get("http://127.0.0.1:9090/status").mock(return_value=httpx.Response(500))
-    real_client = httpx.AsyncClient()
-    monkeypatch.setattr("src.api.reddit_feeds.get_http_client", lambda: real_client)
     resp = await client.get("/api/reddit-feeds/status")
-    await real_client.aclose()
     assert resp.status_code == 502
 
 
 async def test_reddit_feeds_status_redirects_become_502(
     client: AsyncClient,
     mock_http: respx.MockRouter,
-    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """Task 6: a 301 from the upstream must surface as 502 — the trusted URL
     must not be silently rewritten by an attacker-controlled Location header.
@@ -842,40 +806,29 @@ async def test_reddit_feeds_status_redirects_become_502(
     mock_http.get("http://127.0.0.1:9090/status").mock(
         return_value=httpx.Response(301, headers={"location": "http://127.0.0.1:9090/v2/status"})
     )
-    real_client = httpx.AsyncClient()
-    monkeypatch.setattr("src.api.reddit_feeds.get_http_client", lambda: real_client)
     resp = await client.get("/api/reddit-feeds/status")
-    await real_client.aclose()
     assert resp.status_code == 502
 
 
 async def test_reddit_feeds_status_401_maps_to_502(
     client: AsyncClient,
     mock_http: respx.MockRouter,
-    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """F10: upstream 401 must not read as a failure of OUR session."""
     mock_http.get("http://127.0.0.1:9090/status").mock(return_value=httpx.Response(401))
-    real_client = httpx.AsyncClient()
-    monkeypatch.setattr("src.api.reddit_feeds.get_http_client", lambda: real_client)
     resp = await client.get("/api/reddit-feeds/status")
-    await real_client.aclose()
     assert resp.status_code == 502
 
 
 async def test_reddit_feeds_status_non_json_body(
     client: AsyncClient,
     mock_http: respx.MockRouter,
-    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """F10: a 200 with a non-JSON body must 502, not 500 with JSONDecodeError."""
     mock_http.get("http://127.0.0.1:9090/status").mock(
         return_value=httpx.Response(200, content=b"not json", headers={"content-type": "text/plain"})
     )
-    real_client = httpx.AsyncClient()
-    monkeypatch.setattr("src.api.reddit_feeds.get_http_client", lambda: real_client)
     resp = await client.get("/api/reddit-feeds/status")
-    await real_client.aclose()
     assert resp.status_code == 502
 
 
@@ -1062,10 +1015,7 @@ async def test_proxy_cache_hit_evicted_before_send_refetches(
     mock_http.get(_pinned(url)).mock(
         return_value=httpx.Response(200, content=b"refetched", headers={"content-type": "image/jpeg"})
     )
-    real_client = httpx.AsyncClient()
-    monkeypatch.setattr("src.api.media.get_http_client", lambda: real_client)
     resp = await client.get(f"/api/media/proxy?url={url}")
-    await real_client.aclose()
 
     assert resp.status_code == 200
     assert resp.content == b"refetched"
@@ -1089,12 +1039,9 @@ async def test_proxy_upstream_error_logged_at_warning(
     url = "http://example.com/gone.jpg"
     await _register_proxy_url(db, url)
     mock_http.get(_pinned(url)).mock(return_value=httpx.Response(404))
-    real_client = httpx.AsyncClient()
-    monkeypatch.setattr("src.api.media.get_http_client", lambda: real_client)
 
     with caplog.at_level(logging.WARNING, logger="src.api.media"):
         resp = await client.get(f"/api/media/proxy?url={url}&item_id=i1")
-    await real_client.aclose()
 
     assert resp.status_code == 502
     assert any("i1" in m and url in m for m in caplog.messages)
@@ -1103,7 +1050,6 @@ async def test_proxy_upstream_error_logged_at_warning(
 async def test_prefetch_hint_logs_entry_and_queue_size(
     client: AsyncClient,
     db: aiosqlite.Connection,
-    monkeypatch: pytest.MonkeyPatch,
     caplog: pytest.LogCaptureFixture,
 ) -> None:
     """R9: the endpoint logged nothing on any path, and the client discards the
@@ -1115,7 +1061,6 @@ async def test_prefetch_hint_logs_entry_and_queue_size(
            VALUES ('i1', 'f1', 'g1', 'T', 'http://example.com/1.jpg', 'image', '2026-01-01T00:00:00')"""
     )
     await db.commit()
-    monkeypatch.setattr("src.api.media.get_http_client", lambda: httpx.AsyncClient())
 
     with caplog.at_level(logging.DEBUG, logger="src.api.media"):
         resp = await client.post("/api/prefetch/hint", json={"item_id": "i1"})
@@ -1125,31 +1070,21 @@ async def test_prefetch_hint_logs_entry_and_queue_size(
     assert any("queued" in m for m in caplog.messages)
 
 
-async def test_reddit_feeds_status_passes_through_json_array(
-    client: AsyncClient, mock_http: respx.MockRouter, monkeypatch: pytest.MonkeyPatch
-) -> None:
+async def test_reddit_feeds_status_passes_through_json_array(client: AsyncClient, mock_http: respx.MockRouter) -> None:
     """R4: FastAPI derives a response model from the `-> dict` annotation and
     validates after the handler returns, outside the try. A companion answering
     200 with [] became a 500 — the opposite of dadd0d6's whole purpose."""
     mock_http.get("http://127.0.0.1:9090/status").mock(return_value=httpx.Response(200, json=[]))
-    real_client = httpx.AsyncClient()
-    monkeypatch.setattr("src.api.reddit_feeds.get_http_client", lambda: real_client)
     resp = await client.get("/api/reddit-feeds/status")
-    await real_client.aclose()
 
     assert resp.status_code == 200
     assert resp.json() == []
 
 
-async def test_reddit_feeds_status_non_200_success_is_not_502(
-    client: AsyncClient, mock_http: respx.MockRouter, monkeypatch: pytest.MonkeyPatch
-) -> None:
+async def test_reddit_feeds_status_non_200_success_is_not_502(client: AsyncClient, mock_http: respx.MockRouter) -> None:
     """A 202 from the companion is a success, not an error."""
     mock_http.get("http://127.0.0.1:9090/status").mock(return_value=httpx.Response(202, json={"ok": True}))
-    real_client = httpx.AsyncClient()
-    monkeypatch.setattr("src.api.reddit_feeds.get_http_client", lambda: real_client)
     resp = await client.get("/api/reddit-feeds/status")
-    await real_client.aclose()
 
     assert resp.status_code == 200
     assert resp.json() == {"ok": True}
@@ -1158,18 +1093,14 @@ async def test_reddit_feeds_status_non_200_success_is_not_502(
 async def test_reddit_feeds_status_logs_the_exception(
     client: AsyncClient,
     mock_http: respx.MockRouter,
-    monkeypatch: pytest.MonkeyPatch,
     caplog: pytest.LogCaptureFixture,
 ) -> None:
     """R11: httpx timeouts frequently stringify to empty, degrading the line to
     'reddit_feeds_status unreachable:' with no exception type and no traceback."""
     mock_http.get("http://127.0.0.1:9090/status").mock(side_effect=httpx.ConnectTimeout(""))
-    real_client = httpx.AsyncClient()
-    monkeypatch.setattr("src.api.reddit_feeds.get_http_client", lambda: real_client)
 
     with caplog.at_level(logging.WARNING, logger="src.api.reddit_feeds"):
         resp = await client.get("/api/reddit-feeds/status")
-    await real_client.aclose()
 
     assert resp.status_code == 502
     record = next(r for r in caplog.records if r.name == "src.api.reddit_feeds")
@@ -1218,10 +1149,7 @@ async def test_proxy_cache_miss_ignores_range(
     mock_http.get(_pinned(url)).mock(
         return_value=httpx.Response(200, content=b"0123456789", headers={"content-type": "video/mp4"})
     )
-    real_client = httpx.AsyncClient()
-    monkeypatch.setattr("src.api.media.get_http_client", lambda: real_client)
     resp = await client.get(f"/api/media/proxy?url={url}", headers={"Range": "bytes=2-5"})
-    await real_client.aclose()
 
     assert resp.status_code == 200
     assert resp.content == b"0123456789"
@@ -1293,10 +1221,7 @@ async def test_proxy_eviction_fallthrough_refetches(
         respx.get(fetch_mod._pinned_url(url, "93.184.216.34")).mock(
             return_value=httpx.Response(200, content=b"refetched", headers={"content-type": "image/jpeg"})
         )
-        real = httpx.AsyncClient()
-        monkeypatch.setattr("src.api.media.get_http_client", lambda: real)
         resp = await client.get(f"/api/media/proxy?url={url}")
-        await real.aclose()
 
     assert resp.status_code == 200
     assert resp.content == b"refetched"
@@ -1319,11 +1244,8 @@ async def test_proxy_exception_uses_logger_exception(
     await db.commit()
     with respx.mock:
         respx.get(fetch_mod._pinned_url(url, "93.184.216.34")).mock(side_effect=httpx.ConnectError("boom"))
-        real = httpx.AsyncClient()
-        monkeypatch.setattr("src.api.media.get_http_client", lambda: real)
         caplog.set_level(logging.WARNING, logger="src.api.media")
         await client.get(f"/api/media/proxy?url={url}")
-        await real.aclose()
     assert any(r.levelno >= logging.WARNING and r.exc_info for r in caplog.records), (
         "the generic except must use logger.exception (exc_info set)"
     )
@@ -1364,10 +1286,7 @@ async def test_proxy_upstream_error_detail(
     await db.commit()
     with respx.mock:
         respx.get(fetch_mod._pinned_url(url, "93.184.216.34")).mock(return_value=httpx.Response(404))
-        real = httpx.AsyncClient()
-        monkeypatch.setattr("src.api.media.get_http_client", lambda: real)
         resp = await client.get(f"/api/media/proxy?url={url}")
-        await real.aclose()
     assert resp.status_code == 502
     assert resp.json()["detail"] == "upstream error"
 
@@ -1388,10 +1307,7 @@ async def test_proxy_transport_error_detail(
     await db.commit()
     with respx.mock:
         respx.get(fetch_mod._pinned_url(url, "93.184.216.34")).mock(side_effect=httpx.ConnectError("boom"))
-        real = httpx.AsyncClient()
-        monkeypatch.setattr("src.api.media.get_http_client", lambda: real)
         resp = await client.get(f"/api/media/proxy?url={url}")
-        await real.aclose()
     assert resp.status_code == 502
     assert resp.json()["detail"] == "upstream fetch failed"
 
@@ -1425,8 +1341,6 @@ async def test_prefetch_hint_warms_cache(
         respx.get(fetch_mod._pinned_url(url, "93.184.216.34")).mock(
             return_value=httpx.Response(200, content=b"jpg", headers={"content-type": "image/jpeg"})
         )
-        real = httpx.AsyncClient()
-        monkeypatch.setattr("src.api.media.get_http_client", lambda: real)
         resp = await client.post("/api/prefetch/hint", json={"item_id": "item1", "unseen": True})
         assert resp.status_code == 200
         from src.media import prefetch as _pf
@@ -1434,7 +1348,6 @@ async def test_prefetch_hint_warms_cache(
         bg = getattr(_pf, "_bg_tasks", None) or getattr(_pf, "_tasks", None) or getattr(_pf, "background_tasks", None)
         if bg:
             await asyncio.gather(*list(bg), return_exceptions=True)
-        await real.aclose()
     from src.media.cache import cache_read
 
     assert cache_read(url) is not None, "prefetch_hint must actually warm the cache"
@@ -1488,10 +1401,7 @@ async def test_proxy_non_media_content_type_is_not_an_error_log(
         respx.get(fetch_mod._pinned_url(url, "93.184.216.34")).mock(
             return_value=httpx.Response(200, content=b"<html>go away</html>", headers={"content-type": "text/html"})
         )
-        real = httpx.AsyncClient()
-        monkeypatch.setattr("src.api.media.get_http_client", lambda: real)
         resp = await client.get(f"/api/media/proxy?url={url}")
-        await real.aclose()
 
     assert resp.status_code == 502
     assert resp.json()["detail"] == "upstream content type not media", (
@@ -1514,6 +1424,7 @@ async def test_reddit_feeds_unreachable_logs_warning_with_traceback(
     import httpx
 
     from src.config import settings
+    from src.http_client import get_status_http
 
     monkeypatch.setattr(settings, "reddit_feeds_api_url", "http://rf.local")
     caplog.set_level(logging.DEBUG, logger="src.api.reddit_feeds")
@@ -1522,7 +1433,7 @@ async def test_reddit_feeds_unreachable_logs_warning_with_traceback(
         async def get(self, *a: object, **k: object) -> object:
             raise httpx.ConnectError("nope")
 
-    monkeypatch.setattr("src.api.reddit_feeds.get_http_client", lambda: _Boom())
+    client._transport.app.dependency_overrides[get_status_http] = lambda: _Boom()
     resp = await client.get("/api/reddit-feeds/status")
 
     assert resp.status_code == 502
@@ -1653,10 +1564,7 @@ async def test_reddit_feeds_status_caps_the_body(
     mock_http.get("http://rf.local/status").mock(
         return_value=httpx.Response(200, content=oversized, headers={"content-type": "application/json"})
     )
-    real_client = httpx.AsyncClient()
-    monkeypatch.setattr("src.api.reddit_feeds.get_http_client", lambda: real_client)
     resp = await client.get("/api/reddit-feeds/status")
-    await real_client.aclose()
     assert resp.status_code == 502
     assert resp.json()["detail"] == "Reddit Feeds API body too large"
 
@@ -1670,9 +1578,6 @@ async def test_reddit_feeds_status_still_passes_a_normal_body_through(
     mock_http.get("http://rf.local/status").mock(
         return_value=httpx.Response(200, json={"feeds": []}, headers={"content-type": "application/json"})
     )
-    real_client = httpx.AsyncClient()
-    monkeypatch.setattr("src.api.reddit_feeds.get_http_client", lambda: real_client)
     resp = await client.get("/api/reddit-feeds/status")
-    await real_client.aclose()
     assert resp.status_code == 200
     assert resp.json() == {"feeds": []}

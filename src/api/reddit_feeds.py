@@ -6,7 +6,7 @@ import logging
 from fastapi import APIRouter, HTTPException, Response
 
 from src.config import settings
-from src.scheduler import get_http_client
+from src.http_client import StatusDep
 from src.timing import timer
 
 logger = logging.getLogger(__name__)
@@ -20,7 +20,7 @@ MAX_STATUS_BYTES = 1 << 20
 
 
 @router.get("/reddit-feeds/status", response_model=None)
-async def reddit_feeds_status() -> Response:
+async def reddit_feeds_status(client: StatusDep) -> Response:
     """Proxy the companion service's /status, or 502 with the reason.
 
     The body is passed through as bytes rather than returned as a parsed value:
@@ -33,7 +33,6 @@ async def reddit_feeds_status() -> Response:
     The companion is optional: many deployments do not run it, and the status
     modal polls at 1 Hz while it is open. Its absence is logged as recoverable.
     """
-    client = get_http_client()
     url = f"{settings.reddit_feeds_api_url.rstrip('/')}/status"
     logger.debug(f"reddit_feeds_status fetching {url}")
     elapsed = timer()

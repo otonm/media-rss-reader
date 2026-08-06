@@ -8,12 +8,12 @@ from fastapi.responses import FileResponse, StreamingResponse
 
 from src.api.schemas import PrefetchHint
 from src.db.connection import DbDep
+from src.http_client import HttpDep
 from src.media.availability import is_known_media_url
 from src.media.cache import cache_lookup
 from src.media.fetch import NonMediaUpstreamError, UpstreamError, open_upstream, tee_to_cache
 from src.media.prefetch import prefetch_ahead
 from src.request_id import current_request_id
-from src.scheduler import get_http_client
 from src.timing import timer
 
 router = APIRouter()
@@ -27,6 +27,7 @@ async def proxy_media(
     item_id: str | None = Query(None),
     *,
     db: DbDep,
+    client: HttpDep,
 ) -> Response:
     """Cache-through proxy for media files.
 
@@ -71,7 +72,6 @@ async def proxy_media(
         )
 
     logger.debug(f"proxy_media: MISS {url} (item_id={item_id}), streaming from upstream")
-    client = get_http_client()
     try:
         upstream_elapsed = timer()
         response = await open_upstream(url, item_id, client, request_id=current_request_id())
@@ -108,6 +108,7 @@ async def proxy_media(
 async def prefetch_hint(
     body: PrefetchHint,
     db: DbDep,
+    client: HttpDep,
 ) -> dict[str, str]:
     """Trigger background pre-fetching of items ahead of the given item.
 
@@ -122,7 +123,6 @@ async def prefetch_hint(
     function exits, outside its own error handling (R4).
     """
     logger.debug(f"prefetch_hint item_id={body.item_id} unseen={body.unseen}")
-    client = get_http_client()
     elapsed = timer()
     queued = await prefetch_ahead(body.item_id, db, client, unseen=body.unseen, request_id=current_request_id())
     if queued is None:
