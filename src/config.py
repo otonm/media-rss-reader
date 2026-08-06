@@ -97,6 +97,13 @@ def _load_settings() -> Settings:
             "AUTH_USERNAME and AUTH_PASSWORD must both be set; empty credentials "
             "are not safe with the /setup flow (any visitor becomes admin)"
         )
+    # The browser sends size=FEED_INITIAL_COUNT to /api/items, which caps size
+    # at 200. Above that every request 422s before the handler runs, so the feed
+    # renders empty and retries forever with nothing in the application log.
+    # Fail here rather than clamp: the operator asked for a page the API cannot
+    # serve, and a silent clamp is how the two bounds drifted apart.
+    if not 1 <= s.feed_initial_count <= 200:
+        raise RuntimeError(f"FEED_INITIAL_COUNT must be between 1 and 200 (got {s.feed_initial_count})")
     return s
 
 

@@ -80,3 +80,27 @@ def test_both_credentials_empty_raises(monkeypatch: pytest.MonkeyPatch, _clean_e
     monkeypatch.setenv("AUTH_SECRET_KEY", "x" * 32)
     with pytest.raises(RuntimeError, match="AUTH_USERNAME and AUTH_PASSWORD"):
         _load_settings()
+
+
+def test_feed_initial_count_above_the_api_bound_fails_at_startup(
+    monkeypatch: pytest.MonkeyPatch, _clean_env: None
+) -> None:
+    """The browser sends size=FEED_INITIAL_COUNT and /api/items caps size at
+    200, in files that cannot see each other. Above 200 every request 422s
+    before list_items runs: the feed renders empty, item-store.js retries
+    forever because `if (!resp.ok) return` leaves hasMore true, and nothing
+    logs it (M1)."""
+    monkeypatch.setenv("AUTH_USERNAME", "u")
+    monkeypatch.setenv("AUTH_PASSWORD", "p")
+    monkeypatch.setenv("AUTH_SECRET_KEY", "x" * 32)
+    monkeypatch.setenv("FEED_INITIAL_COUNT", "250")
+    with pytest.raises(RuntimeError, match="FEED_INITIAL_COUNT"):
+        _load_settings()
+
+
+def test_feed_initial_count_at_the_bound_is_accepted(monkeypatch: pytest.MonkeyPatch, _clean_env: None) -> None:
+    monkeypatch.setenv("AUTH_USERNAME", "u")
+    monkeypatch.setenv("AUTH_PASSWORD", "p")
+    monkeypatch.setenv("AUTH_SECRET_KEY", "x" * 32)
+    monkeypatch.setenv("FEED_INITIAL_COUNT", "200")
+    assert _load_settings().feed_initial_count == 200

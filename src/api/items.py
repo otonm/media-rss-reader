@@ -46,6 +46,8 @@ async def list_items(
     unseen: bool = False,
     after_id: str | None = None,
     after_rn: int | None = None,
+    # The 200 here and the bound in src/config.py's _load_settings are one
+    # quantity: the browser sends size=FEED_INITIAL_COUNT. Change both.
     size: int = Query(50, ge=1, le=200),
     *,
     db: DbDep,
