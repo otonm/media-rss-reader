@@ -36,6 +36,24 @@ _INSERT_ITEM = """INSERT OR IGNORE INTO items
      AND NOT EXISTS (SELECT 1 FROM seen_media WHERE media_key = :media_key)"""
 
 
+async def _skip_guids(db: aiosqlite.Connection, feed_id: str) -> frozenset[str]:
+    """GUIDs of this feed that need no media detection.
+
+    Two sources, both meaning "already resolved": rows already in items, and
+    guids tombstoned in unavailable_guids. Loaded once per feed rather than
+    probed per entry — aiosqlite serialises every call onto one worker thread,
+    so a 100-entry feed would otherwise pay 100 round trips instead of one
+    indexed query. Bounded by KEEP_ITEMS on the items side; idx_items_feed_id
+    and the unavailable_guids primary key cover both legs.
+    """
+    async with db.execute(
+        """SELECT guid FROM items WHERE feed_id = ?
+           UNION SELECT guid FROM unavailable_guids WHERE feed_id = ?""",
+        (feed_id, feed_id),
+    ) as cur:
+        return frozenset(row["guid"] for row in await cur.fetchall())
+
+
 async def local_xml_sync(db: aiosqlite.Connection, feeds_dir: str) -> None:
     """Scan `feeds_dir` for *.xml, parse each file, insert feeds + items.
 
@@ -57,6 +75,24 @@ async def local_xml_sync(db: aiosqlite.Connection, feeds_dir: str) -> None:
 
     for path in xml_files:
         filename = path.name
+        feed_id = _feed_id(filename)
+
+        # The file is the whole input, so an unchanged mtime means an unchanged
+        # feed: no read, no parse, no detection. The mtime lives on the feeds
+        # row, so a wiped database or a sync_feeds hard-delete drops it together
+        # with the items it stands for — it can never claim "unchanged" while
+        # the items are gone.
+        try:
+            mtime = path.stat().st_mtime  # noqa: ASYNC240
+        except OSError as exc:
+            logger.warning(f"Skipping unreadable feed file {path}: {exc}")
+            continue
+        async with db.execute("SELECT source_mtime FROM feeds WHERE id = ?", (feed_id,)) as cur:
+            row = await cur.fetchone()
+        if row and row["source_mtime"] == mtime:
+            logger.debug(f"Local XML {filename} unchanged (mtime {mtime}); skipping parse")
+            continue
+
         try:
             text = path.read_text(encoding="utf-8")
             feed = await asyncio.to_thread(feedparser.parse, text)
@@ -64,7 +100,6 @@ async def local_xml_sync(db: aiosqlite.Connection, feeds_dir: str) -> None:
             logger.warning(f"Skipping unreadable feed file {path}: {exc}")
             continue
 
-        feed_id = _feed_id(filename)
         title = feed.channel.get("title") if hasattr(feed, "channel") else None
         site_link = feed.channel.get("link") if hasattr(feed, "channel") else None
         if not title:
@@ -76,21 +111,20 @@ async def local_xml_sync(db: aiosqlite.Connection, feeds_dir: str) -> None:
             (feed_id, filename, title, site_link),
         )
 
-        async with db.execute("SELECT guid FROM unavailable_guids WHERE feed_id = ?", (feed_id,)) as cur:
-            dead_guids = {row["guid"] for row in await cur.fetchall()}
+        skip = await _skip_guids(db, feed_id)
 
         inserted = 0
         for entry in feed.entries:
-            item = entry_to_item(feed_id, entry)
-            if item is None or item["guid"] in dead_guids:
+            item = entry_to_item(feed_id, entry, skip)
+            if item is None:
                 continue
             cursor = await db.execute(_INSERT_ITEM, item)
             inserted += cursor.rowcount
         logger.debug(f"Local XML sync {filename}: {inserted} new item(s)")
 
         await db.execute(
-            "UPDATE feeds SET last_fetched_at = datetime('now') WHERE id = ?",
-            (feed_id,),
+            "UPDATE feeds SET last_fetched_at = datetime('now'), source_mtime = ? WHERE id = ?",
+            (mtime, feed_id),
         )
 
     await db.commit()
@@ -106,21 +140,28 @@ async def _refresh_feed(
 
     INSERT OR IGNORE on (feed_id, guid) silently skips items that are
     already in the database, so this function is safe to call repeatedly.
-    Items whose (feed_id, guid) is in unavailable_guids are skipped before
-    the INSERT so a previously-dropped dead post is never re-added.
+    Known and tombstoned guids are filtered inside entry_to_item, before media
+    detection runs, so a previously-dropped dead post is never re-added and a
+    post already stored is never re-detected.
+
+    The stored ETag/Last-Modified are replayed as conditional headers; a 304
+    yields no items at all and the validators are written back unchanged.
     """
-    items = await fetch_feed(url, client)
+    skip = await _skip_guids(db, feed_id)
+    async with db.execute("SELECT etag, last_modified FROM feeds WHERE id = ?", (feed_id,)) as cur:
+        row = await cur.fetchone()
+    logger.debug(f"Feed {url} has {len(skip)} known guid(s) to skip")
 
-    async with db.execute("SELECT guid FROM unavailable_guids WHERE feed_id = ?", (feed_id,)) as cur:
-        dead_guids = {row["guid"] for row in await cur.fetchall()}
-
-    logger.debug(f"Feed {url} has {len(dead_guids)} tombstoned guid(s) to skip")
+    items, etag, last_modified = await fetch_feed(
+        url,
+        client,
+        skip,
+        row["etag"] if row else None,
+        row["last_modified"] if row else None,
+    )
 
     inserted = 0
     for item in items:
-        if item["guid"] in dead_guids:
-            logger.debug(f"Skipping tombstoned item guid={item['guid']} in feed {url}")
-            continue
         logger.debug(f"Storing item {item['title']} with media URL {item['media_url']} and ID {item['id']}")
         cursor = await db.execute(_INSERT_ITEM, item)
         inserted += cursor.rowcount
@@ -128,8 +169,8 @@ async def _refresh_feed(
         logger.debug(f"Feed {url}: {inserted} new, {len(items) - inserted} already in DB")
 
     await db.execute(
-        "UPDATE feeds SET last_fetched_at = datetime('now') WHERE id = ?",
-        (feed_id,),
+        "UPDATE feeds SET last_fetched_at = datetime('now'), etag = ?, last_modified = ? WHERE id = ?",
+        (etag, last_modified, feed_id),
     )
     await db.commit()
 

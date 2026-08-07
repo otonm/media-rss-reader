@@ -81,6 +81,14 @@ MIGRATIONS: list[str] = [
     # whenever sync_feeds removed a feed row. NOT NULL is explicit because
     # SQLite allows NULL in a TEXT PRIMARY KEY.
     ("CREATE TABLE IF NOT EXISTS seen_media (media_key TEXT PRIMARY KEY NOT NULL, seen_at TIMESTAMP NOT NULL)"),
+    # v15/v16: HTTP validators for conditional feed fetches. A 304 skips the
+    # download, the feedparser pass and the media detection for the whole feed,
+    # which is the bulk of what every restart used to redo.
+    "ALTER TABLE feeds ADD COLUMN etag TEXT",
+    "ALTER TABLE feeds ADD COLUMN last_modified TEXT",
+    # v17: mtime of the local *.xml source — same purpose for FEEDS_DIR files,
+    # which have no HTTP layer to carry validators.
+    "ALTER TABLE feeds ADD COLUMN source_mtime REAL",
 ]
 
 

@@ -32,7 +32,7 @@ _RSS = """\
 async def test_fetch_feed_returns_only_media_items(mock_http: respx.MockRouter) -> None:
     mock_http.get("https://example.com/feed.xml").mock(return_value=httpx.Response(200, text=_RSS))
     async with httpx.AsyncClient() as client:
-        items = await fetch_feed("https://example.com/feed.xml", client)
+        items, _, _ = await fetch_feed("https://example.com/feed.xml", client)
     assert len(items) == 2
     urls = [i["media_url"] for i in items]
     assert "https://example.com/photo.jpg" in urls
@@ -42,7 +42,7 @@ async def test_fetch_feed_returns_only_media_items(mock_http: respx.MockRouter) 
 async def test_fetch_feed_item_has_correct_fields(mock_http: respx.MockRouter) -> None:
     mock_http.get("https://example.com/feed.xml").mock(return_value=httpx.Response(200, text=_RSS))
     async with httpx.AsyncClient() as client:
-        items = await fetch_feed("https://example.com/feed.xml", client)
+        items, _, _ = await fetch_feed("https://example.com/feed.xml", client)
     img = next(i for i in items if i["media_type"] == "image")
     assert img["media_url"] == "https://example.com/photo.jpg"
     assert img["feed_id"] == _feed_id("https://example.com/feed.xml")
@@ -53,10 +53,10 @@ async def test_fetch_feed_item_has_correct_fields(mock_http: respx.MockRouter) -
 async def test_fetch_feed_same_guid_produces_same_id(mock_http: respx.MockRouter) -> None:
     mock_http.get("https://example.com/feed.xml").mock(return_value=httpx.Response(200, text=_RSS))
     async with httpx.AsyncClient() as client:
-        items1 = await fetch_feed("https://example.com/feed.xml", client)
+        items1, _, _ = await fetch_feed("https://example.com/feed.xml", client)
     mock_http.get("https://example.com/feed.xml").mock(return_value=httpx.Response(200, text=_RSS))
     async with httpx.AsyncClient() as client:
-        items2 = await fetch_feed("https://example.com/feed.xml", client)
+        items2, _, _ = await fetch_feed("https://example.com/feed.xml", client)
     assert items1[0]["id"] == items2[0]["id"]
 
 
@@ -79,7 +79,7 @@ _GALLERY_RSS = """\
 async def test_fetch_feed_gallery_item_has_media_json(mock_http: respx.MockRouter) -> None:
     mock_http.get("https://example.com/feed.xml").mock(return_value=httpx.Response(200, text=_GALLERY_RSS))
     async with httpx.AsyncClient() as client:
-        items = await fetch_feed("https://example.com/feed.xml", client)
+        items, _, _ = await fetch_feed("https://example.com/feed.xml", client)
     assert len(items) == 1
     item = items[0]
     assert item["media_url"] == "https://example.com/one.jpg"
@@ -94,7 +94,7 @@ async def test_fetch_feed_gallery_item_has_media_json(mock_http: respx.MockRoute
 async def test_fetch_feed_single_media_item_has_one_element_media_json(mock_http: respx.MockRouter) -> None:
     mock_http.get("https://example.com/feed.xml").mock(return_value=httpx.Response(200, text=_RSS))
     async with httpx.AsyncClient() as client:
-        items = await fetch_feed("https://example.com/feed.xml", client)
+        items, _, _ = await fetch_feed("https://example.com/feed.xml", client)
     img = next(i for i in items if i["media_type"] == "image")
     assert json.loads(img["media_json"]) == [{"url": "https://example.com/photo.jpg", "type": "image"}]
 
@@ -112,7 +112,7 @@ _PUBDATE_RSS = """\
 async def test_fetch_feed_normalizes_pub_date(mock_http: respx.MockRouter) -> None:
     mock_http.get("https://example.com/feed.xml").mock(return_value=httpx.Response(200, text=_PUBDATE_RSS))
     async with httpx.AsyncClient() as client:
-        items = await fetch_feed("https://example.com/feed.xml", client)
+        items, _, _ = await fetch_feed("https://example.com/feed.xml", client)
     # RFC-822 "Sun, 02 Aug 2026 10:00:00 +0000" must become ISO, not stored verbatim.
     assert items[0]["pub_date"] == "2026-08-02 10:00:00"
 
@@ -121,5 +121,5 @@ async def test_fetch_feed_pub_date_none_when_absent(mock_http: respx.MockRouter)
     # _RSS (module fixture) has no pubDate → pub_date must be None, not a weekday string.
     mock_http.get("https://example.com/feed.xml").mock(return_value=httpx.Response(200, text=_RSS))
     async with httpx.AsyncClient() as client:
-        items = await fetch_feed("https://example.com/feed.xml", client)
+        items, _, _ = await fetch_feed("https://example.com/feed.xml", client)
     assert items[0]["pub_date"] is None
