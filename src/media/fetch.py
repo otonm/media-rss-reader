@@ -218,8 +218,9 @@ async def open_upstream(
         media_type.startswith("image/") or media_type.startswith("video/") or media_type == "application/octet-stream"
     ):
         await response.aclose()
-        logger.warning(f"open_upstream: refusing non-media content-type {content_type} for {safe_url}")
-        raise NonMediaUpstreamError(f"upstream returned non-media content type {content_type} for {safe_url}")
+        safe_content_type = loggable(content_type)
+        logger.warning(f"open_upstream: refusing non-media content-type {safe_content_type} for {safe_url}")
+        raise NonMediaUpstreamError(f"upstream returned non-media content type {safe_content_type} for {safe_url}")
     declared = response.headers.get("content-length", "")
     if settings.media_max_bytes and declared.isdigit() and int(declared) > settings.media_max_bytes:
         await response.aclose()
@@ -232,8 +233,8 @@ async def open_upstream(
         )
     logger.debug(
         f"open_upstream: {safe_url} -> {response.status_code} "
-        f"type={response.headers.get('content-type', '?')} "
-        f"length={response.headers.get('content-length', 'unknown')} "
+        f"type={loggable(content_type)} "
+        f"length={loggable(response.headers.get('content-length', 'unknown'))} "
         f"request_id={request_id}"
     )
     return response, content_type

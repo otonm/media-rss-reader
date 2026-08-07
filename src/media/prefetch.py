@@ -90,7 +90,7 @@ async def _warm(item_id: str, url: str, client: httpx.AsyncClient, request_id: s
     """
     async with _sem:
         if cache_read(url) is not None:
-            logger.debug(f"_warm: {url} already on disk, skipping")
+            logger.debug(f"_warm: {loggable(url)} already on disk, skipping")
             return  # already cached — nothing to do
         await fetch_to_cache(url, item_id, client, request_id=request_id)
 

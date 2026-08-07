@@ -122,7 +122,10 @@ async def cache_stream_tee(
     tmp = Path(tmp_name)
     written = 0
     safe_url = loggable(url)
-    logger.debug(f"cache_stream_tee: start {safe_url} -> {tmp.name} (type={content_type}) (request_id={request_id})")
+    safe_content_type = loggable(content_type)
+    logger.debug(
+        f"cache_stream_tee: start {safe_url} -> {tmp.name} (type={safe_content_type}) (request_id={request_id})"
+    )
     try:
         with os.fdopen(fd, "wb") as fh:
             async for chunk in chunks:
@@ -135,7 +138,7 @@ async def cache_stream_tee(
         await asyncio.to_thread(_write_meta, _meta_path(url), content_type)
         await asyncio.to_thread(tmp.replace, path)
         logger.debug(
-            f"cache_stream_tee: cached {safe_url} ({written} bytes, type={content_type}) as {path.name} "
+            f"cache_stream_tee: cached {safe_url} ({written} bytes, type={safe_content_type}) as {path.name} "
             f"(request_id={request_id})"
         )
     except BaseException as exc:

@@ -113,6 +113,7 @@ async def proxy_media(
     streaming misses through is what prevents the black-screen stall on first
     paint (F7).
     """
+    logger.debug(f"proxy_media url={loggable(url)} item_id={loggable(item_id)}")
     # The cache lookup goes first. It is one stat against a sha256-derived name;
     # the gate's second tier is `media_json LIKE '%...%'`, which no index can
     # serve, so it was running a full scan of items for every slide of every
@@ -122,7 +123,7 @@ async def proxy_media(
     hit = await asyncio.to_thread(cache_lookup, url)
     if hit is not None:
         path, media_type = hit
-        logger.debug(f"proxy_media: HIT {loggable(url)} -> {path.name} (type={media_type})")
+        logger.debug(f"proxy_media: HIT {loggable(url)} -> {path.name} (type={loggable(media_type)})")
         return CacheFileResponse(path, media_type=media_type)
 
     gate_elapsed = timer()
@@ -135,29 +136,25 @@ async def proxy_media(
     logger.debug(f"proxy_media: MISS {loggable(url)} (item_id={loggable(item_id)}), streaming from upstream")
     try:
         upstream_elapsed = timer()
-        response, content_type = await open_upstream(url, item_id, client)
-    except UpstreamError as exc:
-        # Every UpstreamError raise site in open_upstream/_check_url/tee_to_cache
-        # now warns once, at the point that knows why (M6 follow-up) — R10's
-        # original reason for warning again here (those sites used to be silent)
-        # no longer applies, so this just records that the request became a 502.
-        # The duration still matters at this level: an instant connection
-        # refusal and a 30s read timeout otherwise log identically.
+        response, content_type = await open_upstream(url, item_id, client, request_id=current_request_id())
+    except (UpstreamError, NonMediaUpstreamError) as exc:
+        # Every raise site in open_upstream/_check_url/tee_to_cache now warns
+        # once, at the point that knows why (M6 follow-up), including
+        # NonMediaUpstreamError's real content type — so this only records that
+        # the request became a 502. The duration still matters at this level:
+        # an instant connection refusal and a 30s read timeout otherwise log
+        # identically.
+        #
+        # NonMediaUpstreamError is deliberately not an UpstreamError: nothing
+        # was cached, nothing was marked dead, and the condition can flip back.
+        # The two share this log line and differ only in the 502 detail the
+        # client sees below — what actually happened, not "the fetch failed",
+        # which for a non-media response it did not.
         logger.debug(
             f"proxy_media: 502 for {loggable(url)} (item_id={loggable(item_id)}) in {upstream_elapsed():.1f}ms — {exc}"
         )
-        raise HTTPException(status_code=502, detail="upstream error") from exc
-    except NonMediaUpstreamError as exc:
-        # Deliberately not an UpstreamError: nothing was cached, nothing was
-        # marked dead, and the condition can flip back. open_upstream has
-        # already logged the real content type at WARNING one line up, so this
-        # only records that the request became a 502 — and the client is told
-        # what actually happened rather than that the fetch failed, which it
-        # did not.
-        logger.debug(
-            f"proxy_media: 502 for {loggable(url)} (item_id={loggable(item_id)}) in {upstream_elapsed():.1f}ms — {exc}"
-        )
-        raise HTTPException(status_code=502, detail="upstream content type not media") from exc
+        detail = "upstream content type not media" if isinstance(exc, NonMediaUpstreamError) else "upstream error"
+        raise HTTPException(status_code=502, detail=detail) from exc
     except Exception as exc:
         logger.exception(
             f"proxy_media: upstream fetch failed for {loggable(url)} in {upstream_elapsed():.1f}ms: "
@@ -166,7 +163,7 @@ async def proxy_media(
         raise HTTPException(status_code=502, detail="upstream fetch failed") from exc
 
     logger.debug(
-        f"proxy_media: MISS ok {loggable(url)} -> {response.status_code} type={content_type} "
+        f"proxy_media: MISS ok {loggable(url)} -> {response.status_code} type={loggable(content_type)} "
         f"upstream={upstream_elapsed():.1f}ms"
     )
     return StreamingResponse(
@@ -185,9 +182,10 @@ async def prefetch_hint(
 
     The browser calls this as a fire-and-forget POST whenever it loads a new
     page of items. The hint launches asyncio background tasks and does not wait
-    for them, but it does await prefetch_ahead's two window-function queries
-    over the items table, which are the cost of this endpoint and what db=
-    measures.
+    for them, but it does await prefetch_ahead's window-function queries over
+    the items table — two of them, unless the backlog cap is already hit, in
+    which case only the anchor lookup runs before it returns early. Either way
+    that wait is the cost of this endpoint and what db= measures.
     """
     logger.debug(f"prefetch_hint item_id={loggable(body.item_id)} unseen={body.unseen}")
     elapsed = timer()

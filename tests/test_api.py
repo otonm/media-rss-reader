@@ -1158,6 +1158,35 @@ async def test_items_cursor_does_not_skip_when_a_feed_gains_an_older_row(
     assert not missing, f"the cursor skipped {missing}"
 
 
+async def test_items_after_rn_zero_is_rejected(client: AsyncClient, db: aiosqlite.Connection) -> None:
+    """ROW_NUMBER() starts at 1, so after_rn=0 (or negative) is never a rank a
+    server-issued cursor could carry — only a malformed or crafted one.
+    Without a lower bound, bound_rn = min(after_rn, anchor['rn']) becomes 0,
+    and KEYSET_AFTER's row-value comparison `(rn, feed_id, id) > (0, ...)`
+    admits nearly the whole ranked table: the exact collapse list_items'
+    own docstring names for a missing anchor, reached here through a valid,
+    non-expired after_id and an unvalidated after_rn instead (acceptance
+    review MAJOR 1, introduced by this branch's own M2 fix).
+    """
+    await _insert_feed(db)
+    for n in range(1, 9):
+        await db.execute(
+            """INSERT INTO items(id, feed_id, guid, title, media_url, media_type, pub_date)
+               VALUES (?, 'feed1', ?, 'T', 'http://example.com/img.jpg', 'image', ?)""",
+            (f"item{n}", f"g{n}", f"2026-01-0{n}T00:00:00"),
+        )
+    await db.commit()
+
+    page1 = await client.get("/api/items", params={"size": 4})
+    last = page1.json()[-1]
+
+    resp = await client.get(
+        "/api/items",
+        params={"after_id": last["id"], "after_rn": 0, "size": 8},
+    )
+    assert resp.status_code == 422, "after_rn=0 must be rejected, not silently admit the whole table"
+
+
 async def test_proxy_cache_hit_evicted_before_send_is_not_a_500(
     client: AsyncClient, db: aiosqlite.Connection, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -1625,6 +1654,10 @@ async def test_reddit_feeds_status_logs_transitions_not_polls(
     assert warnings[0].exc_info is not None, "the traceback rides the transition"
     debugs = [r for r in caplog.records if r.levelno == logging.DEBUG and "unreachable" in r.message]
     assert len(debugs) == 2, "the repeats are debug"
+    assert all(r.exc_info is not None for r in debugs), (
+        "the repeats must keep the traceback too — httpx timeouts routinely stringify to empty (R11), "
+        "and that's true on every poll, not just the first"
+    )
 
     caplog.clear()
     route.mock(return_value=httpx.Response(200, json={"ok": True}))
@@ -1903,6 +1936,74 @@ async def test_proxy_non_media_content_type_is_not_an_error_log(
     assert not any(r.exc_info for r in media_records), "and must not carry a traceback"
 
 
+async def test_proxy_miss_logs_hostile_content_type_escaped(
+    client: AsyncClient,
+    db: aiosqlite.Connection,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    mock_http: respx.MockRouter,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """Content-Type is an upstream-controlled response header, same trust
+    class as a feed: /media/proxy's miss path logs it raw at both the
+    non-media gate (open_upstream) and the ok line (proxy_media itself), and
+    cache_stream_tee logs it a third time while writing the sidecar
+    (acceptance review MAJOR 2, miss side).
+    """
+    import src.media.cache as cache_mod
+
+    monkeypatch.setattr(cache_mod.settings, "cache_dir", str(tmp_path))
+    url = "http://example.com/hostile-miss.jpg"
+    hostile = "image/jpeg\nFAKE LOG LINE" + "y" * 500
+    await _register_proxy_url(db, url)
+    mock_http.get(_pinned(url)).mock(
+        return_value=httpx.Response(200, content=b"x", headers={"content-type": hostile})
+    )
+
+    caplog.set_level(logging.DEBUG, logger="src")
+    resp = await client.get(f"/api/media/proxy?url={url}")
+
+    assert resp.status_code == 200
+    assert any("MISS ok" in r.message for r in caplog.records), "must reach proxy_media's own ok line"
+    for record in caplog.records:
+        assert "\nFAKE" not in record.message, f"{record.name}: raw newline reached a log record"
+
+
+async def test_proxy_hit_logs_hostile_cached_content_type_escaped(
+    client: AsyncClient,
+    db: aiosqlite.Connection,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """The cache-hit path reads Content-Type back from the .meta sidecar, not
+    from a fresh upstream response — so a hostile value written once (by a
+    prior unescaped miss, or a compromised origin) persists and would forge a
+    log line for every later viewer of that cached item, not just the request
+    that downloaded it. This is the worse of the two routes MAJOR 2 named,
+    for exactly that reason.
+    """
+    import hashlib
+
+    import src.media.cache as cache_mod
+
+    monkeypatch.setattr(cache_mod.settings, "cache_dir", str(tmp_path))
+    url = "http://example.com/hostile-cached.jpg"
+    hostile = "image/jpeg\nFAKE LOG LINE" + "y" * 500
+    await _register_proxy_url(db, url)
+    filename = hashlib.sha256(url.encode()).hexdigest()
+    (tmp_path / filename).write_bytes(b"cached")
+    (tmp_path / f"{filename}.meta").write_text(hostile)
+
+    caplog.set_level(logging.DEBUG, logger="src")
+    resp = await client.get(f"/api/media/proxy?url={url}")
+
+    assert resp.status_code == 200
+    assert any("HIT" in r.message for r in caplog.records), "must reach proxy_media's own hit line"
+    for record in caplog.records:
+        assert "\nFAKE" not in record.message, f"{record.name}: raw newline reached a log record"
+
+
 async def test_proxy_hit_does_not_pass_stat_result_to_fileresponse(
     client: AsyncClient, db: aiosqlite.Connection, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -1910,7 +2011,19 @@ async def test_proxy_hit_does_not_pass_stat_result_to_fileresponse(
     FileResponse.__call__ — the check that fails *before* any bytes go out.
     With it suppressed, an eviction between the route and the send sends
     http.response.start with a correct Content-Length and then a body that
-    dies mid-flight, instead of failing cleanly."""
+    dies mid-flight, instead of failing cleanly.
+
+    CacheFileResponse has no __init__ of its own, so `CacheFileResponse(path,
+    media_type=media_type)` runs FileResponse.__init__, found by walking the
+    MRO at call time. A previous version of this test monkeypatched the name
+    `media_mod.FileResponse` — which only rebinds what that module-level name
+    points to, not the class object CacheFileResponse's own class statement
+    already captured as its base — so the spy was never invoked and
+    `captured` stayed empty regardless of what the route did (acceptance
+    review BLOCKER). Patching FileResponse.__init__ itself is observed
+    because attribute lookup for an inherited method walks the MRO to the
+    real class object every call.
+    """
     import src.api.media as media_mod
     import src.media.cache as cache_mod
 
@@ -1920,15 +2033,16 @@ async def test_proxy_hit_does_not_pass_stat_result_to_fileresponse(
     (tmp_path / cache_mod.cache_name(url)).write_bytes(b"bytes")
 
     captured: dict[str, object] = {}
-    real_file_response = media_mod.FileResponse
+    real_init = media_mod.FileResponse.__init__
 
-    def _spy(*args: object, **kwargs: object) -> object:
+    def _spy_init(self: object, *args: object, **kwargs: object) -> None:
         captured.update(kwargs)
-        return real_file_response(*args, **kwargs)
+        real_init(self, *args, **kwargs)
 
-    monkeypatch.setattr(media_mod, "FileResponse", _spy)
+    monkeypatch.setattr(media_mod.FileResponse, "__init__", _spy_init)
     resp = await client.get(f"/api/media/proxy?url={url}")
 
+    assert captured, "the spy must actually have run — otherwise this asserts nothing"
     assert resp.status_code == 200
     assert "stat_result" not in captured, (
         "Starlette must re-stat at send time so a vanished file fails before headers go out"

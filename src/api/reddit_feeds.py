@@ -8,6 +8,7 @@ from fastapi import APIRouter, HTTPException, Response
 
 from src.config import settings
 from src.http_client import StatusDep
+from src.logging_utils import loggable
 from src.timing import timer
 
 logger = logging.getLogger(__name__)
@@ -39,7 +40,7 @@ def _log_outcome(reachable: bool, message: str, *, exc_info: bool = False) -> No
         else:
             logger.debug(f"reddit_feeds_status ok: {message}")
     elif _last_reachable is False:
-        logger.debug(f"reddit_feeds_status still unreachable: {message}")
+        logger.debug(f"reddit_feeds_status still unreachable: {message}", exc_info=exc_info)
     else:
         logger.warning(message, exc_info=exc_info)
     _last_reachable = reachable
@@ -107,10 +108,10 @@ async def reddit_feeds_status(client: StatusDep) -> Response:
         _log_outcome(
             False,
             f"reddit_feeds_status non-JSON body from {url}: {type(exc).__name__} "
-            f"status={status_code} type={content_type}",
+            f"status={status_code} type={loggable(content_type)}",
             exc_info=True,
         )
         raise HTTPException(status_code=502, detail="Reddit Feeds API returned non-JSON body") from exc
 
-    _log_outcome(True, f"{status_code} from {url} in {elapsed():.0f}ms bytes={len(body)} type={content_type}")
+    _log_outcome(True, f"{status_code} from {url} in {elapsed():.0f}ms bytes={len(body)} type={loggable(content_type)}")
     return Response(content=body, media_type="application/json")

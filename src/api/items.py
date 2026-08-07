@@ -46,7 +46,7 @@ def _row_to_item(row: aiosqlite.Row, cached_names: set[str]) -> dict[str, Any]:
 async def list_items(
     unseen: bool = False,
     after_id: str | None = None,
-    after_rn: int | None = None,
+    after_rn: int | None = Query(None, ge=1),
     # The 200 here and the bound in src/config.py's _load_settings are one
     # quantity: the browser sends size=FEED_INITIAL_COUNT. Change both.
     size: int = Query(50, ge=1, le=200),
@@ -114,7 +114,10 @@ async def list_items(
     if every row in it was already held (Task 8).
 
     after_rn is optional so a page cached in a browser from before this change
-    degrades to the old behaviour instead of 422-ing.
+    degrades to the old behaviour instead of 422-ing. When sent, it is bounded
+    to >= 1: ROW_NUMBER starts at 1, so after_rn=0 (or negative) is never a
+    legitimate rank — it is exactly the rank-0 case two paragraphs down, only
+    reached through the query parameter instead of the missing-anchor path.
 
     An anchor that no longer exists — pruned, or its feed left the OPML and the
     rows cascaded — answers 410. Resolving it to a position instead is what
@@ -211,6 +214,9 @@ async def mark_seen(
                 row = await cur.fetchone()
             update_ms = update_elapsed()
             if row is None:
+                # DEBUG, not INFO like other 404s here: the browser fires this as a
+                # beacon and discards the response, so a 404 is routine — not a
+                # status change an operator needs to see.
                 logger.debug(f"mark_seen item_id={loggable(item_id)} not found")
                 raise HTTPException(status_code=404, detail="Not found")
             insert_elapsed = timer()

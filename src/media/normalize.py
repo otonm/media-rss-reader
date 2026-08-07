@@ -21,6 +21,8 @@ from collections.abc import Mapping
 from typing import Any
 from urllib.parse import urlsplit, urlunsplit
 
+from src.logging_utils import loggable
+
 logger = logging.getLogger(__name__)
 
 
@@ -64,11 +66,11 @@ def media_key(url: str) -> str:
     try:
         parts = urlsplit(url)
     except ValueError as exc:
-        logger.debug(f"media_key: unparseable url {url}: {exc}")
+        logger.debug(f"media_key: unparseable url {loggable(url)}: {exc}")
         return url
 
     if not parts.scheme or not parts.netloc:
-        logger.debug(f"media_key: no scheme/host in {url}, using it verbatim")
+        logger.debug(f"media_key: no scheme/host in {loggable(url)}, using it verbatim")
         return url
 
     host = parts.netloc.lower()
@@ -76,5 +78,5 @@ def media_key(url: str) -> str:
         host = host[4:]
 
     key = urlunsplit((parts.scheme.lower(), host, parts.path, "", ""))
-    logger.debug(f"media_key: {url} -> {key}")
+    logger.debug(f"media_key: {loggable(url)} -> {loggable(key)}")
     return key

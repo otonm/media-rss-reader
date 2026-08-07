@@ -20,6 +20,8 @@ from html import unescape
 from html.parser import HTMLParser
 from pathlib import PurePosixPath
 
+from src.logging_utils import loggable
+
 logger = logging.getLogger(__name__)
 
 # Supported extensions per media type. Query strings are stripped before matching.
@@ -103,7 +105,7 @@ def detect_media(entry: dict) -> tuple[str, str] | None:
             url = item.get("url", "")
             media_type = detect_type(url)
             if url and media_type:
-                logger.debug(f"detect_media found {media_type} via {key}: {url}")
+                logger.debug(f"detect_media found {media_type} via {key}: {loggable(url)}")
                 return url, media_type
 
     summary = entry.get("summary", "")
@@ -112,7 +114,7 @@ def detect_media(entry: dict) -> tuple[str, str] | None:
         if og_url:
             media_type = detect_type(og_url)
             if media_type:
-                logger.debug(f"detect_media found {media_type} via og:image: {og_url}")
+                logger.debug(f"detect_media found {media_type} via og:image: {loggable(og_url)}")
                 return og_url, media_type
 
     logger.debug("detect_media found nothing for entry")
