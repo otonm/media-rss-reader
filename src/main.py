@@ -17,7 +17,7 @@ from src.api import feeds, items, media, reddit_feeds
 from src.auth import routes as auth_routes
 from src.auth.middleware import AuthMiddleware
 from src.config import settings
-from src.db.connection import open_db, set_writer_db
+from src.db.connection import open_db
 from src.db.migrations import backfill_seen_media, run_migrations
 from src.db.schema import create_schema
 from src.request_id import RequestIDFilter, RequestIDMiddleware
@@ -84,15 +84,9 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None]:
     app.state.http = httpx.AsyncClient()
     app.state.http_status = httpx.AsyncClient(limits=httpx.Limits(max_connections=2))
     logger.debug("lifespan: opened the media and status HTTP clients")
-    # A streaming body or a warm task cannot borrow the request connection, so
-    # each opened its own per call. One long-lived connection removes that cost.
-    writer_db = await open_db(settings.db_path)
-    set_writer_db(writer_db)
     await start_scheduler(scheduler_db)
     yield
     await stop_scheduler()
-    set_writer_db(None)
-    await writer_db.close()
     await app.state.http_status.aclose()
     await app.state.http.aclose()
     await scheduler_db.close()

@@ -169,34 +169,6 @@ async def test_write_transaction_serialises_two_writers(db: aiosqlite.Connection
     assert order in (["a-in", "a-out", "b-in", "b-out"], ["b-in", "b-out", "a-in", "a-out"])
 
 
-async def test_run_with_own_db_reuses_the_writer_connection(
-    db: aiosqlite.Connection, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    """Each tee_to_cache and each _warm called open_db: a blocking mkdir, an
-    aiosqlite.connect that spawns an OS thread, two PRAGMA round trips, then a
-    close — the per-request connection cost ed3b73f removed from get_db,
-    reintroduced on the streaming path (minor 11)."""
-    from src.db import connection as conn_mod
-
-    opened = 0
-    real_open = conn_mod.open_db
-
-    async def _counting_open(path: str | None = None) -> aiosqlite.Connection:
-        nonlocal opened
-        opened += 1
-        return await real_open(path)
-
-    monkeypatch.setattr(conn_mod, "open_db", _counting_open)
-    conn_mod.set_writer_db(db)
-    try:
-        for _ in range(3):
-            await conn_mod.run_with_own_db("test", lambda d: d.execute("SELECT 1"))
-    finally:
-        conn_mod.set_writer_db(None)
-
-    assert opened == 0, "the writer connection is reused"
-
-
 def test_both_sides_of_the_interleave_share_one_keyset_predicate() -> None:
     """src/db/queries.py exists to hold these. It got the CTE and the ORDER BY;
     the anchor lookup and the keyset predicate stayed as byte-identical copies
