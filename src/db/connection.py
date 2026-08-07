@@ -108,6 +108,15 @@ async def write_transaction(db: aiosqlite.Connection) -> AsyncIterator[None]:
             raise
 
 
+# ponytail: every call here opens its own connection — a blocking mkdir, an
+# aiosqlite.connect that spawns an OS thread, two PRAGMA round trips, then a
+# close — for every cached media file. Sharing one long-lived connection is
+# the fix, but tried once and reverted: it needs a lock (writers here do
+# multi-statement writes with a bare commit and no rollback, so a shared
+# connection reopens the interleaving write_transaction exists to prevent),
+# rollback-on-exception (closing a private connection mid-write rolls back
+# for free; a shared one left open does not), and a teardown that waits for
+# writes still in flight — together, not incrementally. Do it as one task.
 async def run_with_own_db(
     label: str,
     write: Callable[[aiosqlite.Connection], Awaitable[object]],
