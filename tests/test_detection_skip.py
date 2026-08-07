@@ -21,6 +21,7 @@ from src.db.migrations import run_migrations
 from src.db.schema import create_schema
 from src.feeds.fetcher import _feed_id, entry_to_item, fetch_feed
 from src.feeds.sync import local_xml_sync, refresh_all_feeds, sync_feeds
+from src.media.normalize import media_key
 
 _RSS = """\
 <?xml version="1.0"?>
@@ -153,6 +154,75 @@ async def test_refresh_all_feeds_stores_and_replays_etag(db: aiosqlite.Connectio
     assert route.calls.last.request.headers["if-none-match"] == '"v1"'
     async with db.execute("SELECT COUNT(*) FROM items") as cur:
         assert (await cur.fetchone())[0] == 2
+
+
+_RSS_SAME_MEDIA = """\
+<?xml version="1.0"?>
+<rss version="2.0"><channel><title>Other</title>
+  <item>
+    <guid>other-1</guid>
+    <enclosure url="https://cdn.example.com/a.jpg" type="image/jpeg" length="0"/>
+  </item>
+  <item>
+    <guid>other-2</guid>
+    <enclosure url="https://cdn.example.com/b.jpg" type="image/jpeg" length="0"/>
+  </item>
+</channel></rss>"""
+
+
+async def _sync_counting_detections(db: aiosqlite.Connection, feeds_dir: Path) -> int:
+    """Re-sync with every mtime bumped, and count detector calls.
+
+    Bumping the mtimes defeats the unchanged-source gate on purpose: the
+    companion service rewrites its feed files, so in the real deployment that
+    gate does not hold and the per-entry skip is what has to do the work.
+    """
+    for path in feeds_dir.glob("*.xml"):  # noqa: ASYNC240
+        stat = path.stat()  # noqa: ASYNC240
+        os.utime(path, (stat.st_atime, stat.st_mtime + 10))
+
+    import src.feeds.fetcher as fetcher_mod
+
+    real = fetcher_mod.detect_all_media
+    with patch.object(fetcher_mod, "detect_all_media", side_effect=real) as detect:
+        await local_xml_sync(db, str(feeds_dir))
+    return detect.call_count
+
+
+async def test_guard_rejected_entries_are_not_redetected(db: aiosqlite.Connection, tmp_path: Path) -> None:
+    """Entries the insert guard rejects must still stop being re-detected.
+
+    _INSERT_ITEM's guards key on media_key, which only exists once detection has
+    run, while the skip set keys on guid. A cross-feed duplicate is therefore
+    detected, rejected, and leaves nothing in items — so without a tombstone its
+    guid never enters the skip set and it is re-detected on every single poll.
+    """
+    (tmp_path / "a.xml").write_text(_RSS)
+    (tmp_path / "b.xml").write_text(_RSS_SAME_MEDIA)
+
+    assert await _sync_counting_detections(db, tmp_path) == 4
+
+    async with db.execute("SELECT COUNT(*) FROM items") as cur:
+        assert (await cur.fetchone())[0] == 2, "b.xml's pictures duplicate a.xml's"
+
+    assert await _sync_counting_detections(db, tmp_path) == 0, "rejected guids must not be re-detected"
+
+
+async def test_seen_media_rejection_is_not_redetected(db: aiosqlite.Connection, tmp_path: Path) -> None:
+    """The same hole via the seen_media leg of the guard — the one that grows
+    without bound as the user keeps scrolling."""
+    (tmp_path / "a.xml").write_text(_RSS)
+    await db.execute(
+        "INSERT INTO seen_media (media_key, seen_at) VALUES (?, datetime('now'))",
+        (media_key("https://cdn.example.com/a.jpg"),),
+    )
+    await db.commit()
+
+    assert await _sync_counting_detections(db, tmp_path) == 2
+    async with db.execute("SELECT guid FROM items") as cur:
+        assert {row["guid"] for row in await cur.fetchall()} == {"g2"}
+
+    assert await _sync_counting_detections(db, tmp_path) == 0
 
 
 async def test_migrations_add_feed_source_columns() -> None:

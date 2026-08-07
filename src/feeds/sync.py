@@ -39,19 +39,47 @@ _INSERT_ITEM = """INSERT OR IGNORE INTO items
 async def _skip_guids(db: aiosqlite.Connection, feed_id: str) -> frozenset[str]:
     """GUIDs of this feed that need no media detection.
 
-    Two sources, both meaning "already resolved": rows already in items, and
-    guids tombstoned in unavailable_guids. Loaded once per feed rather than
-    probed per entry — aiosqlite serialises every call onto one worker thread,
-    so a 100-entry feed would otherwise pay 100 round trips instead of one
-    indexed query. Bounded by KEEP_ITEMS on the items side; idx_items_feed_id
-    and the unavailable_guids primary key cover both legs.
+    Three sources, all meaning "already resolved": rows already in items, guids
+    tombstoned in unavailable_guids as dead, and guids in resolved_guids that
+    _INSERT_ITEM's guards rejected. The last leg is not optional — those guards
+    key on media_key, which only exists after detection, so a rejected entry
+    leaves no trace in items and would be re-detected on every poll forever.
+
+    Loaded once per feed rather than probed per entry — aiosqlite serialises
+    every call onto one worker thread, so a 100-entry feed would otherwise pay
+    100 round trips instead of one indexed query. Bounded by KEEP_ITEMS on the
+    items side; idx_items_feed_id and the two tombstone primary keys cover the
+    lookups.
     """
     async with db.execute(
         """SELECT guid FROM items WHERE feed_id = ?
-           UNION SELECT guid FROM unavailable_guids WHERE feed_id = ?""",
-        (feed_id, feed_id),
+           UNION SELECT guid FROM unavailable_guids WHERE feed_id = ?
+           UNION SELECT guid FROM resolved_guids WHERE feed_id = ?""",
+        (feed_id, feed_id, feed_id),
     ) as cur:
         return frozenset(row["guid"] for row in await cur.fetchall())
+
+
+async def _insert_item(db: aiosqlite.Connection, item: dict) -> int:
+    """INSERT one item, tombstoning its guid when the guard rejects it.
+
+    Returns the number of rows inserted (0 or 1). Both ingest paths go through
+    here for the same reason they share _INSERT_ITEM: a tombstone that is
+    written on one path and not the other silently reintroduces the re-detection
+    it exists to prevent.
+
+    rowcount == 0 here always means a guard rejection — an entry whose
+    (feed_id, guid) is already in items never gets this far, because
+    entry_to_item skips it before detection.
+    """
+    cursor = await db.execute(_INSERT_ITEM, item)
+    if cursor.rowcount == 0:
+        await db.execute(
+            "INSERT OR IGNORE INTO resolved_guids (feed_id, guid) VALUES (?, ?)",
+            (item["feed_id"], item["guid"]),
+        )
+        logger.debug(f"Item guid={item['guid']} rejected by the insert guard; tombstoned as resolved")
+    return cursor.rowcount
 
 
 async def local_xml_sync(db: aiosqlite.Connection, feeds_dir: str) -> None:
@@ -118,8 +146,7 @@ async def local_xml_sync(db: aiosqlite.Connection, feeds_dir: str) -> None:
             item = entry_to_item(feed_id, entry, skip)
             if item is None:
                 continue
-            cursor = await db.execute(_INSERT_ITEM, item)
-            inserted += cursor.rowcount
+            inserted += await _insert_item(db, item)
         logger.debug(f"Local XML sync {filename}: {inserted} new item(s)")
 
         await db.execute(
@@ -163,8 +190,7 @@ async def _refresh_feed(
     inserted = 0
     for item in items:
         logger.debug(f"Storing item {item['title']} with media URL {item['media_url']} and ID {item['id']}")
-        cursor = await db.execute(_INSERT_ITEM, item)
-        inserted += cursor.rowcount
+        inserted += await _insert_item(db, item)
     if items:
         logger.debug(f"Feed {url}: {inserted} new, {len(items) - inserted} already in DB")
 

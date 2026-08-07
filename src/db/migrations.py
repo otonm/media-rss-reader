@@ -89,6 +89,21 @@ MIGRATIONS: list[str] = [
     # v17: mtime of the local *.xml source — same purpose for FEEDS_DIR files,
     # which have no HTTP layer to carry validators.
     "ALTER TABLE feeds ADD COLUMN source_mtime REAL",
+    # v18: resolved_guids — entries that were detected and then deliberately
+    # not stored, because _INSERT_ITEM's guards rejected them. Those guards are
+    # keyed on media_key, which only exists after detection, while the
+    # pre-detection skip set is keyed on guid; without this tombstone a rejected
+    # entry never reaches items, so its guid never reaches the skip set and the
+    # entry is re-detected on every poll for as long as the feed lists it.
+    # CASCADE like unavailable_guids: dropping a feed drops its items too, so a
+    # re-added feed should start clean.
+    (
+        "CREATE TABLE IF NOT EXISTS resolved_guids ("
+        "feed_id TEXT NOT NULL REFERENCES feeds(id) ON DELETE CASCADE, "
+        "guid TEXT NOT NULL, "
+        "resolved_at TIMESTAMP NOT NULL DEFAULT (datetime('now')), "
+        "PRIMARY KEY (feed_id, guid))"
+    ),
 ]
 
 
