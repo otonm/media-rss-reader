@@ -1956,9 +1956,7 @@ async def test_proxy_miss_logs_hostile_content_type_escaped(
     url = "http://example.com/hostile-miss.jpg"
     hostile = "image/jpeg\nFAKE LOG LINE" + "y" * 500
     await _register_proxy_url(db, url)
-    mock_http.get(_pinned(url)).mock(
-        return_value=httpx.Response(200, content=b"x", headers={"content-type": hostile})
-    )
+    mock_http.get(_pinned(url)).mock(return_value=httpx.Response(200, content=b"x", headers={"content-type": hostile}))
 
     caplog.set_level(logging.DEBUG, logger="src")
     resp = await client.get(f"/api/media/proxy?url={url}")
