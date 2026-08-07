@@ -112,7 +112,13 @@ async def _log_validation_error(request: Request, exc: RequestValidationError) -
     which does not fire for an HTTP 422. A client-side change that serialises a
     field wrongly would disable prefetching with no trace but uvicorn's access
     log."""
-    logger.warning(f"422 on {request.method} {request.url.path}: {exc.errors()}")
+    # exc.errors() carries the full offending `input` value per error — for
+    # PrefetchHint's item_id that is bounded by max_length, but pydantic has no
+    # size limit of its own, so an oversized body elsewhere would log its
+    # entire input synchronously. loc/msg/type are the diagnostic value; input
+    # is dropped rather than logged unbounded.
+    safe_errors = [{k: v for k, v in error.items() if k != "input"} for error in exc.errors()]
+    logger.warning(f"422 on {request.method} {request.url.path}: {safe_errors}")
     return JSONResponse(status_code=422, content={"detail": jsonable_encoder(exc.errors())})
 
 

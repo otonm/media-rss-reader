@@ -1,6 +1,8 @@
 import json
+import logging
 
 import aiosqlite
+import pytest
 
 from src.media.availability import mark_url_dead_and_maybe_drop
 
@@ -136,6 +138,24 @@ async def test_unknown_item_id_marks_dead_only(db: aiosqlite.Connection) -> None
     async with db.execute("SELECT url FROM dead_urls") as cur:
         rows = await cur.fetchall()
     assert [r[0] for r in rows] == ["http://x.com/a.jpg"]
+
+
+async def test_dropped_item_log_escapes_a_hostile_guid(
+    db: aiosqlite.Connection, caplog: pytest.LogCaptureFixture
+) -> None:
+    """A feed is a trust boundary too: a guid with an embedded newline must not
+    forge a second log line (minor 6)."""
+    hostile_guid = "g1\nERROR fake injected line"
+    await _insert_feed(db)
+    await _insert_item(db, "i1", "f1", hostile_guid, "http://x.com/a.jpg")
+
+    with caplog.at_level(logging.DEBUG, logger="src.media.availability"):
+        dropped = await mark_url_dead_and_maybe_drop("http://x.com/a.jpg", item_id="i1", db=db)
+
+    assert dropped == ["i1"]
+    record = next(m for m in caplog.messages if "dropped item" in m)
+    assert "\n" not in record
+    assert repr(hostile_guid) in record
 
 
 async def test_is_known_media_url_matches_a_non_ascii_gallery_slide(db: aiosqlite.Connection) -> None:

@@ -130,11 +130,8 @@ async def mark_url_dead_and_maybe_drop(url: str, item_id: str | None, db: aiosql
         )
         dropped.append(row["id"])
         logger.debug(
-            "dropped item %s (feed=%s guid=%s): all %d media URL(s) dead",
-            row["id"],
-            row["feed_id"],
-            row["guid"],
-            len(urls),
+            f"dropped item {loggable(row['id'])} (feed={loggable(row['feed_id'])} "
+            f"guid={loggable(row['guid'])}): all {len(urls)} media URL(s) dead"
         )
 
     logger.debug(f"mark_url_dead_and_maybe_drop dropped {len(dropped)} item(s)")

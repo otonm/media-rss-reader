@@ -1,4 +1,5 @@
 import hashlib
+import logging
 from collections.abc import AsyncIterator, Callable
 from pathlib import Path
 
@@ -104,6 +105,25 @@ async def test_record_media_hash_is_idempotent(db: aiosqlite.Connection) -> None
         assert (await cur.fetchone())[0] == 1
     async with db.execute("SELECT COUNT(*) FROM media_hashes") as cur:
         assert (await cur.fetchone())[0] == 1
+
+
+async def test_dropped_duplicate_log_escapes_a_hostile_guid(
+    db: aiosqlite.Connection, caplog: pytest.LogCaptureFixture
+) -> None:
+    """A feed is a trust boundary too: a guid with an embedded newline must not
+    forge a second log line (minor 6)."""
+    hostile_guid = "g1\nERROR fake injected line"
+    digest = "f" * 64
+    await _add_item(db, "item-old", "feed-a", "guid-a", "https://a.example.com/x.jpg", "2026-01-01 00:00:00")
+    await _add_item(db, "item-new", "feed-b", hostile_guid, "https://b.example.com/y.jpg", "2026-01-02 00:00:00")
+
+    with caplog.at_level(logging.INFO, logger="src.media.dedup"):
+        assert await record_media_hash("https://a.example.com/x.jpg", digest, db) is None
+        assert await record_media_hash("https://b.example.com/y.jpg", digest, db) == "item-new"
+
+    record = next(m for m in caplog.messages if "Dropped duplicate" in m)
+    assert "\n" not in record
+    assert repr(hostile_guid) in record
 
 
 async def test_record_media_hash_tombstone_blocks_reinsert(db: aiosqlite.Connection, tmp_path: Path) -> None:

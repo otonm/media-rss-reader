@@ -36,12 +36,21 @@ _bg_tasks: set[asyncio.Task] = set()
 # (R6/minor 12).
 _sem = asyncio.Semaphore(10)
 
-# _sem caps how many warm tasks run at once; it does not cap how many exist. A
-# task waiting on the semaphore is still a live task holding a strong reference
-# in _bg_tasks, and the hint endpoint applies no coalescing, so a fast scroll
-# grew the set without bound and the backlog then drained against a window the
-# user passed minutes ago. A newer scroll position supersedes an older one, so
-# dropping the new hint when the backlog is full is the right direction.
+# _bg_tasks holds every warm task from BOTH producers, so the event loop's weak
+# ref doesn't GC either kind (F8) and cancel_prefetch_tasks can stop both on
+# shutdown. MAX_BACKLOG must not be checked against that shared set:
+# warm_startup_cache alone queues one task per row of its startup query, up to
+# CACHE_MAX_ITEMS (500 by default) — ten times this cap — so len(_bg_tasks)
+# sits far above MAX_BACKLOG for as long as those tasks take to drain. Checking
+# it there dropped every hint for the whole cold-cache window after every
+# restart, which is precisely the window prefetching exists for. _hint_tasks
+# tracks only the request-driven path a second time, so the cap measures what
+# it is meant to: a fast scroll growing that backlog without bound (_sem caps
+# concurrency, not existence, and the hint endpoint applies no coalescing) — a
+# newer scroll position supersedes an older one, so dropping the new hint once
+# that backlog is full is the right direction.
+_hint_tasks: set[asyncio.Task] = set()
+
 MAX_BACKLOG = 50
 
 
@@ -49,6 +58,13 @@ def _track(task: asyncio.Task) -> None:
     """Keep a strong ref so the event loop's weak ref doesn't GC the task (F8)."""
     _bg_tasks.add(task)
     task.add_done_callback(_bg_tasks.discard)
+
+
+def _track_hint(task: asyncio.Task) -> None:
+    """Like _track, but also counted against MAX_BACKLOG (hint path only)."""
+    _track(task)
+    _hint_tasks.add(task)
+    task.add_done_callback(_hint_tasks.discard)
 
 
 async def cancel_prefetch_tasks() -> None:
@@ -140,8 +156,8 @@ async def prefetch_ahead(
     if cursor is None:
         logger.debug(f"prefetch_ahead: item {loggable(item_id)} not found, warming nothing")
         return None
-    if len(_bg_tasks) >= MAX_BACKLOG:
-        logger.info(f"prefetch_ahead for {loggable(item_id)}: backlog at {len(_bg_tasks)}, dropping the hint")
+    if len(_hint_tasks) >= MAX_BACKLOG:
+        logger.info(f"prefetch_ahead for {loggable(item_id)}: hint backlog at {len(_hint_tasks)}, dropping the hint")
         return 0
     seen_filter = "seen_at IS NULL AND " if unseen else ""
     async with db.execute(
@@ -155,5 +171,5 @@ async def prefetch_ahead(
     logger.debug(f"prefetch_ahead for {loggable(item_id)}: {len(rows)} item(s) ahead (unseen={unseen})")
     for row in rows:
         t = asyncio.create_task(_warm(row["id"], row["media_url"], client, request_id=request_id))
-        _track(t)
+        _track_hint(t)
     return len(rows)

@@ -1,8 +1,12 @@
-"""Helpers shared by every module that logs a client-supplied value.
+"""Helpers shared by every module that logs a value from outside this process.
 
-A single function, in its own module because it now has callers in more than
-one package (src.api, src.media) — an underscore-prefixed copy living in one
-of those callers was a secretly public contract with no home of its own.
+Not just the request path: a feed is a trust boundary too. src.api wraps
+values a browser sent (item_id, url); src.media wraps values a feed handed us
+(guid, feed_id) when refreshing or deduping — a hostile or compromised feed
+can forge a log line exactly as a hostile request can. A single function, in
+its own module because it now has callers in more than one package — an
+underscore-prefixed copy living in one of those callers was a secretly public
+contract with no home of its own.
 """
 
 

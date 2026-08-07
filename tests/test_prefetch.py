@@ -218,9 +218,9 @@ async def test_prefetch_ahead_drops_the_hint_when_the_backlog_is_full(
     db: aiosqlite.Connection, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """_sem bounds how many tasks run, but a task blocked on it is still live
-    and strongly referenced, so a fast scroller grew _bg_tasks monotonically
-    and the backlog drained against a window scrolled past minutes ago. The
-    comment claimed the semaphore fixed 'unbounded tasks and outbound
+    and strongly referenced, so a fast scroller grew the hint backlog
+    monotonically and it drained against a window scrolled past minutes ago.
+    The comment claimed the semaphore fixed 'unbounded tasks and outbound
     connections'; it fixed the connections half (minor 12)."""
     # Set up DB with multiple items (so prefetch_ahead would normally queue something)
     await db.execute("INSERT INTO feeds(id, url, title) VALUES ('f1', 'http://x.com/feed', 'F')")
@@ -238,16 +238,17 @@ async def test_prefetch_ahead_drops_the_hint_when_the_backlog_is_full(
 
     monkeypatch.setattr("src.media.prefetch._warm", _fake_warm)
 
-    # Fill the backlog to MAX_BACKLOG with dummy tasks
+    # Fill the hint backlog to MAX_BACKLOG with dummy tasks, as prefetch_ahead
+    # itself would across many scroll-driven hints.
     async def _never() -> None:
         await asyncio.Event().wait()
 
     filler = [asyncio.create_task(_never()) for _ in range(prefetch_mod.MAX_BACKLOG)]
     for t in filler:
-        prefetch_mod._track(t)
+        prefetch_mod._track_hint(t)
 
-    # Verify backlog is full
-    assert len(prefetch_mod._bg_tasks) == prefetch_mod.MAX_BACKLOG
+    # Verify the hint backlog is full
+    assert len(prefetch_mod._hint_tasks) == prefetch_mod.MAX_BACKLOG
 
     # Now prefetch_ahead should return 0 immediately without attempting to queue anything
     async with httpx.AsyncClient() as client:
@@ -257,5 +258,49 @@ async def test_prefetch_ahead_drops_the_hint_when_the_backlog_is_full(
     assert queued == 0
 
     # Clean up filler tasks
+    for t in filler:
+        t.cancel()
+
+
+async def test_prefetch_ahead_queues_despite_a_full_startup_warm_backlog(
+    db: aiosqlite.Connection, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """warm_startup_cache queues one tracked task per row of its startup query
+    (CACHE_MAX_ITEMS, 500 by default) — ten times MAX_BACKLOG — into the same
+    _bg_tasks set _track uses for GC-safety. Before separating the hint path's
+    own counter, checking len(_bg_tasks) meant every hint was dropped for the
+    whole cold-cache window after every restart, until the startup warm had
+    drained below the cap."""
+    await db.execute("INSERT INTO feeds(id, url, title) VALUES ('f1', 'http://x.com/feed', 'F')")
+    for i in range(2):
+        await db.execute(
+            "INSERT INTO items(id, feed_id, guid, title, media_url, media_type, pub_date) "
+            "VALUES (?, 'f1', ?, 'T', ?, 'image', datetime('now', ?))",
+            (f"item{i}", f"guid{i}", f"http://example.com/{i}.jpg", f"-{1 - i} seconds"),
+        )
+    await db.commit()
+
+    async def _fake_warm(item_id: str, url: str, client: object, request_id: str | None = None) -> None:
+        pass
+
+    monkeypatch.setattr("src.media.prefetch._warm", _fake_warm)
+
+    # Simulate a post-boot startup warm: many tasks in _bg_tasks, well above
+    # MAX_BACKLOG, none of them hint-tracked.
+    async def _never() -> None:
+        await asyncio.Event().wait()
+
+    filler = [asyncio.create_task(_never()) for _ in range(prefetch_mod.MAX_BACKLOG * 10)]
+    for t in filler:
+        prefetch_mod._track(t)
+
+    assert len(prefetch_mod._bg_tasks) >= prefetch_mod.MAX_BACKLOG * 10
+    assert len(prefetch_mod._hint_tasks) == 0
+
+    async with httpx.AsyncClient() as client:
+        queued = await prefetch_mod.prefetch_ahead("item0", db, client, unseen=False)
+
+    assert queued == 1, "a full startup-warm backlog must not drop the hint"
+
     for t in filler:
         t.cancel()

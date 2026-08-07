@@ -110,7 +110,10 @@ async def _drop_item(db: aiosqlite.Connection, row: aiosqlite.Row, reason: str) 
         "INSERT OR IGNORE INTO unavailable_guids (feed_id, guid, marked_at) VALUES (?, ?, datetime('now'))",
         (row["feed_id"], row["guid"]),
     )
-    logger.info(f"Dropped duplicate item {row['id']} (feed={row['feed_id']} guid={row['guid']}): {reason}")
+    logger.info(
+        f"Dropped duplicate item {loggable(row['id'])} "
+        f"(feed={loggable(row['feed_id'])} guid={loggable(row['guid'])}): {reason}"
+    )
 
 
 async def _newer_item_for_url(db: aiosqlite.Connection, url: str, other_urls: list[str]) -> aiosqlite.Row | None:

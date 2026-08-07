@@ -85,13 +85,14 @@ async def list_items(
     under an outstanding cursor in both directions: a prune lowers it, and a row
     inserted with an older pub_date raises it. Taking the lower bound turns the
     raise — which used to skip every undelivered row between the two ranks —
-    into duplicates the client's known-set guard already drops. The volume is
-    bounded at k+1 for k rows inserted before the anchor: the anchor itself plus
-    the rows in that feed pushed above the old bound. Any other feed that also
-    gained a row below the bound contributes too — its existing rows shift into
-    the reopened window and come back as duplicates — so the count scales with
-    total insertions beneath the cursor across all feeds, not with the anchor's
-    feed alone.
+    into duplicates the client's known-set guard already drops. Any feed that
+    gained a row below the bound contributes duplicates — its existing rows
+    shift into the reopened window and come back as already-seen — so the count
+    scales with total insertions beneath the cursor across all feeds, not with
+    the anchor's feed alone.
+
+    Limitation: the anchor's rank is read by one statement and the page by
+    another, so a feed refresh landing between them can still shift it.
 
     min(issued, resolved) only recovers rows ahead of the cursor — rows that
     already existed and were due to be delivered next. A row inserted behind

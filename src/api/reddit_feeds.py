@@ -73,9 +73,10 @@ async def reddit_feeds_status(client: StatusDep) -> Response:
             async for chunk in resp.aiter_bytes():
                 size += len(chunk)
                 if size > MAX_STATUS_BYTES:
-                    logger.warning(
+                    _log_outcome(
+                        False,
                         f"reddit_feeds_status body from {url} exceeded {MAX_STATUS_BYTES} bytes "
-                        f"after {elapsed():.0f}ms, aborting"
+                        f"after {elapsed():.0f}ms, aborting",
                     )
                     raise HTTPException(status_code=502, detail="Reddit Feeds API body too large")
                 chunks.append(chunk)

@@ -194,6 +194,57 @@ async def test_validation_error_handler_logs_and_matches_fastapi_default(
     assert any("422 on POST /api/prefetch/hint" in m and "item_id" in m for m in caplog.messages)
 
 
+async def test_validation_error_handler_does_not_log_the_oversized_input(
+    db: aiosqlite.Connection, caplog: pytest.LogCaptureFixture
+) -> None:
+    """pydantic's errors() carries the full offending `input` per error. The
+    response body keeps it (PrefetchHint's max_length=128 still applies before
+    anything is bound as a SQL parameter), but the log line must not — an
+    oversized item_id would otherwise write a record as large as the body,
+    undoing the point of max_length."""
+    import httpx
+
+    from src.auth.session import SESSION_COOKIE, sign_session
+    from src.config import settings
+    from src.db.connection import get_db
+    from src.http_client import get_http
+    from src.main import app
+
+    oversized = "x" * 100_000
+
+    async def _override_db() -> aiosqlite.Connection:
+        return db
+
+    async with httpx.AsyncClient() as http_client:
+
+        async def _override_http() -> httpx.AsyncClient:
+            return http_client
+
+        app.dependency_overrides[get_db] = _override_db
+        app.dependency_overrides[get_http] = _override_http
+        try:
+            async with AsyncClient(
+                transport=ASGITransport(app=app),
+                base_url="https://test",
+                headers={"x-forwarded-proto": "https"},
+                cookies={SESSION_COOKIE: sign_session(settings.auth_secret_key)},
+                follow_redirects=False,
+            ) as c:
+                with caplog.at_level(logging.WARNING, logger="src.main"):
+                    resp = await c.post("/api/prefetch/hint", json={"item_id": oversized})
+        finally:
+            app.dependency_overrides.pop(get_db, None)
+            app.dependency_overrides.pop(get_http, None)
+
+    assert resp.status_code == 422
+    assert oversized in resp.text, "the response body is unaffected — only the log is bounded"
+
+    record = next(m for m in caplog.messages if "422 on POST /api/prefetch/hint" in m)
+    assert oversized not in record
+    assert len(record) < 1000, "the log record must not grow with the offending input"
+    assert "item_id" in record and "string_too_long" in record
+
+
 async def test_lifespan_opens_and_closes_both_http_clients(db: aiosqlite.Connection) -> None:
     """The status poll gets its own small pool so an absent companion cannot
     starve the media proxy (M4)."""

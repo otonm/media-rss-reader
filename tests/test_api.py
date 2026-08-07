@@ -1201,6 +1201,43 @@ async def test_proxy_cache_hit_evicted_before_send_is_not_a_500(
     assert str(tmp_path) not in resp.text
 
 
+async def test_cache_file_response_reraises_once_the_start_message_was_sent(tmp_path: Path) -> None:
+    """`started` is the single branch deciding whether a post-start RuntimeError
+    gets a clean 503 (nothing sent yet) or must propagate (headers already on
+    the wire, so a 503 would be a second http.response.start — an ASGI
+    protocol violation). Patch `send` to raise RuntimeError once it has
+    already delivered the start message, and confirm the error propagates
+    rather than the handler attempting a second start."""
+    from starlette.types import Message
+
+    from src.api.media import CacheFileResponse
+
+    path = tmp_path / "f.bin"
+    path.write_bytes(b"hello world")
+
+    resp = CacheFileResponse(str(path), media_type="application/octet-stream")
+
+    sent: list[Message] = []
+
+    async def fake_send(message: Message) -> None:
+        sent.append(message)
+        if message["type"] == "http.response.start":
+            return
+        raise RuntimeError("boom after the start message")
+
+    async def _receive() -> Message:
+        return {"type": "http.request"}
+
+    scope = {"type": "http", "method": "GET", "headers": []}
+
+    with pytest.raises(RuntimeError, match="boom after the start message"):
+        await resp(scope, _receive, fake_send)
+
+    assert sum(1 for m in sent if m["type"] == "http.response.start") == 1, (
+        "must not attempt a second http.response.start"
+    )
+
+
 async def test_proxy_upstream_error_logged_at_warning(
     client: AsyncClient,
     tmp_path: Path,
@@ -2218,6 +2255,35 @@ async def test_reddit_feeds_status_allows_a_body_of_exactly_the_cap(
     mock_http.get(f"{reddit_api_url}/status").mock(return_value=httpx.Response(200, content=body))
     resp = await client.get("/api/reddit-feeds/status")
     assert resp.status_code == 200
+
+
+async def test_reddit_feeds_status_oversized_body_logs_transitions_not_polls(
+    client: AsyncClient, mock_http: respx.MockRouter, reddit_api_url: str, caplog: pytest.LogCaptureFixture
+) -> None:
+    """The MAX_STATUS_BYTES branch used to call logger.warning directly instead
+    of _log_outcome, so a companion persistently returning an oversized body
+    warned on every 1 Hz poll and never updated _last_reachable — reproducing
+    the same spam _log_outcome's three siblings were built to avoid."""
+    from src.api.reddit_feeds import MAX_STATUS_BYTES
+
+    oversized = b"x" * (MAX_STATUS_BYTES + 1)
+    route = mock_http.get(f"{reddit_api_url}/status")
+    route.mock(return_value=httpx.Response(200, content=oversized))
+
+    caplog.set_level(logging.DEBUG, logger="src.api.reddit_feeds")
+    for _ in range(3):
+        assert (await client.get("/api/reddit-feeds/status")).status_code == 502
+
+    warnings = [r for r in caplog.records if r.levelno == logging.WARNING]
+    assert len(warnings) == 1, "only the transition to unreachable warns"
+    debugs = [r for r in caplog.records if r.levelno == logging.DEBUG and "exceeded" in r.message]
+    assert len(debugs) == 2, "the repeats are debug"
+
+    caplog.clear()
+    route.mock(return_value=httpx.Response(200, json={"ok": True}))
+    assert (await client.get("/api/reddit-feeds/status")).status_code == 200
+    infos = [r for r in caplog.records if r.levelno == logging.INFO]
+    assert len(infos) == 1, "recovery after the size-cap failure is an important status change"
 
 
 async def test_reddit_feeds_status_reports_an_empty_body_accurately(
