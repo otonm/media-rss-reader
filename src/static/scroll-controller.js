@@ -54,6 +54,10 @@
       }
     });
     if (!best) return;
+    // The element is authoritative for navigation; the store index only feeds
+    // the cache queue and the debug overlay. findIndexById returns the FIRST
+    // match, so deriving position from it cannot be trusted to point back here.
+    MRR.feedView.setCurrentEl(best.target);
     const idx = MRR.itemStore.findIndexById(best.target.dataset.id);
     if (idx === -1) return;
     MRR.itemStore.setCurrentIndex(idx);

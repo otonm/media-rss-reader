@@ -267,6 +267,18 @@ function makeElement(tag) {
         this.parentNode = null;
       }
     },
+    // Records the call so a test can assert which element navigation landed on.
+    scrollIntoView() {
+      this.scrolledIntoView = (this.scrolledIntoView || 0) + 1;
+    },
+    // Real DOM properties, modelled because feed-view navigates by sibling
+    // rather than by index — the store and the DOM are different index spaces.
+    get nextElementSibling() {
+      return siblingOf(this, 1);
+    },
+    get previousElementSibling() {
+      return siblingOf(this, -1);
+    },
     querySelector(selector) {
       const s = stripScope(selector);
       // Support the small subset used in the production code:
@@ -341,6 +353,14 @@ function matches(el, selector) {
     case "canvas": return el.tagName === "CANVAS";
     default: return false;
   }
+}
+
+// The element `step` positions away from `el` among its parent's children.
+function siblingOf(el, step) {
+  if (!el.parentNode) return null;
+  const idx = el.parentNode.children.indexOf(el);
+  if (idx < 0) return null;
+  return el.parentNode.children[idx + step] || null;
 }
 
 // Strip :scope pseudo-class from a compound selector so ":scope > video" becomes "> video".

@@ -178,16 +178,12 @@
       const total = MRR.itemStore.getItems().length;
       if (MRR.itemStore.hasMoreItems() && total - cur < MRR.config.feedInitialCount) {
         MRR.itemStore.fetchPage().then(() => {
-          const items = MRR.itemStore.getItems();
-          const feed = document.getElementById("feed");
-          const existing = new Set(
-            Array.from(feed.children).map((el) => el.dataset.id)
-          );
-          items.forEach((it) => {
-            if (existing.has(it.id)) return;
-            const placeholder = MRR.feedView.createPlaceholder(it);
-            feed.appendChild(placeholder);
-            MRR.scrollController.observe(placeholder);
+          // appendItem checks the live DOM, so it sees the nodes this very loop
+          // just added. The old snapshot of feed.children was taken once, before
+          // the loop, and went stale inside it.
+          MRR.itemStore.getItems().forEach((it) => {
+            const placeholder = MRR.feedView.appendItem(it);
+            if (placeholder) MRR.scrollController.observe(placeholder);
           });
         });
       }

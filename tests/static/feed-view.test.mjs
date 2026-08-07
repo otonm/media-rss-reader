@@ -616,3 +616,125 @@ test("onItemFailed replaces the placeholder with a visible error tile", () => {
   // Still dropped from the store, so a reload does not retry it.
   assert.deepEqual(items.map((i) => i.id), ["id1"]);
 });
+
+// ---------------------------------------------------------------------------
+// Duplicate-render regression.
+//
+// Bug: the feed rendered items 1-10, then item 1 again (without its seen
+// checkmark), then item 2 — the whole block a second time. Two paths appended
+// to #feed with different guards: renderInitial had none at all, and app.js's
+// pagination top-up filtered against a snapshot of feed.children taken before
+// its loop. A reload racing an in-flight page could therefore paint a second
+// node for an item already on screen.
+//
+// Fix: appendItem is the only door into #feed and checks the live DOM.
+// ---------------------------------------------------------------------------
+
+// The guard warns so the producer names itself in a real browser console;
+// swallow it here so the suite output stays readable.
+function withSilencedWarn(fn) {
+  const original = console.warn;
+  const warnings = [];
+  console.warn = (...args) => warnings.push(args);
+  try {
+    fn();
+  } finally {
+    console.warn = original;
+  }
+  return warnings;
+}
+
+function feedHarness(items) {
+  const ctx = createDomContext();
+  ctx.window.MRR.itemStore = {
+    getItems: () => items,
+    getCurrentIndex: () => 0,
+    getItemAt: (i) => items[i],
+    findIndexById: (id) => items.findIndex((it) => it.id === id),
+    setCurrentIndex: () => {},
+  };
+  ctx.window.MRR.config = { autoscroll: false, mutedDefault: true };
+  ctx.window.MRR.autoscrollController = { bindIfVisible() {}, reset() {}, setAutoscroll() {} };
+  ctx.window.MRR.scrollController = { observe() {} };
+  loadScript(resolve(STATIC, "feed-view.js"), ctx);
+  const feed = ctx.document.createElement("div");
+  feed.id = "feed";
+  ctx.document.register(feed);
+  return { ctx, feed };
+}
+
+const renderedIds = (feed) => feed.children.map((el) => el.dataset.id);
+
+test("appendItem refuses a second node for an id already on screen", () => {
+  const items = [makeItem("id1", "image")];
+  const { ctx, feed } = feedHarness(items);
+  const view = ctx.window.MRR.feedView;
+
+  let second;
+  const warnings = withSilencedWarn(() => {
+    view.appendItem(items[0]);
+    second = view.appendItem(items[0]);
+  });
+
+  assert.equal(feed.children.length, 1, "one node per item");
+  assert.equal(second, null, "the refused append returns null so the caller skips observe()");
+  assert.equal(warnings.length, 1, "the refusal is reported so the producer is identifiable");
+});
+
+test("renderInitial over an already-populated feed does not duplicate", () => {
+  // Exactly the reload-racing-an-in-flight-page shape: the top-up loop has
+  // already rendered part of the store when renderInitial paints all of it.
+  const items = ["id1", "id2", "id3", "id4", "id5"].map((id) => makeItem(id, "image"));
+  const { ctx, feed } = feedHarness(items);
+  const view = ctx.window.MRR.feedView;
+
+  items.slice(0, 3).forEach((it) => view.appendItem(it));
+  withSilencedWarn(() => view.renderInitial(items));
+
+  assert.equal(feed.children.length, 5);
+  assert.deepEqual(renderedIds(feed), ["id1", "id2", "id3", "id4", "id5"]);
+});
+
+test("re-running the pagination top-up over the same store appends nothing", () => {
+  const items = ["id1", "id2"].map((id) => makeItem(id, "image"));
+  const { ctx, feed } = feedHarness(items);
+  const view = ctx.window.MRR.feedView;
+
+  withSilencedWarn(() => {
+    items.forEach((it) => view.appendItem(it));
+    items.forEach((it) => view.appendItem(it));
+  });
+
+  assert.equal(feed.children.length, 2);
+});
+
+test("snapToNext follows the DOM even when the store index is stale", () => {
+  // onItemFailed splices the store while leaving its error tile in the DOM, so
+  // after any failed media load the store is shorter than the feed and a store
+  // index no longer addresses the right node.
+  const items = ["id1", "id2", "id3"].map((id) => makeItem(id, "image"));
+  const { ctx, feed } = feedHarness(items);
+  const view = ctx.window.MRR.feedView;
+  items.forEach((it) => view.appendItem(it));
+
+  // The store loses an entry; the DOM keeps all three nodes.
+  items.splice(0, 1);
+  view.setCurrentEl(feed.children[1]); // sitting on id2, store index 0 now
+
+  view.snapToNext();
+
+  assert.equal(feed.children[2].scrolledIntoView, 1, "must advance to the next ELEMENT (id3)");
+  assert.ok(!feed.children[0].scrolledIntoView, "must not jump back to the first node");
+});
+
+test("snapToPrev walks back one element rather than one store index", () => {
+  const items = ["id1", "id2", "id3"].map((id) => makeItem(id, "image"));
+  const { ctx, feed } = feedHarness(items);
+  const view = ctx.window.MRR.feedView;
+  items.forEach((it) => view.appendItem(it));
+
+  view.setCurrentEl(feed.children[2]);
+  view.snapToPrev();
+
+  assert.equal(feed.children[1].scrolledIntoView, 1);
+});

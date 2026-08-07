@@ -219,3 +219,64 @@ test("re-anchoring twice in a row still reaches fresh data", async () => {
   assert.ok(urls[3].includes("after_id=b") && urls[3].includes("after_rn=2"), "second re-anchor lands on b");
   assert.ok(store.getItems().some((i) => i.id === "c"), "pagination reached fresh data after two re-anchors");
 });
+
+// ---------------------------------------------------------------------------
+// Reload racing an in-flight page.
+//
+// resetForReload cleared `fetching` while a request was still outstanding, so
+// reloadFeed could start a second fetchPage beside it. Both wrote state.items,
+// leaving the store holding two different pages — and renderInitial then
+// painted the merged store over a feed the top-up loop had already populated,
+// giving every already-rendered item a second node.
+// ---------------------------------------------------------------------------
+
+test("a page in flight when the feed reloads does not land in the new store", async () => {
+  let release;
+  const held = new Promise((r) => { release = r; });
+  const urls = [];
+  const store = makeStore((url) => {
+    urls.push(url);
+    // The first request hangs until the test releases it; later ones resolve.
+    return urls.length === 1
+      ? held.then(() => ({ ok: true, status: 200, json: () => Promise.resolve([{ id: "stale", rn: 1 }]) }))
+      : jsonResponse([{ id: "fresh", rn: 1 }]);
+  });
+
+  const inFlight = store.fetchPage();
+  store.resetForReload();
+  await store.fetchPage();
+
+  assert.deepEqual(Array.from(store.getItems(), (i) => i.id), ["fresh"]);
+
+  release();
+  await inFlight;
+
+  assert.deepEqual(
+    Array.from(store.getItems(), (i) => i.id),
+    ["fresh"],
+    "the superseded page must not merge into the reloaded feed",
+  );
+});
+
+test("a superseded fetch does not clear the current fetch's in-flight flag", async () => {
+  let release;
+  const held = new Promise((r) => { release = r; });
+  let calls = 0;
+  const store = makeStore(() => {
+    calls += 1;
+    return calls === 1
+      ? held.then(() => ({ ok: true, status: 200, json: () => Promise.resolve([{ id: "stale", rn: 1 }]) }))
+      : new Promise(() => {}); // the post-reload fetch stays outstanding
+  });
+
+  const inFlight = store.fetchPage();
+  store.resetForReload();
+  store.fetchPage(); // generation 1, still running
+
+  release();
+  await inFlight;
+
+  // If the stale fetch had cleared `fetching`, this would start a third request.
+  await store.fetchPage();
+  assert.equal(calls, 2, "no extra request may slip in beside the outstanding one");
+});

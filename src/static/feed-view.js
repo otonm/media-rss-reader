@@ -33,8 +33,44 @@
   const state = {
     feed: null,
     currentVisibleEl: null,   // currently-playing <video> or null
+    currentEl: null,          // wrap the feed is snapped to, per the observer
     autoscrollBound: false,
   };
+
+  // Is this id already on screen? The DOM is the source of truth for what is
+  // rendered — deliberately not a Set kept alongside it, since a second copy
+  // of that answer is exactly what drifts and puts an item on screen twice.
+  //
+  // ponytail: linear scan of #feed's children, so a full render is O(n²).
+  // n is the loaded page count (tens), not the feed. Index it if that changes.
+  function isRendered(id) {
+    const kids = state.feed.children;
+    for (let i = 0; i < kids.length; i++) {
+      if (kids[i].dataset.id === id) return true;
+    }
+    return false;
+  }
+
+  // The only way a node enters #feed. renderInitial appended with no dedup at
+  // all, and app.js's pagination top-up filtered against a snapshot of
+  // feed.children taken before its loop — so a reload racing an in-flight page
+  // could paint a second node for an item already on screen. A duplicate node
+  // is not cosmetic: findIndexById returns the FIRST store index with that id,
+  // so landing on the second copy drags currentIndex back to the first.
+  //
+  // Returns the new placeholder, or null when the append was refused.
+  function appendItem(item) {
+    if (!state.feed) state.feed = document.getElementById("feed");
+    if (isRendered(item.id)) {
+      // Named so the producer shows up in the console instead of needing
+      // another round of instrumentation.
+      console.warn("feedView: refused duplicate append", item.id);
+      return null;
+    }
+    const placeholder = createPlaceholder(item);
+    state.feed.appendChild(placeholder);
+    return placeholder;
+  }
 
   function createPlaceholder(item) {
     const wrap = document.createElement("div");
@@ -235,9 +271,12 @@
     snapToNext();
   }
 
-  // The wrap of the item the feed is currently snapped to, or null.
+  // The wrap of the item the feed is currently snapped to, or null. Prefers the
+  // element the observer reported over anything derived from a store index, for
+  // the reason given on setCurrentEl.
   function currentWrap() {
     if (!state.feed) return null;
+    if (state.currentEl && state.currentEl.className.includes("media-item")) return state.currentEl;
     const item = MRR.itemStore.getItemAt(MRR.itemStore.getCurrentIndex());
     return item ? state.feed.querySelector(`.media-item[data-id="${item.id}"]`) : null;
   }
@@ -277,7 +316,7 @@
 
   function renderInitial(items) {
     state.feed = document.getElementById("feed");
-    items.forEach((it) => state.feed.appendChild(createPlaceholder(it)));
+    items.forEach(appendItem);
   }
 
   function onItemLoaded(id, el) {
@@ -342,15 +381,27 @@
     tagAsSeen(wrap);
   }
 
-  function snapToIndex(idx) {
-    const items = state.feed.querySelectorAll(".placeholder, .media-item");
-    if (items[idx]) items[idx].scrollIntoView({ block: "start" });
+  // The wrap the observer last reported as most-visible. Navigation walks from
+  // here rather than indexing the DOM by itemStore's index: those are two
+  // different index spaces, and onItemFailed already splices the store while
+  // leaving its error tile in the DOM, so they diverge permanently after any
+  // failed media load. Sibling walking cannot be off by one.
+  function setCurrentEl(el) {
+    state.currentEl = el;
   }
+
+  function snapTo(el) {
+    if (el) el.scrollIntoView({ block: "start" });
+  }
+
   function snapToNext() {
-    snapToIndex(MRR.itemStore.getCurrentIndex() + 1);
+    const cur = state.currentEl;
+    snapTo(cur ? cur.nextElementSibling : state.feed && state.feed.children[0]);
   }
+
   function snapToPrev() {
-    snapToIndex(MRR.itemStore.getCurrentIndex() - 1);
+    const cur = state.currentEl;
+    snapTo(cur ? cur.previousElementSibling : state.feed && state.feed.children[0]);
   }
 
   function setCurrentMedia(el) {
@@ -377,6 +428,8 @@
 
   MRR.feedView = {
     createPlaceholder,
+    appendItem,
+    setCurrentEl,
     renderInitial,
     onItemLoaded,
     onItemFailed,

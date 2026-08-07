@@ -21,6 +21,10 @@
     hasMore: true,
     fetching: false,
     showSeen: false,
+    // Bumped by resetForReload. A fetch that started under an older generation
+    // belongs to a feed the user has already navigated away from, so it must
+    // not write into the new one — see resetForReload.
+    generation: 0,
   };
 
   // When showSeen is true we ask the API for ALL items (unseen=false),
@@ -58,6 +62,7 @@
   async function fetchPage() {
     if (state.fetching || !state.hasMore) return;
     state.fetching = true;
+    const generation = state.generation;
     try {
       const cfg = MRR.config;
       const paginating = state.items.length > 0;
@@ -89,6 +94,11 @@
           if (anchor.rn !== undefined) url += `&after_rn=${anchor.rn}`;
         }
         const resp = await fetch(url);
+        // A reload landed while this request was in flight. Its page belongs to
+        // the feed the user has already left; writing it would merge two pages
+        // into one store and hand renderInitial an item the top-up loop had
+        // already put on screen.
+        if (generation !== state.generation) return;
         if (resp.status === 410) {
           if (!paginating) break; // page one cannot 410; nothing left to step back to
           reanchor = null; // that anchor is gone too; fall back to walking held items
@@ -123,7 +133,9 @@
       state.hasMore = false;
       console.warn("itemStore: cursor exhausted (dead anchors or non-converging duplicates), stopping pagination");
     } finally {
-      state.fetching = false;
+      // Only the current generation owns the flag; a superseded fetch clearing
+      // it would green-light a second concurrent request into the new feed.
+      if (generation === state.generation) state.fetching = false;
     }
   }
 
@@ -160,7 +172,14 @@
     state.items = [];
     state.currentIndex = 0;
     state.hasMore = true;
+    // Clearing `fetching` on its own used to let reloadFeed start a second
+    // fetchPage beside one still in flight. Both wrote state.items, so the
+    // store ended up holding two different pages and every item the top-up
+    // loop had already rendered got a second node from renderInitial. The
+    // generation bump is what makes clearing the flag safe: the in-flight
+    // fetch now discards its own result instead of merging into the new feed.
     state.fetching = false;
+    state.generation += 1;
   }
 
   MRR.itemStore = {
