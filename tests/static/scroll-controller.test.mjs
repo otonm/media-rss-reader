@@ -271,6 +271,28 @@ test("IO: item leaving viewport upward triggers seen POST", async () => {
   assert.ok(markSeenCalls.some((c) => c.who === "feed" && c.id === "id1"));
 });
 
+test("seen beacon carries media_url so the mark survives a pruned row", async () => {
+  // prune_items evicts oldest-first and the feed is served oldest-first, so the
+  // row is routinely gone by the time this fires. The server needs the URL to
+  // write seen_media, which is the record meant to outlive pruning.
+  const { ctx, beaconCalls, getSeenCb } = setupIOHarness({
+    items: [{ id: "id1", seen_at: null, media_url: "https://i.redd.it/a b.jpg" }],
+  });
+  getSeenCb()([ioEntry(ctx, "id1", "image", false, -10)]);
+  await new Promise((r) => setImmediate(r));
+  assert.equal(beaconCalls.length, 1);
+  assert.equal(beaconCalls[0].url, "/api/items/id1/seen?media_url=https%3A%2F%2Fi.redd.it%2Fa%20b.jpg");
+});
+
+test("seen beacon omits media_url rather than sending the string 'undefined'", async () => {
+  const { ctx, beaconCalls, getSeenCb } = setupIOHarness({
+    items: [{ id: "id1", seen_at: null }],
+  });
+  getSeenCb()([ioEntry(ctx, "id1", "image", false, -10)]);
+  await new Promise((r) => setImmediate(r));
+  assert.equal(beaconCalls[0].url, "/api/items/id1/seen");
+});
+
 test("IO: item still intersecting does NOT trigger POST", async () => {
   const { beaconCalls, getSeenCb, ctx } = setupIOHarness({
     items: [{ id: "id1", seen_at: null }],

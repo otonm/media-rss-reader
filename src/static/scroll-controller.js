@@ -114,8 +114,12 @@
     // feed is served oldest-first, so the rows on screen are the ones it takes;
     // without this the beacon 404s against a deleted row and seen_media — the
     // record meant to outlive pruning — never hears about it.
-    const q = encodeURIComponent(item.media_url);
-    navigator.sendBeacon(`/api/items/${id}/seen?media_url=${q}`);
+    //
+    // Omitted when the item carries no URL: encodeURIComponent(undefined) is
+    // the string "undefined", which the server rejects anyway, so sending it
+    // only makes the request lie about what it knows.
+    const suffix = item.media_url ? `?media_url=${encodeURIComponent(item.media_url)}` : "";
+    navigator.sendBeacon(`/api/items/${id}/seen${suffix}`);
   }
 
   function observe(el) {
