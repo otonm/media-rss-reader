@@ -201,6 +201,30 @@ async def _refresh_feed(
     await db.commit()
 
 
+async def _evict_items(db: aiosqlite.Connection, where: str, params: tuple) -> int:
+    """DELETE items matching `where`, tombstoning every guid it takes.
+
+    Every eviction goes through here, for the same reason both ingest paths
+    share _INSERT_ITEM: a tombstone written on one branch and not another
+    reintroduces the churn it exists to stop.
+
+    Without the tombstone an evicted row is re-inserted by the very next sync,
+    unseen, under the same id — and /api/items serves oldest-first while this
+    function evicts oldest-first, so the rows it takes are the ones a reader is
+    looking at right now. Their seen beacons 404 against the deleted row, so
+    seen_media never records them either, and they come back to the front of
+    the feed on every cycle: the reader can never advance past them.
+    """
+    async with db.execute(f"DELETE FROM items WHERE {where} RETURNING feed_id, guid", params) as cur:  # noqa: S608
+        evicted = await cur.fetchall()
+    if evicted:
+        await db.executemany(
+            "INSERT OR IGNORE INTO resolved_guids (feed_id, guid) VALUES (?, ?)",
+            [(row["feed_id"], row["guid"]) for row in evicted],
+        )
+    return len(evicted)
+
+
 async def prune_items(db: aiosqlite.Connection) -> None:
     """Enforce item retention limits.
 
@@ -209,17 +233,22 @@ async def prune_items(db: aiosqlite.Connection) -> None:
        older than 4× ITEMS_MAX_AGE_HOURS (by pub_date).
     2. Count-based: if still over KEEP_ITEMS, delete oldest seen items first (by pub_date),
        then oldest unseen as a last resort.
+
+    Everything evicted is tombstoned by _evict_items so it does not come
+    straight back on the next sync.
     """
     # Phase 1: age-based eviction — seen items by fetched_at, unseen items by pub_date.
     # Unseen items are kept 4× longer since the user hasn't had a chance to see them yet.
     logger.debug(f"Pruning items older than {settings.items_max_age_hours} hours")
-    await db.execute(
-        "DELETE FROM items WHERE seen_at IS NOT NULL AND fetched_at < datetime('now', ? || ' hours')",
+    await _evict_items(
+        db,
+        "seen_at IS NOT NULL AND fetched_at < datetime('now', ? || ' hours')",
         (f"-{settings.items_max_age_hours}",),
     )
     unseen_max_age = settings.items_max_age_hours * 4
-    await db.execute(
-        "DELETE FROM items WHERE seen_at IS NULL AND pub_date < datetime('now', ? || ' hours')",
+    await _evict_items(
+        db,
+        "seen_at IS NULL AND pub_date < datetime('now', ? || ' hours')",
         (f"-{unseen_max_age}",),
     )
 
@@ -244,10 +273,9 @@ async def prune_items(db: aiosqlite.Connection) -> None:
     logger.debug(f"Pruning {to_delete_seen} seen items to reduce total to {settings.keep_items}")
 
     if to_delete_seen > 0:
-        await db.execute(
-            "DELETE FROM items WHERE id IN "
-            "(SELECT id FROM items WHERE seen_at IS NOT NULL "
-            " ORDER BY pub_date ASC NULLS LAST LIMIT ?)",
+        await _evict_items(
+            db,
+            "id IN (SELECT id FROM items WHERE seen_at IS NOT NULL ORDER BY pub_date ASC NULLS LAST LIMIT ?)",
             (to_delete_seen,),
         )
         excess -= to_delete_seen
@@ -255,10 +283,9 @@ async def prune_items(db: aiosqlite.Connection) -> None:
     # Last resort: delete the oldest unseen items.
     if excess > 0:
         logger.debug(f"Pruning {excess} unseen items to reduce total to {settings.keep_items}")
-        await db.execute(
-            "DELETE FROM items WHERE id IN "
-            "(SELECT id FROM items WHERE seen_at IS NULL "
-            " ORDER BY pub_date ASC NULLS LAST LIMIT ?)",
+        await _evict_items(
+            db,
+            "id IN (SELECT id FROM items WHERE seen_at IS NULL ORDER BY pub_date ASC NULLS LAST LIMIT ?)",
             (excess,),
         )
 

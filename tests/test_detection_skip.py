@@ -14,13 +14,15 @@ from unittest.mock import patch
 import aiosqlite
 import feedparser
 import httpx
+import pytest
 import respx
 
+from src.config import settings
 from src.db.connection import open_db
 from src.db.migrations import run_migrations
 from src.db.schema import create_schema
 from src.feeds.fetcher import _feed_id, entry_to_item, fetch_feed
-from src.feeds.sync import local_xml_sync, refresh_all_feeds, sync_feeds
+from src.feeds.sync import local_xml_sync, prune_items, refresh_all_feeds, sync_feeds
 from src.media.normalize import media_key
 
 _RSS = """\
@@ -223,6 +225,38 @@ async def test_seen_media_rejection_is_not_redetected(db: aiosqlite.Connection, 
         assert {row["guid"] for row in await cur.fetchall()} == {"g2"}
 
     assert await _sync_counting_detections(db, tmp_path) == 0
+
+
+async def test_pruned_items_do_not_come_back_on_the_next_sync(
+    db: aiosqlite.Connection, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Evicted rows must stay evicted.
+
+    /api/items serves oldest-first and prune_items evicts oldest-first, so a
+    refresh cycle takes the rows the reader is looking at. Their seen beacons
+    then 404 against the deleted row, so seen_media never records them — and
+    without a tombstone the next sync re-inserts them unseen, at the front of
+    the feed, on every cycle.
+    """
+    monkeypatch.setattr(settings, "keep_items", 1)
+    monkeypatch.setattr(settings, "items_max_age_hours", 100000)
+
+    path = tmp_path / "feed-one.xml"
+    path.write_text(_RSS)
+    await local_xml_sync(db, str(tmp_path))
+    async with db.execute("SELECT COUNT(*) FROM items") as cur:
+        assert (await cur.fetchone())[0] == 2
+
+    await prune_items(db)
+    async with db.execute("SELECT COUNT(*) FROM items") as cur:
+        assert (await cur.fetchone())[0] == 1, "one row is over keep_items"
+
+    stat = path.stat()
+    os.utime(path, (stat.st_atime, stat.st_mtime + 10))
+    await local_xml_sync(db, str(tmp_path))
+
+    async with db.execute("SELECT COUNT(*) FROM items") as cur:
+        assert (await cur.fetchone())[0] == 1, "the evicted row must not be re-inserted"
 
 
 async def test_migrations_add_feed_source_columns() -> None:
