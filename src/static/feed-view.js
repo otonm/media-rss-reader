@@ -338,39 +338,29 @@
     }
   }
 
-  // An item that could not be downloaded is replaced by a visible error tile
-  // rather than vanishing. Silently removing it is why these failures went
-  // unnoticed for so long: the feed just quietly had fewer items in it.
-  // The item still leaves the store, so it is gone on the next reload.
+  // An item whose media could not be downloaded leaves the feed entirely — the
+  // node and the store entry together.
+  //
+  // It used to leave a visible error tile behind while the store entry was
+  // spliced out, and that mismatch is what wedged the feed: the tile was a node
+  // with no store entry, so reaching it made onIntersect's findIndexById return
+  // -1 and bail before rebuilding the cache queue or re-arming autoscroll.
+  // Nothing after it ever loaded and autoscroll never fired again.
   function onItemFailed(id, reason) {
-    const el = state.feed.querySelector(`.placeholder[data-id="${id}"], .media-item[data-id="${id}"]`);
-    if (!el) return;
-    const item = MRR.itemStore.getItems().find((i) => i.id === id);
-    el.replaceWith(createErrorTile(item, id, reason));
+    const el = state.feed && state.feed.querySelector(`.placeholder[data-id="${id}"], .media-item[data-id="${id}"]`);
+    if (el) {
+      // Close the feed up onto a neighbour before the node goes, rather than
+      // letting the browser decide where the scroll lands once it vanishes.
+      if (state.currentEl === el) {
+        const next = el.nextElementSibling || el.previousElementSibling;
+        state.currentEl = next;
+        if (next) next.scrollIntoView({ block: "start" });
+      }
+      el.remove();
+    }
     const idx = MRR.itemStore.findIndexById(id);
     if (idx !== -1) MRR.itemStore.getItems().splice(idx, 1);
-  }
-
-  function createErrorTile(item, id, reason) {
-    const wrap = document.createElement("div");
-    wrap.className = "media-item failed";
-    wrap.dataset.id = id;
-    const box = document.createElement("div");
-    box.className = "failed-box";
-    const icon = document.createElement("div");
-    icon.className = "failed-icon";
-    icon.textContent = "⚠";
-    const title = document.createElement("div");
-    title.className = "failed-title";
-    title.textContent = (item && item.title) || "Media unavailable";
-    const detail = document.createElement("div");
-    detail.className = "failed-reason";
-    detail.textContent = reason || "load failed";
-    box.appendChild(icon);
-    box.appendChild(title);
-    box.appendChild(detail);
-    wrap.appendChild(box);
-    return wrap;
+    console.warn("feedView: dropped unloadable item", id, reason);
   }
 
   // Live checkmark: called by the scroll-controller after a successful

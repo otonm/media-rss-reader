@@ -572,15 +572,18 @@ test("onItemLoaded for a multi-slide gallery does NOT throw", () => {
 });
 
 // ---------------------------------------------------------------------------
-// A failed item must stay visible.
+// A failed item leaves the feed entirely.
 //
-// onItemFailed used to delete the node outright, so a media file that would
-// not load simply left a shorter feed and no explanation anywhere. That is
-// why these failures went unnoticed for so long. The item still leaves the
-// store, so it is gone on the next reload.
+// This inverts an earlier deliberate decision: onItemFailed used to leave a
+// visible error tile so failures were not silent. But the tile had no store
+// entry — the item was spliced out at the same time — and reaching it made
+// onIntersect's findIndexById return -1 and bail before rebuilding the cache
+// queue or re-arming autoscroll. Nothing after it loaded and autoscroll never
+// fired again. The item is now reported to /api/media/failed, deleted server
+// side and dropped from the feed, so the mismatch cannot exist.
 // ---------------------------------------------------------------------------
 
-test("onItemFailed replaces the placeholder with a visible error tile", () => {
+function failedHarness() {
   const ctx = createDomContext();
   const items = [
     { id: "id0", media_type: "image", media_url: "https://example/0.jpg", title: "A broken picture" },
@@ -601,20 +604,35 @@ test("onItemFailed replaces the placeholder with a visible error tile", () => {
   feed.id = "feed";
   ctx.document.register(feed);
   ctx.window.MRR.feedView.renderInitial(items);
+  return { ctx, feed, items };
+}
 
-  ctx.window.MRR.feedView.onItemFailed("id0", "timed out after 10s");
+test("onItemFailed removes the node and the store entry together", () => {
+  const { ctx, feed, items } = failedHarness();
 
-  const tile = feed.children.find((c) => c.dataset.id === "id0");
-  assert.ok(tile, "the failed item must remain in the feed, not vanish");
-  assert.match(tile.className, /failed/);
-  assert.equal(tile.querySelector(".failed-title").textContent, "A broken picture", "the tile names the item");
-  assert.equal(
-    tile.querySelector(".failed-reason").textContent,
-    "timed out after 10s",
-    "the tile states why it failed"
+  withSilencedWarn(() => ctx.window.MRR.feedView.onItemFailed("id0", "timed out after 10s"));
+
+  assert.equal(feed.children.find((c) => c.dataset.id === "id0"), undefined, "the node must be gone");
+  assert.deepEqual(
+    items.map((i) => i.id),
+    ["id1"],
+    "an orphan node with no store entry is what wedged the feed",
   );
-  // Still dropped from the store, so a reload does not retry it.
-  assert.deepEqual(items.map((i) => i.id), ["id1"]);
+});
+
+test("failing the currently-snapped item advances onto its neighbour", () => {
+  const { ctx, feed } = failedHarness();
+  const view = ctx.window.MRR.feedView;
+  const doomed = feed.children[0];
+  const survivor = feed.children[1];
+  view.setCurrentEl(doomed);
+
+  withSilencedWarn(() => view.onItemFailed("id0", "timed out after 10s"));
+
+  assert.equal(survivor.scrolledIntoView, 1, "the feed closes up onto the next item");
+  // snapToNext must now walk from the survivor, not from a detached node.
+  view.setCurrentEl(survivor);
+  assert.equal(feed.children.length, 1);
 });
 
 // ---------------------------------------------------------------------------

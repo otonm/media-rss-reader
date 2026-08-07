@@ -55,6 +55,12 @@ class Settings:
     # --- WebUI behaviour (injected as CSS variables at startup) ---
     feed_initial_count: int = 10
     image_autoscroll_delay_s: int = 2
+    # How long the browser waits for a media download before giving up. Not just
+    # a UI nicety: a timeout reports the URL to /api/media/failed, which marks it
+    # dead and deletes the item. Set below the server's UPSTREAM_TIMEOUT_S (30)
+    # this erases posts that were merely slow — raise it if usable posts start
+    # disappearing.
+    media_load_timeout_s: int = 10
     # 1 shows a diagnostic overlay in the top-right corner naming the current
     # item and how it loaded. An int, not a bool, because _load_settings only
     # parses int and str.
@@ -104,6 +110,10 @@ def _load_settings() -> Settings:
     # serve, and a silent clamp is how the two bounds drifted apart.
     if not 1 <= s.feed_initial_count <= 200:
         raise RuntimeError(f"FEED_INITIAL_COUNT must be between 1 and 200 (got {s.feed_initial_count})")
+    # A timeout deletes the item it fires on, so a 0 or negative value would
+    # empty the library on first scroll. Fail rather than clamp, as above.
+    if not 1 <= s.media_load_timeout_s <= 300:
+        raise RuntimeError(f"MEDIA_LOAD_TIMEOUT_S must be between 1 and 300 (got {s.media_load_timeout_s})")
     return s
 
 

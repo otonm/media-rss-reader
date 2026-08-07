@@ -10,10 +10,10 @@ from fastapi.responses import FileResponse, StreamingResponse
 from pydantic import BaseModel, ConfigDict, Field
 from starlette.types import Message, Receive, Scope, Send
 
-from src.db.connection import DbDep
+from src.db.connection import DbDep, write_transaction
 from src.http_client import HttpDep
 from src.logging_utils import loggable
-from src.media.availability import is_known_media_url
+from src.media.availability import is_known_media_url, mark_url_dead_and_maybe_drop
 from src.media.cache import cache_lookup
 from src.media.fetch import NonMediaUpstreamError, UpstreamError, open_upstream, tee_to_cache
 from src.media.prefetch import prefetch_ahead
@@ -170,6 +170,46 @@ async def proxy_media(
         tee_to_cache(url, response, content_type, request_id=current_request_id()),
         media_type=content_type,
     )
+
+
+@router.post("/media/failed")
+async def report_media_failed(
+    url: str = Query(...),
+    item_id: str | None = Query(None),
+    *,
+    db: DbDep,
+) -> dict[str, int]:
+    """Record media the browser could not load, and drop the item it belongs to.
+
+    The browser gives up on a download after MEDIA_LOAD_TIMEOUT_S and reports it
+    here. A genuine upstream failure answers 502 and is surfaced by the media
+    element's `error` event within a second, so this endpoint mostly hears about
+    media that is slow rather than gone.
+
+    That is a deliberate policy choice by the operator, and it is stricter than
+    open_upstream's: that path marks a URL dead only on 404/410, because doing so
+    on transient failures erased posts permanently (R5). Raising
+    MEDIA_LOAD_TIMEOUT_S is the knob if usable posts start disappearing.
+
+    Gated on is_known_media_url for the same reason proxy_media is: this deletes
+    rows on the client's say-so, so a URL the database has never heard of must
+    not be able to put anything into dead_urls.
+    """
+    logger.debug(f"report_media_failed url={loggable(url)} item_id={loggable(item_id)}")
+    if not await is_known_media_url(url, db):
+        logger.debug(f"report_media_failed: refusing unknown url {loggable(url)}")
+        raise HTTPException(status_code=404, detail="not a known media url")
+
+    # write_transaction because get_db shares one connection across requests and
+    # sqlite3's implicit transaction is per connection: even a single-statement
+    # write needs the lock or it commits whatever another coroutine has in
+    # flight. mark_url_dead_and_maybe_drop commits internally too, which under
+    # the lock only splits this into two transactions rather than interleaving.
+    async with write_transaction(db):
+        dropped = await mark_url_dead_and_maybe_drop(url, item_id, db)
+
+    logger.info(f"report_media_failed: {loggable(url)} marked dead, dropped {len(dropped)} item(s)")
+    return {"dropped": len(dropped)}
 
 
 @router.post("/prefetch/hint")

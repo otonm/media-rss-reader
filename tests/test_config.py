@@ -104,3 +104,18 @@ def test_feed_initial_count_at_the_bound_is_accepted(monkeypatch: pytest.MonkeyP
     monkeypatch.setenv("AUTH_SECRET_KEY", "x" * 32)
     monkeypatch.setenv("FEED_INITIAL_COUNT", "200")
     assert _load_settings().feed_initial_count == 200
+
+
+def test_media_load_timeout_must_be_positive(monkeypatch: pytest.MonkeyPatch) -> None:
+    """The timeout decides what gets permanently deleted, so a 0 would empty the
+    library on first scroll."""
+    monkeypatch.setenv("MEDIA_LOAD_TIMEOUT_S", "0")
+    with pytest.raises(RuntimeError, match="MEDIA_LOAD_TIMEOUT_S"):
+        _load_settings()
+
+
+def test_media_load_timeout_accepts_a_value_above_the_upstream_timeout(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Raising it past UPSTREAM_TIMEOUT_S is the documented remedy for usable
+    posts disappearing, so it must not be capped below 30."""
+    monkeypatch.setenv("MEDIA_LOAD_TIMEOUT_S", "45")
+    assert _load_settings().media_load_timeout_s == 45

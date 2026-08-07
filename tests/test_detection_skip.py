@@ -267,3 +267,33 @@ async def test_migrations_add_feed_source_columns() -> None:
         columns = {row["name"] for row in await cur.fetchall()}
     await conn.close()
     assert {"etag", "last_modified", "source_mtime"} <= columns
+
+
+async def test_tombstoned_item_is_not_reinserted_after_being_reported_unloadable(
+    db: aiosqlite.Connection, tmp_path: Path
+) -> None:
+    """The end-to-end 'ignored in the future' claim.
+
+    A media file the browser could not load is reported to /api/media/failed,
+    which deletes the item and writes an unavailable_guids tombstone. _skip_guids
+    reads that table, so the next sync skips the entry before detection even runs.
+    """
+    from src.media.availability import mark_url_dead_and_maybe_drop
+
+    path = tmp_path / "feed-one.xml"
+    path.write_text(_RSS)
+    await local_xml_sync(db, str(tmp_path))
+    async with db.execute("SELECT COUNT(*) FROM items") as cur:
+        assert (await cur.fetchone())[0] == 2
+
+    await mark_url_dead_and_maybe_drop("https://cdn.example.com/a.jpg", None, db)
+    async with db.execute("SELECT guid FROM items") as cur:
+        assert {row["guid"] for row in await cur.fetchall()} == {"g2"}
+
+    stat = path.stat()
+    os.utime(path, (stat.st_atime, stat.st_mtime + 10))
+    with patch("src.feeds.fetcher.detect_all_media", side_effect=AssertionError("detector must not run")):
+        await local_xml_sync(db, str(tmp_path))
+
+    async with db.execute("SELECT guid FROM items") as cur:
+        assert {row["guid"] for row in await cur.fetchall()} == {"g2"}, "the dropped item must not come back"

@@ -280,3 +280,42 @@ test("a superseded fetch does not clear the current fetch's in-flight flag", asy
   await store.fetchPage();
   assert.equal(calls, 2, "no extra request may slip in beside the outstanding one");
 });
+
+// ---------------------------------------------------------------------------
+// Reporting media the browser could not load.
+//
+// The server marks the URL dead and, once every URL of the item is dead,
+// deletes the row and tombstones its guid so no future feed poll re-inserts it.
+// ---------------------------------------------------------------------------
+
+function storeWithItems(items, beacons) {
+  const ctx = createDomContext();
+  ctx.window.MRR.config = { feedInitialCount: 2 };
+  ctx.fetch = () => jsonResponse(items);
+  ctx.navigator = { sendBeacon: (url) => { beacons.push(url); return true; } };
+  loadScript(resolve(STATIC, "item-store.js"), ctx);
+  return ctx.window.MRR.itemStore;
+}
+
+test("reportUnusable beacons the item's media_url and id", async () => {
+  const beacons = [];
+  const store = storeWithItems([{ id: "id0", rn: 1, media_url: "https://i.redd.it/a b.jpg" }], beacons);
+  await store.fetchPage();
+
+  store.reportUnusable("id0");
+
+  assert.equal(beacons.length, 1);
+  assert.equal(
+    beacons[0],
+    "/api/media/failed?url=https%3A%2F%2Fi.redd.it%2Fa%20b.jpg&item_id=id0",
+  );
+});
+
+test("reportUnusable stays silent for an item the store no longer holds", () => {
+  const beacons = [];
+  const store = storeWithItems([], beacons);
+
+  store.reportUnusable("never-loaded");
+
+  assert.equal(beacons.length, 0, "media_url lives only on the store item; there is nothing to report");
+});

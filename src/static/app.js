@@ -23,6 +23,7 @@
     MRR.config = {
       feedInitialCount: num("--feed-initial-count", 10),
       imageAutoscrollDelayMs: num("--image-autoscroll-delay-s", 2) * 1000,
+      mediaLoadTimeoutMs: num("--media-load-timeout-s", 10) * 1000,
       uiDebug: num("--ui-debug", 0) === 1,
       autoscroll: false,
       mutedDefault: true,
@@ -85,6 +86,9 @@
       MRR.controls?.renderDebug();
     });
     MRR.cacheQueue.on("item-failed", (id, reason) => {
+      // Report first: onItemFailed splices the store entry, and media_url lives
+      // nowhere else.
+      MRR.itemStore.reportUnusable(id);
       MRR.feedView.onItemFailed(id, reason);
       MRR.controls?.renderDebug();
     });

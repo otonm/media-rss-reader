@@ -1,5 +1,6 @@
 import asyncio
 import contextlib
+import json
 import logging
 import re
 from collections.abc import AsyncGenerator
@@ -2454,3 +2455,88 @@ async def test_reddit_feeds_status_reports_an_empty_body_accurately(
     resp = await client.get("/api/reddit-feeds/status")
     assert resp.status_code == 502
     assert "empty" in resp.json()["detail"].lower()
+
+
+# ---------------------------------------------------------------------------
+# POST /api/media/failed — the browser reporting media it could not load.
+#
+# The client gives up after MEDIA_LOAD_TIMEOUT_S and reports the URL here. The
+# item is deleted and its guid tombstoned so no future feed poll re-inserts it.
+# ---------------------------------------------------------------------------
+
+
+async def _seed_item(db: aiosqlite.Connection, media_json: str | None = None) -> None:
+    await db.execute("INSERT INTO feeds (id, url, title) VALUES ('f1', 'http://x.com', 'X')")
+    await db.execute(
+        "INSERT INTO items (id, feed_id, guid, title, media_url, media_type, media_json)"
+        " VALUES ('i1', 'f1', 'g1', 't', 'https://i.redd.it/a.jpg', 'image', ?)",
+        (media_json,),
+    )
+    await db.commit()
+
+
+async def test_report_media_failed_drops_the_item_and_tombstones_it(
+    client: AsyncClient, db: aiosqlite.Connection
+) -> None:
+    await _seed_item(db)
+
+    resp = await client.post("/api/media/failed", params={"url": "https://i.redd.it/a.jpg", "item_id": "i1"})
+
+    assert resp.status_code == 200
+    assert resp.json() == {"dropped": 1}
+    async with db.execute("SELECT COUNT(*) FROM items WHERE id = 'i1'") as cur:
+        assert (await cur.fetchone())[0] == 0, "the item must be gone from the database"
+    async with db.execute("SELECT COUNT(*) FROM dead_urls WHERE url = 'https://i.redd.it/a.jpg'") as cur:
+        assert (await cur.fetchone())[0] == 1
+    async with db.execute("SELECT guid FROM unavailable_guids WHERE feed_id = 'f1'") as cur:
+        assert (await cur.fetchone())["guid"] == "g1", "the tombstone is what keeps it from coming back"
+
+
+async def test_report_media_failed_refuses_an_unknown_url(client: AsyncClient, db: aiosqlite.Connection) -> None:
+    """The endpoint deletes rows on the client's say-so, so a URL the database
+    has never heard of must not be able to put anything into dead_urls."""
+    await _seed_item(db)
+
+    resp = await client.post("/api/media/failed", params={"url": "https://evil.example.com/x.jpg"})
+
+    assert resp.status_code == 404
+    async with db.execute("SELECT COUNT(*) FROM dead_urls") as cur:
+        assert (await cur.fetchone())[0] == 0
+
+
+async def test_report_media_failed_ignores_an_item_id_that_does_not_hold_the_url(
+    client: AsyncClient, db: aiosqlite.Connection
+) -> None:
+    """R5, through the new door: url and item_id arrive independently, so an
+    item that does not actually contain the URL is not a deletion candidate."""
+    await _seed_item(db)
+    await db.execute(
+        "INSERT INTO items (id, feed_id, guid, title, media_url, media_type)"
+        " VALUES ('i2', 'f1', 'g2', 'other', 'https://i.redd.it/b.jpg', 'image')"
+    )
+    await db.commit()
+
+    resp = await client.post("/api/media/failed", params={"url": "https://i.redd.it/a.jpg", "item_id": "i2"})
+
+    assert resp.status_code == 200
+    async with db.execute("SELECT COUNT(*) FROM items WHERE id = 'i2'") as cur:
+        assert (await cur.fetchone())[0] == 1, "the mismatched item must survive"
+
+
+async def test_report_media_failed_keeps_a_gallery_with_a_live_slide(
+    client: AsyncClient, db: aiosqlite.Connection
+) -> None:
+    """Only the primary URL is ever downloaded by the queue, so one dead slide
+    is not grounds for dropping a gallery that can still render."""
+    await _seed_item(
+        db,
+        media_json=json.dumps(
+            [{"url": "https://i.redd.it/a.jpg", "type": "image"}, {"url": "https://i.redd.it/b.jpg", "type": "image"}]
+        ),
+    )
+
+    resp = await client.post("/api/media/failed", params={"url": "https://i.redd.it/a.jpg", "item_id": "i1"})
+
+    assert resp.json() == {"dropped": 0}
+    async with db.execute("SELECT COUNT(*) FROM items WHERE id = 'i1'") as cur:
+        assert (await cur.fetchone())[0] == 1

@@ -26,9 +26,13 @@
   // load outside this queue. 3 leaves room for those, /api/items and the
   // prefetch hints.
   const WORKERS = 3;
-  // A download that has not produced a decodable frame by now is treated as
-  // failed and surfaced to the user, rather than spinning forever.
-  const LOAD_TIMEOUT_MS = 10000;
+  // A download that has not produced a decodable frame by this deadline is
+  // treated as failed: the item is reported to /api/media/failed, deleted, and
+  // removed from the feed. That makes the value consequential rather than
+  // cosmetic — MEDIA_LOAD_TIMEOUT_S is the knob, and it defaults below the
+  // server's own 30s upstream timeout, so slow-but-working media is erased.
+  const DEFAULT_LOAD_TIMEOUT_MS = 10000;
+  const loadTimeoutMs = () => (MRR.config && MRR.config.mediaLoadTimeoutMs) || DEFAULT_LOAD_TIMEOUT_MS;
 
   const state = {
     queue: [],          // Array<string> item IDs in priority order
@@ -114,10 +118,11 @@
         el.muted = true;
         el.preload = "auto";
       }
+      const timeoutMs = loadTimeoutMs();
       const timer = setTimeout(() => {
         el.src = ""; // abort the in-flight request so the connection is freed
-        reject(new Error("timed out after " + LOAD_TIMEOUT_MS / 1000 + "s"));
-      }, LOAD_TIMEOUT_MS);
+        reject(new Error("timed out after " + timeoutMs / 1000 + "s"));
+      }, timeoutMs);
       const settle = (fn, arg) => { clearTimeout(timer); fn(arg); };
       el.addEventListener(
         item.media_type === "video" ? "loadeddata" : "load",

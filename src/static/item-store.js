@@ -165,6 +165,22 @@
     if (it) it.seen_at = seenAt;
   }
 
+  // Report media the browser could not load. The server marks the URL dead and,
+  // once every URL of the item is dead, deletes the row and tombstones its guid
+  // so no future feed poll re-inserts it.
+  //
+  // Must run BEFORE feedView.onItemFailed splices the entry — media_url only
+  // exists on the store item, and there is nowhere else to recover it from.
+  //
+  // sendBeacon, like the seen mark: fire-and-forget, and queued by the browser
+  // even if the tab is closing.
+  function reportUnusable(id) {
+    const item = state.items.find((i) => i.id === id);
+    if (!item || !item.media_url) return;
+    const q = `url=${encodeURIComponent(item.media_url)}&item_id=${encodeURIComponent(id)}`;
+    navigator.sendBeacon(`/api/media/failed?${q}`);
+  }
+
   // Called by app.reloadFeed() when the show-seen toggle is flipped or
   // any other reason to refetch from the start. Clearing the item list is
   // enough to reset the cursor, which is derived from it.
@@ -192,6 +208,7 @@
     setShowSeen,
     getShowSeen,
     markSeen,
+    reportUnusable,
     resetForReload,
     fetchPage,
   };
