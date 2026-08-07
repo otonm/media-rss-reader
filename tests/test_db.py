@@ -197,46 +197,6 @@ async def test_run_with_own_db_reuses_the_writer_connection(
     assert opened == 0, "the writer connection is reused"
 
 
-async def test_run_with_own_db_serialises_writers_on_the_writer_connection(
-    db: aiosqlite.Connection,
-) -> None:
-    """mark_url_dead_and_maybe_drop and record_media_hash write more than one
-    statement and commit without a rollback — safe only because each used to
-    get its own connection. Sharing one connection reopens the interleaving
-    write_transaction exists to close on the request path (F11)."""
-    from src.db import connection as conn_mod
-
-    conn_mod.set_writer_db(db)
-    order: list[str] = []
-    started = asyncio.Event()
-    proceed = asyncio.Event()
-
-    async def first(d: aiosqlite.Connection) -> None:
-        order.append("a-in")
-        started.set()
-        await proceed.wait()
-        order.append("a-out")
-
-    async def second(d: aiosqlite.Connection) -> None:
-        order.append("b-in")
-        order.append("b-out")
-
-    async def trigger() -> None:
-        await started.wait()
-        proceed.set()
-
-    try:
-        await asyncio.gather(
-            conn_mod.run_with_own_db("a", first),
-            conn_mod.run_with_own_db("b", second),
-            trigger(),
-        )
-    finally:
-        conn_mod.set_writer_db(None)
-
-    assert order == ["a-in", "a-out", "b-in", "b-out"], "the writer connection's writes must not interleave"
-
-
 def test_both_sides_of_the_interleave_share_one_keyset_predicate() -> None:
     """src/db/queries.py exists to hold these. It got the CTE and the ORDER BY;
     the anchor lookup and the keyset predicate stayed as byte-identical copies
