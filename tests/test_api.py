@@ -414,10 +414,8 @@ async def test_mark_seen_rolls_back_when_seen_media_write_fails(
     await _insert_feed(db)
     await _insert_item(db, "item1", "feed1", seen_at=None)
     orig_execute = db.execute
-    calls = {"n": 0}
 
     def _flaky_execute(query: str, params: tuple[object, ...] = ()) -> object:
-        calls["n"] += 1
         if "INSERT OR REPLACE INTO seen_media" in query:
             raise aiosqlite.OperationalError("simulated disk full")
         return orig_execute(query, params)
@@ -425,7 +423,9 @@ async def test_mark_seen_rolls_back_when_seen_media_write_fails(
     monkeypatch.setattr(db, "execute", _flaky_execute)
     monkeypatch.setattr(client._transport, "raise_app_exceptions", False)
     resp = await client.post("/api/items/item1/seen")
-    monkeypatch.undo()
+    # No monkeypatch.undo() here: the same monkeypatch is the db fixture's and
+    # _stub_dns's, so undoing it re-points settings.db_path at the real
+    # database while run_with_own_db work may still be in flight.
     assert resp.status_code == 500
     async with db.execute("SELECT seen_at FROM items WHERE id = 'item1'") as cur:
         row = await cur.fetchone()
@@ -437,18 +437,44 @@ async def test_mark_seen_not_found(client: AsyncClient) -> None:
     assert resp.status_code == 404
 
 
-async def test_mark_seen_is_idempotent(client: AsyncClient, db: aiosqlite.Connection) -> None:
+async def test_mark_seen_is_idempotent(
+    client: AsyncClient, db: aiosqlite.Connection, monkeypatch: pytest.MonkeyPatch
+) -> None:
     """The browser fires this as a discarded beacon, so a duplicate POST is
     routine. The UPDATE is unconditional, so the second call moves seen_at
     forward and rewrites the seen_media row; neither the 200-on-repeat contract
-    nor the timestamp drift was pinned anywhere."""
+    nor the timestamp drift was pinned anywhere.
+
+    seen_at has one-second resolution, so two real now() calls could produce
+    the same string and `second >= first` would hold whether or not the
+    second POST did anything — patch the clock so the two calls are
+    distinguishable and require strictly-forward movement.
+    """
+    import datetime as real_dt
+
+    import src.api.items as items_mod
+
+    ticks = iter(
+        [
+            real_dt.datetime(2026, 1, 1, 0, 0, 0, tzinfo=real_dt.UTC),
+            real_dt.datetime(2026, 1, 1, 0, 0, 5, tzinfo=real_dt.UTC),
+        ]
+    )
+
+    class _TickingClock(real_dt.datetime):
+        @classmethod
+        def now(cls, tz: object = None) -> real_dt.datetime:
+            return next(ticks)
+
+    monkeypatch.setattr(items_mod.dt, "datetime", _TickingClock)
+
     await _insert_feed(db)
     await _insert_item(db, "item1", "feed1", seen_at=None)
     first = await client.post("/api/items/item1/seen")
     second = await client.post("/api/items/item1/seen")
     assert first.status_code == 200
     assert second.status_code == 200
-    assert second.json()["seen_at"] >= first.json()["seen_at"]
+    assert second.json()["seen_at"] > first.json()["seen_at"], "the repeat rewrites the timestamp"
     async with db.execute(
         "SELECT COUNT(*) FROM seen_media WHERE media_key = ?",
         ("http://example.com/img.jpg",),
@@ -625,6 +651,7 @@ async def test_proxy_image_passes_with_nosniff(
         resp = await client.get(f"/api/media/proxy?url={url}")
     assert resp.status_code == 200
     assert resp.headers["content-type"].startswith("image/jpeg")
+    assert resp.headers["x-content-type-options"] == "nosniff"
 
 
 async def test_proxy_octet_stream_upstream_passes(
@@ -769,11 +796,7 @@ async def test_prefetch_hint_unknown_item_404(client: AsyncClient, db: aiosqlite
         {"unseen": True},
     ],
 )
-async def test_prefetch_hint_rejects_bad_body(
-    client: AsyncClient, body: dict[str, object], db: aiosqlite.Connection
-) -> None:
-    await _insert_feed(db)
-    await _insert_item(db, "x", "feed1")
+async def test_prefetch_hint_rejects_bad_body(client: AsyncClient, body: dict[str, object]) -> None:
     resp = await client.post("/api/prefetch/hint", json=body)
     assert resp.status_code == 422
 
@@ -992,30 +1015,6 @@ async def test_items_report_whether_media_is_already_cached(
     assert resp.status_code == 200
     cached_by_id = {i["id"]: i["cached"] for i in resp.json()}
     assert cached_by_id == {"i1": True, "i2": False}
-
-
-async def test_items_cached_true_for_warm_media(
-    client: AsyncClient,
-    db: aiosqlite.Connection,
-    tmp_path: object,
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    import hashlib
-
-    import src.media.cache as cache_mod
-
-    monkeypatch.setattr(cache_mod.settings, "cache_dir", str(tmp_path))
-    warm = "http://example.com/warm.jpg"
-    (tmp_path / hashlib.sha256(warm.encode()).hexdigest()).write_bytes(b"x")
-    await db.execute("INSERT INTO feeds(id,url,title) VALUES ('f1','http://x','X')")
-    await db.execute(
-        "INSERT INTO items(id,feed_id,guid,media_url,media_type,pub_date)"
-        " VALUES ('i1','f1','g1',?,'image','2026-01-01')",
-        (warm,),
-    )
-    await db.commit()
-    resp = await client.get("/api/items")
-    assert resp.json()[0]["cached"] is True
 
 
 async def test_items_rank_ties_break_by_id(client: AsyncClient, db: aiosqlite.Connection) -> None:
