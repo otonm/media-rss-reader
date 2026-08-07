@@ -50,7 +50,7 @@ class Settings:
     # always run). 97 is a sensible starting point: it drops an image whose
     # 256-bit hash differs by 5 bits or fewer. An int, not a bool, because
     # _load_settings only parses int and str.
-    dedup_similarity: int = 0
+    dedup_similarity: int = 97
 
     # --- WebUI behaviour (injected as CSS variables at startup) ---
     feed_initial_count: int = 10
