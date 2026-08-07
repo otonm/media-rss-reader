@@ -109,7 +109,13 @@
     // server-side count ever drifts noticeably from what was scrolled past.
     MRR.itemStore.markSeen(id, new Date().toISOString());
     MRR.feedView.markSeen(id);
-    navigator.sendBeacon(`/api/items/${id}/seen`);
+    // media_url rides along so the mark survives the row being pruned between
+    // the page load and this scroll. prune_items evicts oldest-first and the
+    // feed is served oldest-first, so the rows on screen are the ones it takes;
+    // without this the beacon 404s against a deleted row and seen_media — the
+    // record meant to outlive pruning — never hears about it.
+    const q = encodeURIComponent(item.media_url);
+    navigator.sendBeacon(`/api/items/${id}/seen?media_url=${q}`);
   }
 
   function observe(el) {

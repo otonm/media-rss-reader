@@ -4,6 +4,7 @@ import asyncio
 import datetime as dt
 import logging
 from typing import Any
+from urllib.parse import urlsplit
 
 import aiosqlite
 from fastapi import APIRouter, HTTPException, Query
@@ -180,12 +181,41 @@ async def list_items(
     return items
 
 
+def _usable_media_url(url: str | None) -> bool:
+    """Whether a client-supplied media URL may seed seen_media on its own.
+
+    Only consulted once the item row is already gone, so nothing on this side
+    can corroborate it. Requiring a real http(s) URL keeps a stray or truncated
+    value from landing a key in seen_media that suppresses unrelated media.
+    """
+    if not url:
+        return False
+    try:
+        parts = urlsplit(url)
+    except ValueError:
+        return False
+    return parts.scheme in ("http", "https") and bool(parts.netloc)
+
+
 @router.post("/items/{item_id}/seen")
 async def mark_seen(
     item_id: str,
     db: DbDep,
+    media_url: str | None = None,
 ) -> dict[str, str]:
     """Mark an item as seen and return the timestamp.
+
+    `media_url` is the browser's own copy of the item's media URL. It exists so
+    the durable seen record survives the row disappearing: prune_items evicts
+    oldest-first while this module serves oldest-first, so a refresh cycle
+    routinely deletes a row between the page being served and the reader
+    scrolling past it. Without it the UPDATE matches nothing, the request 404s,
+    and seen_media — the record whose entire job is to outlive pruning — never
+    learns the item was seen.
+
+    The stored row wins whenever it exists; the parameter is consulted only
+    when it is gone, and only if it passes _usable_media_url. A request that
+    sends neither still 404s, so a genuinely unknown id is still an error.
 
     Uses UPDATE ... RETURNING (SQLite >= 3.35) so the SELECT-before-UPDATE
     and the trailing SELECT both go away: one statement both updates and
@@ -213,16 +243,22 @@ async def mark_seen(
             ) as cur:
                 row = await cur.fetchone()
             update_ms = update_elapsed()
-            if row is None:
+            if row is None and not _usable_media_url(media_url):
                 # DEBUG, not INFO like other 404s here: the browser fires this as a
                 # beacon and discards the response, so a 404 is routine — not a
                 # status change an operator needs to see.
                 logger.debug(f"mark_seen item_id={loggable(item_id)} not found")
                 raise HTTPException(status_code=404, detail="Not found")
+            if row is None:
+                logger.debug(
+                    f"mark_seen item_id={loggable(item_id)} row already pruned; "
+                    f"recording seen_media from the client's media_url"
+                )
+            seen_url = row["media_url"] if row is not None else media_url
             insert_elapsed = timer()
             await db.execute(
                 "INSERT OR REPLACE INTO seen_media (media_key, seen_at) VALUES (?, ?)",
-                (media_key(row["media_url"]), now),
+                (media_key(seen_url), now),
             )
             insert_ms = insert_elapsed()
     except HTTPException:
@@ -233,8 +269,8 @@ async def mark_seen(
         )
         raise
 
+    seen_at = row["seen_at"] if row is not None else now
     logger.debug(
-        f"mark_seen item_id={loggable(item_id)} seen_at={row['seen_at']} "
-        f"update={update_ms:.1f}ms insert={insert_ms:.1f}ms"
+        f"mark_seen item_id={loggable(item_id)} seen_at={seen_at} update={update_ms:.1f}ms insert={insert_ms:.1f}ms"
     )
-    return {"seen_at": row["seen_at"]}
+    return {"seen_at": seen_at}

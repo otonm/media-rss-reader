@@ -11,6 +11,8 @@ import pytest
 import respx
 from httpx import AsyncClient
 
+from src.media.normalize import media_key
+
 
 def _pinned(url: str) -> str:
     """The url as open_upstream now sends it: host replaced by the stubbed IP."""
@@ -435,6 +437,52 @@ async def test_mark_seen_rolls_back_when_seen_media_write_fails(
 async def test_mark_seen_not_found(client: AsyncClient) -> None:
     resp = await client.post("/api/items/nonexistent/seen")
     assert resp.status_code == 404
+
+
+async def test_mark_seen_records_seen_media_when_the_row_is_already_pruned(
+    client: AsyncClient, db: aiosqlite.Connection
+) -> None:
+    """prune_items evicts oldest-first and /api/items serves oldest-first, so a
+    refresh cycle takes the rows on screen. The beacon then arrives for a row
+    that is gone; seen_media is the record meant to outlive pruning, so it has
+    to be written from the URL the browser still holds."""
+    url = "https://i.redd.it/pruned.jpg"
+    resp = await client.post("/api/items/gone/seen", params={"media_url": url})
+
+    assert resp.status_code == 200
+    async with db.execute("SELECT seen_at FROM seen_media WHERE media_key = ?", (media_key(url),)) as cur:
+        assert await cur.fetchone() is not None
+
+
+async def test_mark_seen_rejects_a_non_http_media_url_for_a_missing_row(
+    client: AsyncClient, db: aiosqlite.Connection
+) -> None:
+    """Nothing on this side can corroborate the URL once the row is gone, so a
+    value that is not an http(s) URL must not seed seen_media."""
+    resp = await client.post("/api/items/gone/seen", params={"media_url": "not-a-url"})
+
+    assert resp.status_code == 404
+    async with db.execute("SELECT COUNT(*) FROM seen_media") as cur:
+        assert (await cur.fetchone())[0] == 0
+
+
+async def test_mark_seen_prefers_the_stored_row_over_the_parameter(
+    client: AsyncClient, db: aiosqlite.Connection
+) -> None:
+    """The parameter is a fallback for a vanished row, never an override."""
+    await db.execute("INSERT INTO feeds (id, url, title) VALUES ('f1', 'http://x.com', 'X')")
+    await db.execute(
+        "INSERT INTO items (id, feed_id, guid, title, media_url, media_type)"
+        " VALUES ('item1', 'f1', 'g1', 't', 'https://cdn.example.com/real.jpg', 'image')"
+    )
+    await db.commit()
+
+    resp = await client.post("/api/items/item1/seen", params={"media_url": "https://evil.example.com/other.jpg"})
+
+    assert resp.status_code == 200
+    async with db.execute("SELECT media_key FROM seen_media") as cur:
+        keys = {row["media_key"] for row in await cur.fetchall()}
+    assert keys == {media_key("https://cdn.example.com/real.jpg")}
 
 
 async def test_mark_seen_is_idempotent(
