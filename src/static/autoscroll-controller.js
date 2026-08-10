@@ -130,5 +130,7 @@
       .catch(() => MRR.config.imageAutoscrollDelayMs);
   }
 
-  MRR.autoscrollController = { setAutoscroll, bindIfVisible, reset };
+  // suspend() is unbind(): the zoom controller stops the advance while an
+  // image is zoomed, and calls reset(wrap) to re-arm it on zoom-out.
+  MRR.autoscrollController = { setAutoscroll, bindIfVisible, reset, suspend: unbind };
 })();

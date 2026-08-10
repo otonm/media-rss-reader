@@ -22,6 +22,7 @@
 //   snapToNext(), snapToPrev()
 //   setCurrentMedia(el)
 //   activeMediaEl(wrap)   // media of the active gallery slide (or single media)
+//   currentWrap()         // the .media-item the feed is snapped to, or null
 //   advanceOrNext(wrap)   // next gallery slide, or snapToNext on the last one
 //   galleryNext(), galleryPrev()  // ←/→ slide stepping on the current item
 // ---------------------------------------------------------------------------
@@ -377,6 +378,10 @@
   // leaving its error tile in the DOM, so they diverge permanently after any
   // failed media load. Sibling walking cannot be off by one.
   function setCurrentEl(el) {
+    // Landing on a different item drops any zoom — the single choke point for
+    // every path that moves the feed: keys, wheel, autoscroll advance, a touch
+    // scroll started beside the picture, or onItemFailed closing a gap.
+    if (el !== state.currentEl) MRR.zoomController?.reset();
     state.currentEl = el;
   }
 
@@ -428,6 +433,7 @@
     snapToPrev,
     setCurrentMedia,
     activeMediaEl,
+    currentWrap,
     advanceOrNext,
     galleryNext,
     galleryPrev,

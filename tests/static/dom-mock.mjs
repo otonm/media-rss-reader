@@ -343,6 +343,16 @@ function makeElement(tag) {
     },
     cloneNode() { return makeElement(this.tagName.toLowerCase()); },
   };
+  // classList over the className string — the production code uses the real
+  // DOM API (feed-view's gallery slides, zoom-controller's .zoomed marker).
+  el.classList = {
+    contains: (c) => el.className.split(/\s+/).includes(c),
+    add(c) { if (!this.contains(c)) el.className = (el.className + " " + c).trim(); },
+    remove(c) {
+      el.className = el.className.split(/\s+/).filter((x) => x && x !== c).join(" ");
+    },
+    toggle(c, on) { if (on === undefined ? this.contains(c) : !on) this.remove(c); else this.add(c); },
+  };
   return el;
 }
 

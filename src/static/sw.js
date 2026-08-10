@@ -13,6 +13,7 @@ self.addEventListener("install", (event) => {
         "/static/scroll-controller.js",
         "/static/autoscroll-controller.js",
         "/static/cache-queue.js",
+        "/static/zoom-controller.js",
         "/static/manifest.json",
         "/static/icon-192.png",
         "/static/icon-512.png",

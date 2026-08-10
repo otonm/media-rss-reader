@@ -80,6 +80,7 @@
     MRR.itemStore.setShowSeen(readShowSeenPref());
     MRR.scrollController.init();
     MRR.controls.init();
+    MRR.zoomController.init();
     MRR.cacheQueue.on("item-loaded", (id, el, ms) => {
       MRR.controls?.recordLoadMs(id, ms);
       MRR.feedView.onItemLoaded(id, el);
@@ -111,21 +112,34 @@
         case "j":
         case "ArrowDown":
           e.preventDefault();
+          MRR.zoomController.reset();
           MRR.feedView.snapToNext();
           break;
         case "k":
         case "ArrowUp":
           e.preventDefault();
+          MRR.zoomController.reset();
           MRR.feedView.snapToPrev();
           break;
         case "ArrowLeft":
           e.preventDefault();
+          MRR.zoomController.reset();
           MRR.feedView.galleryPrev();
           break;
         case "ArrowRight":
           e.preventDefault();
+          MRR.zoomController.reset();
           MRR.feedView.galleryNext();
           break;
+        case "z": {
+          e.preventDefault();
+          const wrap = MRR.feedView.currentWrap();
+          const media = wrap ? MRR.feedView.activeMediaEl(wrap) : null;
+          // Anchored at the viewport centre: the keyboard has no pointer, and
+          // the mouse takes over the moment it moves.
+          MRR.zoomController.toggle(media, window.innerWidth / 2, window.innerHeight / 2);
+          break;
+        }
         case "a":
           e.preventDefault();
           document.getElementById("btn-autoscroll").click();
@@ -149,8 +163,18 @@
     const DRAG_THRESHOLD = 40; // px — below this is a click, not a swipe
     let dragStart = null;       // {x, y} on pointerdown, null when not dragging
 
+    // Wheel over a zoomed image un-zooms it and lets the scroll through, so
+    // the picture snaps back to fitted before it leaves the viewport.
+    document.getElementById("feed").addEventListener(
+      "wheel",
+      () => MRR.zoomController.reset(),
+      { passive: true },
+    );
+
     document.getElementById("feed").addEventListener("pointerdown", (e) => {
       if (e.pointerType === "touch") return;
+      // While zoomed the pointer pans the picture; a drag across it is not a swipe.
+      if (MRR.zoomController.isZoomed()) return;
       // Video controls (seek, volume) have their own drag behavior;
       // intercepting them would fight the browser's native handling.
       if (e.target.closest?.("video")) return;

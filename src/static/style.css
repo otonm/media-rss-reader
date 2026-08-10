@@ -91,6 +91,13 @@ html, body {
   display: block;
 }
 
+/* Zoomed to 100% by the zoom controller, which owns the transform itself.
+   The wrap's touch-action is set inline while zoomed (see zoom-controller.js). */
+.media-item img.zoomed {
+  will-change: transform;
+  cursor: zoom-out;
+}
+
 /* Hide broken media (e.g. transparent placeholder pixel). */
 .media-item img[src=""],
 .media-item video[src=""] { display: none; }
