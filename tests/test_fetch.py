@@ -682,3 +682,29 @@ async def test_open_upstream_drops_the_item_on_a_non_media_content_type(
 
     assert await _is_dropped(db, url)
     assert cache_read(url) is None
+
+
+@respx.mock
+async def test_open_upstream_names_the_reason_it_refused(
+    db: aiosqlite.Connection, caplog: pytest.LogCaptureFixture, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """SVG and HTML are refused for different reasons and both drop the item.
+    The log has to say which, or the two are indistinguishable in an incident:
+    an SVG feed losing items is policy working, an HTML one is media gone."""
+    monkeypatch.setattr(cache_mod.settings, "cache_dir", str(tmp_path))
+    caplog.set_level(logging.WARNING)
+
+    async def _refuse(url: str, content_type: str) -> None:
+        respx.get(_pinned(url)).mock(
+            return_value=httpx.Response(200, headers={"content-type": content_type}, content=b"x")
+        )
+        async with httpx.AsyncClient() as client:
+            with pytest.raises(NonMediaUpstreamError):
+                await open_upstream(url, None, client)
+
+    await _refuse("http://example.com/a.svg", "image/svg+xml")
+    await _refuse("http://example.com/b.jpg", "text/html")
+
+    warnings = [r.message for r in caplog.records if r.levelno == logging.WARNING]
+    assert any("refusing SVG" in m and "a.svg" in m for m in warnings), warnings
+    assert any("refusing non-media content-type" in m and "b.jpg" in m for m in warnings), warnings

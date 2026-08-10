@@ -61,17 +61,22 @@ class UpstreamError(Exception):
 
 
 class NonMediaUpstreamError(Exception):
-    """The origin served a non-media content type; nothing cached.
+    """The response body is not media this reader can show; nothing cached.
 
-    Distinct from UpstreamError only so the proxy can tell the two apart in its
-    response. The URL IS marked dead: an image URL answering with HTML is
-    overwhelmingly a removed post redirected to a landing page, and leaving it
-    alive meant the item re-missed the cache on every open forever. The trade is
-    that a WAF challenge page, which can flip back to media later, now erases
-    the item — the same shape of risk as R5, accepted deliberately.
+    Two independent causes, both of which mark the URL dead and drop the item:
 
-    Raised from open_upstream so the prefetch path cannot cache HTML and later
-    serve it as a cache hit (F5).
+    - `image/svg+xml`. Refused on the R8 security ground, and dropped because
+      this reader renders photos and video — an SVG is not media it will ever
+      show, so the item is permanently useless whatever the origin does next.
+    - Any other non-media type. An image URL answering with HTML is
+      overwhelmingly a removed post redirected to a landing page. Leaving it
+      alive meant the item re-missed the cache on every open forever. The trade
+      is that a WAF challenge page, which can flip back to media later, now
+      erases the item — the same shape of risk as R5, accepted deliberately.
+
+    Distinct from UpstreamError only so the proxy can tell the two apart in the
+    502 detail it returns. Raised from open_upstream so the prefetch path cannot
+    cache HTML and later serve it as a cache hit (F5).
     """
 
 
@@ -234,15 +239,26 @@ async def open_upstream(
         raise UpstreamError(f"upstream returned {status} for {safe_url}")
     content_type = response.headers.get("content-type", "application/octet-stream")
     media_type = content_type.split(";")[0].strip().lower()
-    # SVG starts with image/ but is an active document: served from our own
-    # origin its <script> runs there with the session cookie attached (R8).
-    if media_type == "image/svg+xml" or not (
-        media_type.startswith("image/") or media_type.startswith("video/") or media_type == "application/octet-stream"
-    ):
+    # Two refusals with two different reasons, both ending in a dropped item.
+    # They are reported separately so the log says which one happened.
+    is_svg = media_type == "image/svg+xml"
+    is_media = media_type.startswith(("image/", "video/")) or media_type == "application/octet-stream"
+    if is_svg or not is_media:
         await response.aclose()
         safe_content_type = loggable(content_type)
+        if is_svg:
+            # SVG starts with image/ but is an active document: served from our
+            # own origin its <script> runs there with the session cookie
+            # attached (R8). This reader renders photos and video, so an SVG is
+            # not media it will ever show — the item is dropped by policy, not
+            # because anything upstream is wrong with it.
+            reason = "refusing SVG (an active document, and not media this reader renders)"
+        else:
+            # An image URL answering with HTML is overwhelmingly a removed post
+            # redirected to a landing page.
+            reason = f"refusing non-media content-type {safe_content_type}"
         logger.warning(
-            f"open_upstream: refusing non-media content-type {safe_content_type} for {safe_url}, marking dead "
+            f"open_upstream: {reason} for {safe_url}, marking dead "
             f"(item_id={safe_item_id}, request_id={request_id})"
         )
         await _mark_dead(url, item_id)

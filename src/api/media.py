@@ -145,11 +145,11 @@ async def proxy_media(
         # an instant connection refusal and a 30s read timeout otherwise log
         # identically.
         #
-        # NonMediaUpstreamError is deliberately not an UpstreamError: nothing
-        # was cached, nothing was marked dead, and the condition can flip back.
-        # The two share this log line and differ only in the 502 detail the
-        # client sees below — what actually happened, not "the fetch failed",
-        # which for a non-media response it did not.
+        # NonMediaUpstreamError is deliberately not an UpstreamError, but both
+        # now mark the URL dead and drop the item. They share this log line and
+        # differ only in the 502 detail the client sees below — what actually
+        # happened, not "the fetch failed", which for a non-media response it
+        # did not.
         logger.debug(
             f"proxy_media: 502 for {loggable(url)} (item_id={loggable(item_id)}) in {upstream_elapsed():.1f}ms — {exc}"
         )
@@ -187,9 +187,11 @@ async def report_media_failed(
     media that is slow rather than gone.
 
     That is a deliberate policy choice by the operator, and it is stricter than
-    open_upstream's: that path marks a URL dead only on 404/410, because doing so
-    on transient failures erased posts permanently (R5). Raising
-    MEDIA_LOAD_TIMEOUT_S is the knob if usable posts start disappearing.
+    open_upstream's. That path needs a permanent answer — a PERMANENT_STATUSES
+    code or a non-media body — because marking dead on transient failures erased
+    posts permanently (R5); this one fires on a mere timeout, which cannot tell
+    gone from slow. Raising MEDIA_LOAD_TIMEOUT_S is the knob if usable posts
+    start disappearing.
 
     Gated on is_known_media_url for the same reason proxy_media is: this deletes
     rows on the client's say-so, so a URL the database has never heard of must
