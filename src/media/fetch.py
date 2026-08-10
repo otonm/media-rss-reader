@@ -258,8 +258,7 @@ async def open_upstream(
             # redirected to a landing page.
             reason = f"refusing non-media content-type {safe_content_type}"
         logger.warning(
-            f"open_upstream: {reason} for {safe_url}, marking dead "
-            f"(item_id={safe_item_id}, request_id={request_id})"
+            f"open_upstream: {reason} for {safe_url}, marking dead (item_id={safe_item_id}, request_id={request_id})"
         )
         await _mark_dead(url, item_id)
         raise NonMediaUpstreamError(f"upstream returned non-media content type {safe_content_type} for {safe_url}")
