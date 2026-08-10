@@ -2,8 +2,9 @@
 
 Two entry points:
 
-warm_startup_cache() — called once at startup; warms the cache with the most
-    recent CACHE_MAX_ITEMS items, capped at 10 concurrent requests.
+warm_startup_cache() — called once at startup; warms the cache with the first
+    CACHE_MAX_ITEMS items /api/items would serve, capped at 10 concurrent
+    requests.
 
 prefetch_ahead() — called from the /api/prefetch/hint endpoint; warms the
     next PREFETCH_AHEAD items after the given item in interleave order.
@@ -18,7 +19,13 @@ import aiosqlite
 import httpx
 
 from src.config import settings
-from src.db.queries import ANCHOR_LOOKUP, INTERLEAVE_ORDER_BY, KEYSET_AFTER, RANKED_ITEMS_CTE
+from src.db.queries import (
+    ANCHOR_LOOKUP,
+    INTERLEAVE_ORDER_BY,
+    KEYSET_AFTER,
+    RANKED_ITEMS_CTE,
+    UNSEEN_FIRST_ORDER_BY,
+)
 from src.logging_utils import loggable
 from src.media.cache import cache_read
 from src.media.fetch import fetch_to_cache
@@ -96,7 +103,12 @@ async def _warm(item_id: str, url: str, client: httpx.AsyncClient, request_id: s
 
 
 async def warm_startup_cache(db: aiosqlite.Connection, client: httpx.AsyncClient) -> None:
-    """Pre-warm the cache with the most recently published items.
+    """Pre-warm the cache with the items the reader will see first.
+
+    The order has to be the order /api/items serves, not "most recent": the feed
+    interleaves feeds and runs OLDEST-first within each, filtered to unseen by
+    default. Warming by pub_date DESC filled the opposite end of the library, so
+    the first page was always a cold miss (see UNSEEN_FIRST_ORDER_BY).
 
     Runs as an asyncio background task (fire-and-forget from the lifespan hook).
     The shared semaphore caps in-flight requests at 10 across the startup warm
@@ -104,8 +116,11 @@ async def warm_startup_cache(db: aiosqlite.Connection, client: httpx.AsyncClient
     however many items are queued.
     """
     try:
+        # Interpolated SQL fragments are source-controlled; the limit is bound.
         async with db.execute(
-            "SELECT id, media_url FROM items ORDER BY pub_date DESC LIMIT ?",
+            f"""{RANKED_ITEMS_CTE}
+                SELECT id, media_url FROM ranked
+                {UNSEEN_FIRST_ORDER_BY} LIMIT ?""",  # noqa: S608
             (settings.cache_max_items,),
         ) as cur:
             rows = await cur.fetchall()

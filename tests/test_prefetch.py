@@ -304,3 +304,86 @@ async def test_prefetch_ahead_queues_despite_a_full_startup_warm_backlog(
 
     for t in filler:
         t.cancel()
+
+
+async def test_warm_startup_cache_follows_the_feed_order(
+    db: aiosqlite.Connection, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The startup warm must fill the cache in the order /api/items serves.
+
+    It used to warm `ORDER BY pub_date DESC LIMIT CACHE_MAX_ITEMS` — the newest
+    items globally — while the feed interleaves feeds and runs OLDEST-first
+    within each, filtered to unseen by default. At KEEP_ITEMS=1000 /
+    CACHE_MAX_ITEMS=500 that warmed exactly the half of the library the reader
+    reaches last, so page one was a guaranteed miss and the browser queue's
+    cachedFirst() had nothing to prefer.
+    """
+    from src.api.items import list_items
+    from src.media.prefetch import warm_startup_cache
+
+    for feed in ("f1", "f2"):
+        await db.execute("INSERT INTO feeds(id, url, title) VALUES (?, ?, 'F')", (feed, f"http://x.com/{feed}"))
+    # Interleaved pub_dates across the two feeds, plus one seen row per feed
+    # that is OLDER than every unseen one — under a plain interleave those sort
+    # first, so they prove the unseen-ahead-of-seen half of the ordering too.
+    for feed in ("f1", "f2"):
+        await db.execute(
+            """INSERT INTO items(id, feed_id, guid, title, media_url, media_type, pub_date, seen_at)
+               VALUES (?, ?, ?, 'T', ?, 'image', '2026-01-01T00:00:00', '2026-02-01T00:00:00')""",
+            (f"{feed}-seen", feed, f"{feed}-seen", f"http://x.com/{feed}-seen.jpg"),
+        )
+        for n in range(3):
+            await db.execute(
+                """INSERT INTO items(id, feed_id, guid, title, media_url, media_type, pub_date)
+                   VALUES (?, ?, ?, 'T', ?, 'image', ?)""",
+                (f"{feed}-{n}", feed, f"{feed}-{n}", f"http://x.com/{feed}-{n}.jpg", f"2026-03-0{n + 1}T00:00:00"),
+            )
+    await db.commit()
+
+    warmed: list[str] = []
+
+    async def _fake_warm(item_id: str, url: str, client: object, request_id: str | None = None) -> None:
+        warmed.append(url)
+
+    monkeypatch.setattr("src.media.prefetch._warm", _fake_warm)
+
+    async with httpx.AsyncClient() as client:
+        await warm_startup_cache(db, client)
+        await asyncio.gather(*list(prefetch_mod._bg_tasks))
+
+    served = [item["media_url"] for item in await list_items(unseen=True, size=6, db=db)]
+    assert warmed[: len(served)] == served, "the warm order must match the order the feed serves"
+    # The seen rows are warmed, but last — they are the only ones the reader
+    # sees with the show-seen toggle on, and they are behind the default view.
+    assert sorted(warmed[len(served) :]) == ["http://x.com/f1-seen.jpg", "http://x.com/f2-seen.jpg"]
+
+
+async def test_warm_startup_cache_stops_at_cache_max_items(
+    db: aiosqlite.Connection, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The LIMIT still applies, and it now truncates the tail of the feed order
+    rather than the head — the items the reader reaches last."""
+    monkeypatch.setattr(prefetch_mod.settings, "cache_max_items", 2)
+    from src.media.prefetch import warm_startup_cache
+
+    await db.execute("INSERT INTO feeds(id, url, title) VALUES ('f1', 'http://x.com/f', 'F')")
+    for n in range(5):
+        await db.execute(
+            """INSERT INTO items(id, feed_id, guid, title, media_url, media_type, pub_date)
+               VALUES (?, 'f1', ?, 'T', ?, 'image', ?)""",
+            (f"i{n}", f"g{n}", f"http://x.com/{n}.jpg", f"2026-03-0{n + 1}T00:00:00"),
+        )
+    await db.commit()
+
+    warmed: list[str] = []
+
+    async def _fake_warm(item_id: str, url: str, client: object, request_id: str | None = None) -> None:
+        warmed.append(url)
+
+    monkeypatch.setattr("src.media.prefetch._warm", _fake_warm)
+
+    async with httpx.AsyncClient() as client:
+        await warm_startup_cache(db, client)
+        await asyncio.gather(*list(prefetch_mod._bg_tasks))
+
+    assert warmed == ["http://x.com/0.jpg", "http://x.com/1.jpg"]

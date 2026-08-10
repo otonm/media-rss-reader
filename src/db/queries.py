@@ -24,6 +24,16 @@ RANKED_ITEMS_CTE = """
 
 INTERLEAVE_ORDER_BY = "ORDER BY rn ASC, feed_id ASC, id ASC"
 
+# warm_startup_cache orders by this. It is INTERLEAVE_ORDER_BY with unseen rows
+# ahead of seen ones, because the client defaults to showSeen: false and so asks
+# for unseen=true. The warm used to be `ORDER BY pub_date DESC LIMIT
+# CACHE_MAX_ITEMS` — the newest items globally — while /api/items serves the
+# OLDEST unseen item of each feed first. At the default KEEP_ITEMS=1000 /
+# CACHE_MAX_ITEMS=500 that warmed exactly the half of the library the reader
+# reaches last, so page one was a guaranteed cache miss and cachedFirst() in the
+# browser queue had nothing to prefer.
+UNSEEN_FIRST_ORDER_BY = "ORDER BY (seen_at IS NOT NULL) ASC, rn ASC, feed_id ASC, id ASC"
+
 # The anchor lookup and the keyset predicate. These used to be verbatim copies
 # in src/api/items.py and src/media/prefetch.py while this module's docstring
 # claimed both sides imported from here — it held for the CTE and the ORDER BY
