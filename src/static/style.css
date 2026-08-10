@@ -19,6 +19,7 @@
   --counter-size: 13px;
   --feed-initial-count: 10;
   --image-autoscroll-delay-s: 2;
+  --zoom-transition-ms: 200;
   --ui-debug: 0;
 }
 

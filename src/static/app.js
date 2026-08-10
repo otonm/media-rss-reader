@@ -24,6 +24,7 @@
       feedInitialCount: num("--feed-initial-count", 10),
       imageAutoscrollDelayMs: num("--image-autoscroll-delay-s", 2) * 1000,
       mediaLoadTimeoutMs: num("--media-load-timeout-s", 10) * 1000,
+      zoomTransitionMs: num("--zoom-transition-ms", 200),
       uiDebug: num("--ui-debug", 0) === 1,
       autoscroll: false,
       mutedDefault: true,

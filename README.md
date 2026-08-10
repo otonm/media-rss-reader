@@ -109,6 +109,7 @@ Generate a suitable secret key with `openssl rand -hex 32`.
 | `PREFETCH_AHEAD` | `5` | Items to pre-fetch ahead of current scroll position |
 | `FEED_INITIAL_COUNT` | `10` | Items per API page and initial load batch |
 | `IMAGE_AUTOSCROLL_DELAY_S` | `2` | Dwell time per image in auto-scroll (seconds); also the minimum dwell for GIFs and videos |
+| `ZOOM_TRANSITION_MS` | `200` | How long the zoom-to-100% gesture animates (milliseconds); `0` snaps instantly. Panning is never animated, and `prefers-reduced-motion` overrides this to `0` |
 | `UI_DEBUG` | `0` | Set to `1` to show a diagnostic overlay in the top-right corner: the current item's feed, title, media type, publish date, cache hit/miss with load time, and the download queue depth |
 | `PORT` | `8080` | Port the server listens on inside the container (host port is set by the `-p` flag in Docker / Compose) |
 | `LOG_LEVEL` | `info` | Uvicorn log level: `debug` \| `info` \| `warning` \| `error` |
@@ -165,6 +166,7 @@ services:
       # - LOG_LEVEL=debug
       # - FEED_INITIAL_COUNT=10
       # - IMAGE_AUTOSCROLL_DELAY_S=2
+      # - ZOOM_TRANSITION_MS=200
     restart: unless-stopped
     healthcheck:
       test: ["CMD-SHELL", "wget -q --spider http://127.0.0.1:8080/health || exit 1"]

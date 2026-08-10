@@ -101,6 +101,7 @@ src/
     ├── scroll-controller.js     IntersectionObserver + scroll event → currentIndex, seen marking
     ├── autoscroll-controller.js Per-item dwell timer; image/GIF/video advance
     ├── cache-queue.js           Priority download queue (single-worker)
+    ├── zoom-controller.js       Zoom an image to 100%, pan it, animate in/out
     └── controls.js              FAB menu, mute, autoscroll, show-seen, status modal
 ```
 
@@ -328,7 +329,7 @@ Backend proxy for the [Reddit Feeds](https://github.com/otonm/reddit-feeds) comp
 
 ## Frontend
 
-Seven vanilla JS modules, no framework, no build step. Each module attaches to `window.MRR` and exposes a public API consumed by other modules.
+Eight vanilla JS modules, no framework, no build step. Each module attaches to `window.MRR` and exposes a public API consumed by other modules.
 
 ### Module Map
 
@@ -340,6 +341,7 @@ Seven vanilla JS modules, no framework, no build step. Each module attaches to `
 | `scroll-controller.js` | ~107 | IntersectionObservers for currentIndex and seen marking |
 | `autoscroll-controller.js` | ~134 | Per-item dwell timer: auto-advance on image delay, GIF duration, or video `ended` |
 | `cache-queue.js` | ~121 | Single-worker priority download queue; emits `item-loaded` / `item-failed` |
+| `zoom-controller.js` | ~200 | Double-tap / double-click / `z` zooms an image to 1:1; cursor-follow pan on desktop, finger drag on mobile; animates over `ZOOM_TRANSITION_MS` |
 | `controls.js` | ~221 | FAB menu, autoscroll/mute/show-seen toggles, Reddit Feeds status modal with live polling |
 
 ### State Model (in `item-store.js`)
@@ -414,6 +416,7 @@ The frontend also fires a fire-and-forget `POST /api/prefetch/hint` after each r
 <style>:root{
   --feed-initial-count:10;
   --image-autoscroll-delay-s:2;
+  --zoom-transition-ms:200;
   --ui-debug:0
 }</style>
 ```
@@ -428,7 +431,7 @@ Additionally, `{{VERSION}}` in static asset URLs (`style.css?v={{VERSION}}`, `ap
 
 `config.py` defines a `Settings` dataclass. Every field maps to an environment variable of the same name (uppercased). `_load_settings()` reads `os.environ` at import time and returns a singleton `settings` object. No `.env` file parsing at the Python level — that is handled by Docker/the shell.
 
-Frontend-visible values (`feed_initial_count`, `image_autoscroll_delay_s`, `ui_debug`) travel to the browser as CSS custom properties injected into the HTML at startup — see [CSS Variable Injection](#css-variable-injection) above.
+Frontend-visible values (`feed_initial_count`, `image_autoscroll_delay_s`, `zoom_transition_ms`, `ui_debug`) travel to the browser as CSS custom properties injected into the HTML at startup — see [CSS Variable Injection](#css-variable-injection) above.
 
 `_load_settings()` parses only `int` and `str`, so flags are declared as ints (`ui_debug: int = 0`, `dedup_similarity: int = 0`) rather than bools.
 

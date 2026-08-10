@@ -47,6 +47,7 @@ def _build_html() -> str:
         f"--feed-initial-count:{settings.feed_initial_count};"
         f"--image-autoscroll-delay-s:{settings.image_autoscroll_delay_s};"
         f"--media-load-timeout-s:{settings.media_load_timeout_s};"
+        f"--zoom-transition-ms:{settings.zoom_transition_ms};"
         f"--ui-debug:{settings.ui_debug};"
         f"}}</style>"
     )

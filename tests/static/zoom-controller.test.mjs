@@ -1,6 +1,6 @@
 // ---------------------------------------------------------------------------
 // zoom-controller.test.mjs — zoom-to-100%: the scale decision, the pan clamp,
-// and the double-tap detector.
+// the double-tap detector, and the in/out transition.
 //
 // The parts worth pinning: an image already at or above 100% must not zoom at
 // all (a "zoom" that downscales is not what the gesture means), and the pan
@@ -14,7 +14,7 @@ import assert from "node:assert/strict";
 import { fileURLToPath } from "node:url";
 import { dirname, resolve } from "node:path";
 
-import { createDomContext, loadScript } from "./dom-mock.mjs";
+import { createDomContext, fakeTimeout, loadScript } from "./dom-mock.mjs";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const STATIC = resolve(__dirname, "../../src/static");
@@ -28,8 +28,10 @@ function rect(left, top, width, height) {
 }
 
 // naturalWidth 1600 against a rendered 800 => scale 2 => maxPan {x:300, y:200}.
-function setupHarness({ naturalWidth = 1600 } = {}) {
+function setupHarness({ naturalWidth = 1600, zoomTransitionMs = 200 } = {}) {
   const ctx = createDomContext();
+  const clock = fakeTimeout(ctx);
+  ctx.window.MRR.config = { zoomTransitionMs };
   const feed = ctx.document.createElement("div");
   feed.id = "feed";
   ctx.document.register(feed);
@@ -54,7 +56,7 @@ function setupHarness({ naturalWidth = 1600 } = {}) {
 
   loadScript(resolve(STATIC, "zoom-controller.js"), ctx);
   ctx.window.MRR.zoomController.init();
-  return { ctx, feed, wrap, img, autoscroll, zoom: ctx.window.MRR.zoomController };
+  return { ctx, feed, wrap, img, autoscroll, clock, zoom: ctx.window.MRR.zoomController };
 }
 
 // Pull the numbers back out of `translate(Xpx, Ypx) scale(S)`.
@@ -208,4 +210,79 @@ test("reset clears a zoom and is a no-op otherwise", () => {
   assert.equal(zoom.isZoomed(), false);
   assert.equal(img.style.transform, "");
   assert.deepEqual(autoscroll.resets, ["id0"]);
+});
+
+// ---------------------------------------------------------------------------
+// The zoom in/out step animates over ZOOM_TRANSITION_MS. Panning must not:
+// the picture follows the cursor, and a transform transition left switched on
+// would drag behind it on every move.
+// ---------------------------------------------------------------------------
+
+test("the zoom in step animates, then hands the element back for crisp panning", () => {
+  const { feed, img, clock, zoom } = setupHarness();
+
+  zoom.toggle(img, CONT_W / 2, CONT_H / 2);
+  assert.equal(img.style.transition, "transform 200ms ease-out");
+  assert.equal(clock.pending(), 1);
+
+  clock.advance(200);
+  assert.equal(img.style.transition, "", "the transition comes back off once it has landed");
+  assert.deepEqual(readTransform(img), { tx: 0, ty: 0, scale: 2 }, "the zoom itself stays");
+
+  // A pan after the window must not re-arm it.
+  feed.dispatchEvent({ type: "pointermove", target: img, clientX: 0, clientY: 0, pointerType: "mouse" });
+  assert.equal(img.style.transition, "");
+  assert.equal(clock.pending(), 0);
+});
+
+test("the zoom out step animates too, but gives navigation back immediately", () => {
+  const { wrap, img, clock, zoom } = setupHarness();
+
+  zoom.toggle(img, CONT_W / 2, CONT_H / 2);
+  clock.advance(200);
+  zoom.toggle(img, CONT_W / 2, CONT_H / 2);
+
+  // Before the animation has run: already un-zoomed as far as input is concerned.
+  assert.equal(zoom.isZoomed(), false);
+  assert.equal(wrap.style.touchAction, "", "scrolling must not wait for the animation");
+  assert.equal(img.classList.contains("zoomed"), false);
+  assert.equal(img.style.transition, "transform 200ms ease-out");
+  assert.equal(img.style.transform, "", "shrinking back to the fitted size");
+
+  clock.advance(200);
+  assert.equal(img.style.transition, "");
+});
+
+test("toggling straight back out keeps the second animation", () => {
+  const { img, clock, zoom } = setupHarness();
+
+  zoom.toggle(img, CONT_W / 2, CONT_H / 2);
+  zoom.toggle(img, CONT_W / 2, CONT_H / 2); // before the first timer fires
+  assert.equal(clock.pending(), 1, "the stale timer must be cancelled, not left to strip the new one");
+
+  assert.equal(img.style.transition, "transform 200ms ease-out");
+  clock.advance(200);
+  assert.equal(img.style.transition, "");
+});
+
+test("ZOOM_TRANSITION_MS=0 snaps, with no timer to clean up", () => {
+  const { img, clock, zoom } = setupHarness({ zoomTransitionMs: 0 });
+
+  zoom.toggle(img, CONT_W / 2, CONT_H / 2);
+  assert.equal(img.style.transition, "");
+  assert.equal(clock.pending(), 0);
+  assert.deepEqual(readTransform(img), { tx: 0, ty: 0, scale: 2 });
+
+  zoom.toggle(img, CONT_W / 2, CONT_H / 2);
+  assert.equal(img.style.transition, "");
+  assert.equal(clock.pending(), 0);
+});
+
+test("prefers-reduced-motion wins over the setting", () => {
+  const { ctx, img, clock, zoom } = setupHarness();
+  ctx.window.matchMedia = (q) => ({ matches: q === "(prefers-reduced-motion: reduce)" });
+
+  zoom.toggle(img, CONT_W / 2, CONT_H / 2);
+  assert.equal(img.style.transition, "");
+  assert.equal(clock.pending(), 0);
 });

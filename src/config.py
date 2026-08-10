@@ -61,6 +61,11 @@ class Settings:
     # this erases posts that were merely slow — raise it if usable posts start
     # disappearing.
     media_load_timeout_s: int = 10
+    # How long the zoom-to-100% gesture takes to animate, in milliseconds.
+    # 0 snaps instantly. Panning is never animated regardless — the picture
+    # follows the cursor, and a transition there would only lag behind it.
+    # prefers-reduced-motion overrides this to 0 in the browser.
+    zoom_transition_ms: int = 200
     # 1 shows a diagnostic overlay in the top-right corner naming the current
     # item and how it loaded. An int, not a bool, because _load_settings only
     # parses int and str.

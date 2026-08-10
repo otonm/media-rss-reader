@@ -7,7 +7,10 @@
 //
 // Zoom is a CSS transform on the <img>, so nothing reflows and the existing
 // overflow:hidden on .media-item / .gallery-slide clips the scaled picture to
-// the viewport-sized item for free.
+// the viewport-sized item for free. The in/out step is animated over
+// ZOOM_TRANSITION_MS (0 snaps; prefers-reduced-motion forces 0), with the
+// transition applied inline only for the length of the animation — panning
+// must never be animated, see animate().
 //
 // Panning while zoomed:
 //   desktop — the picture follows the mouse cursor, no button held
@@ -44,7 +47,30 @@
     tx: 0, ty: 0,
     lastTap: null,   // {t, x, y} of the previous pointerup
     panFrom: null,   // {x, y, tx, ty} at the start of a finger drag
+    animTimer: null, // takes the transition back off once the zoom has landed
   };
+
+  // 0 means no transition at all rather than a 0ms one, so nothing is armed
+  // and nothing needs cleaning up afterwards.
+  function transitionMs() {
+    if (window.matchMedia?.("(prefers-reduced-motion: reduce)").matches) return 0;
+    const ms = MRR.config?.zoomTransitionMs;
+    return Number.isFinite(ms) && ms > 0 ? ms : 0;
+  }
+
+  // Animate the next transform write, then take the transition off again: the
+  // pan that follows has to track the cursor and the finger exactly, and a
+  // transform transition left switched on would drag behind both.
+  function animate(el) {
+    clearTimeout(state.animTimer);
+    const ms = transitionMs();
+    if (!ms) {
+      el.style.transition = "";
+      return;
+    }
+    el.style.transition = `transform ${ms}ms ease-out`;
+    state.animTimer = setTimeout(() => { el.style.transition = ""; }, ms);
+  }
 
   function clamp(v, lo, hi) {
     return v < lo ? lo : v > hi ? hi : v;
@@ -113,18 +139,30 @@
     // property stops the feed scrolling AND the gallery swiping — including
     // when the finger lands on the letterboxing beside the picture.
     wrap.style.touchAction = "none";
+    // Grow from fitted to 1:1 and glide to the anchor point in one move. A pan
+    // arriving inside the animation window rides the same transition, which
+    // reads as smooth rather than late.
+    animate(img);
     panToPoint(clientX, clientY);
     MRR.autoscrollController?.suspend();
   }
 
   function clear() {
     const wrap = state.wrap;
-    state.el.classList.remove("zoomed");
-    state.el.style.transform = "";
-    if (wrap) wrap.style.touchAction = "";
+    const el = state.el;
+    // Drop the zoom state before animating, not after: isZoomed() must read
+    // false and scrolling must come back the instant the gesture is made, not
+    // when the picture finishes shrinking.
     state.el = null;
     state.wrap = null;
     state.panFrom = null;
+    el.classList.remove("zoomed");
+    if (wrap) wrap.style.touchAction = "";
+    // transform transitions to `none` fine — it interpolates against the
+    // identity matrix. The class carries only will-change and the cursor, and
+    // the transition is inline, so removing it above cannot cut the animation.
+    animate(el);
+    el.style.transform = "";
     // Resume the autoscroll timer suspended on zoom-in. reset() is a no-op
     // when autoscroll is off.
     if (wrap) MRR.autoscrollController?.reset(wrap);
