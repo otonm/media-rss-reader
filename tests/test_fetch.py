@@ -103,8 +103,13 @@ async def test_fetch_to_cache_skips_url_already_in_flight(tmp_path: Path, monkey
     assert cache_read(URL) is None
 
 
-async def test_open_upstream_refuses_non_media(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    """HTML served for a media URL must be rejected, not streamed or cached (F5)."""
+async def test_open_upstream_refuses_non_media(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, db: aiosqlite.Connection
+) -> None:
+    """HTML served for a media URL must be rejected, not streamed or cached (F5).
+
+    Takes the db fixture because this path now also marks the URL dead.
+    """
     monkeypatch.setattr(cache_mod.settings, "cache_dir", str(tmp_path))
 
     with respx.mock:
@@ -119,7 +124,9 @@ async def test_open_upstream_refuses_non_media(tmp_path: Path, monkeypatch: pyte
     assert _tmp_files(tmp_path) == []
 
 
-async def test_fetch_to_cache_html_not_cached(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+async def test_fetch_to_cache_html_not_cached(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, db: aiosqlite.Connection
+) -> None:
     """End-to-end: fetch_to_cache must not leave an HTML file in the cache (F5)."""
     monkeypatch.setattr(cache_mod.settings, "cache_dir", str(tmp_path))
 
@@ -192,17 +199,18 @@ def _warning_count(caplog: pytest.LogCaptureFixture) -> int:
     return len([r for r in caplog.records if r.levelno == logging.WARNING])
 
 
-async def test_fetch_to_cache_cdn_403_logs_exactly_one_warning(
+async def test_fetch_to_cache_cdn_503_logs_exactly_one_warning(
     mock_http: respx.MockRouter, caplog: pytest.LogCaptureFixture, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """M6 follow-up: open_upstream's transient-status branch (the brief's named
-    'CDN answering 403' scenario) now warns once, at the site that knows why.
-    fetch_to_cache's split handler must not warn again for the same failure —
-    not zero WARNINGs (the original bug) and not two (the naive fix)."""
+    """M6 follow-up: open_upstream's transient-status branch (a busy CDN) warns
+    once, at the site that knows why. fetch_to_cache's split handler must not
+    warn again for the same failure — not zero WARNINGs (the original bug) and
+    not two (the naive fix). This used to use 403, which is now permanent and
+    so takes the mark-dead branch instead."""
     monkeypatch.setattr(cache_mod.settings, "cache_dir", str(tmp_path))
     caplog.set_level(logging.DEBUG)
-    url = "http://example.com/forbidden.jpg"
-    mock_http.get(_pinned(url)).mock(return_value=httpx.Response(403))
+    url = "http://example.com/busy.jpg"
+    mock_http.get(_pinned(url)).mock(return_value=httpx.Response(503))
 
     async with httpx.AsyncClient() as c:
         await fetch_to_cache(url, "item-1", c)
@@ -409,7 +417,9 @@ async def test_tee_to_cache_aborts_past_the_byte_budget(tmp_path: Path, monkeypa
 
 
 @respx.mock
-async def test_open_upstream_refuses_svg(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+async def test_open_upstream_refuses_svg(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, db: aiosqlite.Connection
+) -> None:
     """R8: an SVG is an active document. Served from /api/media/proxy it runs
     its <script> on the app's own origin, with the session cookie attached."""
     monkeypatch.setattr(cache_mod.settings, "cache_dir", str(tmp_path))
@@ -582,3 +592,93 @@ async def test_tee_to_cache_non_client_abort_not_mislabeled(
     assert not any(r.levelno == logging.DEBUG and "client stopped reading" in r.getMessage() for r in caplog.records), (
         "non-client abort must NOT be mislabelled as a client disconnect"
     )
+
+
+async def _seed_item(db: aiosqlite.Connection, url: str) -> None:
+    """One feed with one single-media item pointing at `url`."""
+    await db.execute("INSERT OR IGNORE INTO feeds(id, url, title) VALUES ('f1', 'http://x.com/feed', 'F')")
+    await db.execute(
+        """INSERT INTO items(id, feed_id, guid, title, media_url, media_type, pub_date)
+           VALUES ('i1', 'f1', 'g1', 'T', ?, 'image', '2026-01-01T00:00:00')""",
+        (url,),
+    )
+    await db.commit()
+
+
+async def _is_dropped(db: aiosqlite.Connection, url: str) -> bool:
+    """The item is gone, its URL is dead, and its guid is tombstoned."""
+    async with db.execute("SELECT 1 FROM dead_urls WHERE url = ?", (url,)) as cur:
+        if await cur.fetchone() is None:
+            return False
+    async with db.execute("SELECT COUNT(*) FROM items WHERE id = 'i1'") as cur:
+        if (await cur.fetchone())[0] != 0:
+            return False
+    async with db.execute("SELECT COUNT(*) FROM unavailable_guids WHERE feed_id = 'f1' AND guid = 'g1'") as cur:
+        return (await cur.fetchone())[0] == 1
+
+
+@pytest.mark.parametrize("status", [403, 404, 410, 451])
+@respx.mock
+async def test_open_upstream_drops_the_item_on_a_permanent_status(
+    status: int, db: aiosqlite.Connection, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """PERMANENT_STATUSES means the media is gone for good, so the item is
+    deleted and its guid tombstoned rather than re-missing the cache on every
+    open forever. 403 is here because removed and hotlink-protected media
+    answers 403 far more often than 404 on the sites this reader is pointed at."""
+    monkeypatch.setattr(cache_mod.settings, "cache_dir", str(tmp_path))
+    url = f"http://example.com/gone-{status}.jpg"
+    await _seed_item(db, url)
+
+    respx.get(_pinned(url)).mock(return_value=httpx.Response(status))
+    async with httpx.AsyncClient() as client:
+        with pytest.raises(UpstreamError):
+            await open_upstream(url, "i1", client)
+
+    assert await _is_dropped(db, url)
+
+
+@pytest.mark.parametrize("status", [429, 500, 502, 503])
+@respx.mock
+async def test_open_upstream_keeps_the_item_on_a_transient_status(
+    status: int, db: aiosqlite.Connection, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """R5: a busy or broken CDN is not a missing file. Marking dead on these
+    erased posts permanently. Guards the boundary of PERMANENT_STATUSES."""
+    monkeypatch.setattr(cache_mod.settings, "cache_dir", str(tmp_path))
+    url = f"http://example.com/busy-{status}.jpg"
+    await _seed_item(db, url)
+
+    respx.get(_pinned(url)).mock(return_value=httpx.Response(status))
+    async with httpx.AsyncClient() as client:
+        with pytest.raises(UpstreamError):
+            await open_upstream(url, "i1", client)
+
+    async with db.execute("SELECT COUNT(*) FROM dead_urls") as cur:
+        assert (await cur.fetchone())[0] == 0
+    async with db.execute("SELECT COUNT(*) FROM items WHERE id = 'i1'") as cur:
+        assert (await cur.fetchone())[0] == 1
+
+
+@pytest.mark.parametrize("content_type", ["text/html", "image/svg+xml", "application/json"])
+@respx.mock
+async def test_open_upstream_drops_the_item_on_a_non_media_content_type(
+    content_type: str, db: aiosqlite.Connection, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """An image URL answering with HTML is overwhelmingly a removed post
+    redirected to a landing page. It used to be left alive deliberately (a WAF
+    page can flip back to media), which meant the item re-missed the cache on
+    every open forever; it is now marked dead like any other permanent answer."""
+    monkeypatch.setattr(cache_mod.settings, "cache_dir", str(tmp_path))
+    url = "http://example.com/notmedia.jpg"
+    await _seed_item(db, url)
+
+    respx.get(_pinned(url)).mock(
+        return_value=httpx.Response(200, headers={"content-type": content_type}, content=b"<html/>")
+    )
+    async with httpx.AsyncClient() as client:
+        with pytest.raises(NonMediaUpstreamError):
+            await open_upstream(url, "i1", client)
+
+    assert await _is_dropped(db, url)
+    assert cache_read(url) is None

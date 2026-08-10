@@ -45,18 +45,33 @@ UPSTREAM_TIMEOUT_S = 30
 # off here because each hop has to be re-validated (R1).
 MAX_REDIRECTS = 5
 
+# Statuses that mean the media is gone for good, so the item may be deleted and
+# its guid tombstoned. 429, 5xx, timeouts and connection errors are a busy or
+# unreachable CDN, not a missing file, and must never reach
+# mark_url_dead_and_maybe_drop — marking dead on those erased posts permanently
+# (R5). 403 is here because removed and hotlink-protected media answers 403 far
+# more often than 404 on the sites this reader is pointed at; the cost is that
+# an origin which 403s every request without a Referer header will have its
+# items erased rather than merely failing to load.
+PERMANENT_STATUSES = frozenset({403, 404, 410, 451})
+
 
 class UpstreamError(Exception):
     """The origin refused the request. The URL has already been marked dead."""
 
 
 class NonMediaUpstreamError(Exception):
-    """The origin served a non-media content type; nothing cached, nothing marked dead.
+    """The origin served a non-media content type; nothing cached.
 
-    Distinct from UpstreamError because the URL is deliberately NOT marked
-    dead here: a WAF page or transient HTML can flip back to media, and the
-    item is not gone. Raised from open_upstream so the prefetch path cannot
-    cache HTML and later serve it as a cache hit (F5).
+    Distinct from UpstreamError only so the proxy can tell the two apart in its
+    response. The URL IS marked dead: an image URL answering with HTML is
+    overwhelmingly a removed post redirected to a landing page, and leaving it
+    alive meant the item re-missed the cache on every open forever. The trade is
+    that a WAF challenge page, which can flip back to media later, now erases
+    the item — the same shape of risk as R5, accepted deliberately.
+
+    Raised from open_upstream so the prefetch path cannot cache HTML and later
+    serve it as a cache hit (F5).
     """
 
 
@@ -133,6 +148,18 @@ async def _check_url(url: str) -> list[str]:
     return addrs
 
 
+async def _mark_dead(url: str, item_id: str | None) -> None:
+    """Record `url` as permanently gone, dropping the item if all its URLs are.
+
+    Its own connection because a streaming response body runs after the route
+    function returned, by which point the request-scoped connection is closed.
+    """
+    await run_with_own_db(
+        f"mark_url_dead_and_maybe_drop for {loggable(url)}",
+        lambda db: mark_url_dead_and_maybe_drop(url, item_id, db),
+    )
+
+
 async def open_upstream(
     url: str, item_id: str | None, client: httpx.AsyncClient, request_id: str | None = None
 ) -> tuple[httpx.Response, str]:
@@ -148,11 +175,10 @@ async def open_upstream(
     against _check_url first, which is why redirects are followed manually
     here rather than by httpx (R1).
 
-    On 404 or 410 the URL is marked dead (and a fully-dead item is dropped)
-    before raising — that is what stops a 404'd post coming back on the next
-    sync. Any other non-success raises without touching the database. A
-    non-media content type raises NonMediaUpstreamError instead: the URL is
-    NOT marked dead, but the response is closed and nothing is cached (F5).
+    On a PERMANENT_STATUSES answer, or a non-media content type, the URL is
+    marked dead (and a fully-dead item is dropped) before raising — that is what
+    stops a gone post coming back on the next sync. Any other non-success raises
+    without touching the database.
     """
     # Escaped once here, same reasoning as _check_url's safe_url: this also
     # feeds UpstreamError/NonMediaUpstreamError messages and run_with_own_db's
@@ -192,19 +218,15 @@ async def open_upstream(
     if not response.is_success:
         status = response.status_code
         await response.aclose()
-        # Only a permanent answer may reach mark_url_dead_and_maybe_drop: it
-        # DELETEs the item and tombstones its guid so the next sync will not
-        # re-insert it. A 429 or 503 from a busy CDN is transient, and marking
-        # dead on those erased posts permanently (R5).
-        if status in (404, 410):
+        # Only a permanent answer may reach _mark_dead: it DELETEs the item and
+        # tombstones its guid so the next sync will not re-insert it. A 429 or
+        # 503 from a busy CDN is transient (R5).
+        if status in PERMANENT_STATUSES:
             logger.warning(
                 f"open_upstream: {safe_url} returned {status}, marking dead "
                 f"(item_id={safe_item_id}, request_id={request_id})"
             )
-            await run_with_own_db(
-                f"mark_url_dead_and_maybe_drop for {safe_url}",
-                lambda db: mark_url_dead_and_maybe_drop(url, item_id, db),
-            )
+            await _mark_dead(url, item_id)
         else:
             logger.warning(
                 f"open_upstream: {safe_url} returned {status}; transient, not marking dead (request_id={request_id})"
@@ -219,7 +241,11 @@ async def open_upstream(
     ):
         await response.aclose()
         safe_content_type = loggable(content_type)
-        logger.warning(f"open_upstream: refusing non-media content-type {safe_content_type} for {safe_url}")
+        logger.warning(
+            f"open_upstream: refusing non-media content-type {safe_content_type} for {safe_url}, marking dead "
+            f"(item_id={safe_item_id}, request_id={request_id})"
+        )
+        await _mark_dead(url, item_id)
         raise NonMediaUpstreamError(f"upstream returned non-media content type {safe_content_type} for {safe_url}")
     declared = response.headers.get("content-length", "")
     if settings.media_max_bytes and declared.isdigit() and int(declared) > settings.media_max_bytes:
