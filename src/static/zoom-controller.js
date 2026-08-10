@@ -12,10 +12,11 @@
 // Panning while zoomed:
 //   desktop — the picture follows the mouse cursor, no button held
 //   mobile  — one finger drags the picture 1:1
-// While zoomed the wrap carries touch-action:none, which blocks BOTH the
-// feed's vertical scroll and the gallery's horizontal swipe: on mobile the
-// picture has to be zoomed out again before navigation works. On desktop the
-// wheel and the navigation keys reset the zoom (see app.js) and move on.
+// While zoomed, touchmove is preventDefault-ed (and the wrap carries
+// touch-action:none as a second line of defence), which holds BOTH the feed's
+// vertical scroll and the gallery's horizontal swipe: on mobile the picture
+// has to be zoomed out again before navigation works. On desktop the wheel and
+// the navigation keys reset the zoom (see app.js) and move on.
 //
 // Public API:
 //   init()
@@ -143,7 +144,6 @@
   // this. No collision with app.js's swipe: that needs 40px of travel, this
   // needs the two taps within 30px of each other.
   function onPointerUp(e) {
-    state.panFrom = null;
     const prev = state.lastTap;
     const now = Date.now();
     state.lastTap = { t: now, x: e.clientX, y: e.clientY };
@@ -155,27 +155,40 @@
     toggle(e.target, e.clientX, e.clientY);
   }
 
-  function onPointerDown(e) {
-    if (state.el && e.pointerType === "touch") {
-      state.panFrom = { x: e.clientX, y: e.clientY, tx: state.tx, ty: state.ty };
-    }
+  // Desktop only: the picture follows the cursor. The finger is handled by the
+  // touch listeners below, not here — once the browser decides a touch is a
+  // scroll it fires pointercancel and no further pointermove arrives, which is
+  // exactly the case the finger pan has to survive.
+  function onPointerMove(e) {
+    if (!state.el || e.pointerType === "touch") return;
+    panToPoint(e.clientX, e.clientY);
   }
 
-  function onPointerMove(e) {
+  function onTouchStart(e) {
     if (!state.el) return;
-    if (e.pointerType === "touch") {
-      if (state.panFrom) panByDrag(e.clientX, e.clientY);
-    } else {
-      panToPoint(e.clientX, e.clientY);
-    }
+    const t = e.touches[0];
+    state.panFrom = { x: t.clientX, y: t.clientY, tx: state.tx, ty: state.ty };
+  }
+
+  function onTouchMove(e) {
+    if (!state.el || !state.panFrom) return;
+    // Non-passive and preventDefault, deliberately: touch-action:none on the
+    // wrap is not enough on its own — iOS Safari honours it inconsistently on
+    // ancestors, and the gallery's own scroller took the gesture anyway. This
+    // is what actually holds the feed and the gallery still while zoomed.
+    e.preventDefault();
+    if (e.touches.length > 1) return; // no pinch; ignore the extra fingers
+    const t = e.touches[0];
+    panByDrag(t.clientX, t.clientY);
   }
 
   function init() {
     const feed = document.getElementById("feed");
-    feed.addEventListener("pointerdown", onPointerDown);
     feed.addEventListener("pointermove", onPointerMove);
     feed.addEventListener("pointerup", onPointerUp);
-    feed.addEventListener("pointercancel", () => { state.panFrom = null; });
+    feed.addEventListener("touchstart", onTouchStart, { passive: true });
+    feed.addEventListener("touchmove", onTouchMove, { passive: false });
+    feed.addEventListener("touchend", () => { state.panFrom = null; });
     // The snapshotted geometry is stale after a resize or a rotate. Dropping
     // the zoom is cheaper — and less surprising — than recomputing it.
     window.addEventListener("resize", reset);

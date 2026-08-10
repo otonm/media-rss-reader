@@ -756,3 +756,79 @@ test("snapToPrev walks back one element rather than one store index", () => {
 
   assert.equal(feed.children[1].scrolledIntoView, 1);
 });
+
+// ---------------------------------------------------------------------------
+// Regression: a gallery slide change drops the zoom.
+//
+// Zooming a slide to 100%, then stepping to the next slide with the on-screen
+// arrow, left the zoom applied to the slide that scrolled out of view — coming
+// back showed it still zoomed, while the ←/→ keys (which reset in app.js)
+// zoomed out correctly. A slide change is a navigation like any other, so it
+// resets, and onGalleryScroll is the one place every way of changing a slide
+// passes through.
+// ---------------------------------------------------------------------------
+
+function galleryHarness() {
+  const ctx = createDomContext();
+  const item = {
+    id: "abc",
+    media_type: "image",
+    media_url: "https://example/1.jpg",
+    media: [
+      { url: "https://example/1.jpg", type: "image" },
+      { url: "https://example/2.jpg", type: "image" },
+    ],
+    seen_at: null,
+  };
+  ctx.window.MRR.itemStore = {
+    getItems: () => [item],
+    getCurrentIndex: () => 0,
+    getItemAt: () => item,
+    findIndexById: () => 0,
+    setCurrentIndex: () => {},
+  };
+  ctx.window.MRR.config = { autoscroll: false, mutedDefault: true };
+  ctx.window.MRR.autoscrollController = { bindIfVisible() {}, reset() {}, setAutoscroll() {} };
+  ctx.window.MRR.scrollController = { observe() {} };
+  const zoom = { resets: 0 };
+  ctx.window.MRR.zoomController = { reset() { zoom.resets += 1; }, isZoomed: () => false };
+  loadScript(resolve(STATIC, "feed-view.js"), ctx);
+  const feed = ctx.document.createElement("div");
+  feed.id = "feed";
+  ctx.document.register(feed);
+  ctx.window.MRR.feedView.renderInitial([item]);
+  ctx.window.MRR.feedView.onItemLoaded("abc", ctx.document.createElement("img"));
+  const wrap = feed.children.find((c) => c.dataset.id === "abc");
+  const gallery = wrap.querySelector(".gallery");
+  gallery.scrollLeft = 0;
+  gallery.clientWidth = 1000;
+  gallery.scrollTo = ({ left }) => { gallery.scrollLeft = left; };
+  return { ctx, wrap, gallery, zoom };
+}
+
+test("the gallery's next arrow resets the zoom before it scrolls", () => {
+  const { wrap, gallery, zoom } = galleryHarness();
+  const nextBtn = wrap.children.find((c) => c.className === "gallery-nav next");
+
+  nextBtn.dispatchEvent({ type: "click", currentTarget: nextBtn, stopPropagation() {} });
+
+  assert.equal(zoom.resets, 1, "zoom must drop before the slide moves");
+  assert.equal(gallery.scrollLeft, 1000, "and the gallery still advances");
+});
+
+test("a swipe that lands on another slide resets the zoom", async () => {
+  const { wrap, gallery, zoom } = galleryHarness();
+
+  // A swipe scrolls the gallery natively; only the debounced scroll handler
+  // hears about it.
+  gallery.scrollLeft = 1000;
+  gallery.dispatchEvent({ type: "scroll" });
+  await new Promise((r) => setTimeout(r, 100));
+  assert.equal(zoom.resets, 1);
+  assert.equal(wrap.querySelector(".gallery").children[1].classList.contains("active"), true);
+
+  // Settling on the slide already active is not a navigation.
+  gallery.dispatchEvent({ type: "scroll" });
+  await new Promise((r) => setTimeout(r, 100));
+  assert.equal(zoom.resets, 1, "no slide change, no reset");
+});

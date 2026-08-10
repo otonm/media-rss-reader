@@ -68,6 +68,20 @@ function tap(feed, target, clientX, clientY, pointerType = "mouse") {
   feed.dispatchEvent({ type: "pointerup", target, clientX, clientY, pointerType });
 }
 
+// Returns the event so a test can assert whether preventDefault was called —
+// that call is what stops the feed and the gallery scrolling under the finger.
+function touch(feed, type, target, clientX, clientY) {
+  const evt = {
+    type,
+    target,
+    touches: [{ clientX, clientY }],
+    prevented: false,
+    preventDefault() { evt.prevented = true; },
+  };
+  feed.dispatchEvent(evt);
+  return evt;
+}
+
 test("zooms to 1:1 and anchors the picture at the tap point", () => {
   const { feed, wrap, img, autoscroll, zoom } = setupHarness();
 
@@ -145,19 +159,42 @@ test("the mouse pans by position, a finger pans by drag, both clamped", () => {
   assert.equal(readTransform(img).tx, 300);
 
   // Finger: 1:1 drag from wherever the picture currently sits, clamped at 300.
-  feed.dispatchEvent({ type: "pointerdown", target: img, clientX: 500, clientY: 400, pointerType: "touch" });
-  feed.dispatchEvent({ type: "pointermove", target: img, clientX: 400, clientY: 400, pointerType: "touch" });
+  touch(feed, "touchstart", img, 500, 400);
+  assert.equal(touch(feed, "touchmove", img, 400, 400).prevented, true);
   assert.equal(readTransform(img).tx, 200, "300 - 100 of drag");
-  feed.dispatchEvent({ type: "pointermove", target: img, clientX: 5000, clientY: 400, pointerType: "touch" });
+  touch(feed, "touchmove", img, 5000, 400);
   assert.equal(readTransform(img).tx, 300, "clamped to maxPan");
 });
 
-test("a finger move without a preceding touchdown does not pan", () => {
+// The mobile bug: touch-action:none alone did not hold the gallery's own
+// scroller (nor the feed on iOS), so a finger drag scrolled to the next slide
+// instead of moving the picture. Only a preventDefault-ed touchmove does.
+test("a finger drag while zoomed cancels the browser's scroll", () => {
+  const { feed, img, zoom } = setupHarness();
+
+  touch(feed, "touchstart", img, 500, 400);
+  assert.equal(touch(feed, "touchmove", img, 400, 400).prevented, false,
+    "not zoomed: the feed and the gallery must still scroll normally");
+
+  zoom.toggle(img, CONT_W / 2, CONT_H / 2);
+  touch(feed, "touchstart", img, 500, 400);
+  assert.equal(touch(feed, "touchmove", img, 400, 400).prevented, true);
+
+  // Lifting the finger ends the drag; a stray move must not resume it.
+  feed.dispatchEvent({ type: "touchend", target: img });
+  touch(feed, "touchmove", img, 100, 400);
+  assert.equal(readTransform(img).tx, -100, "unchanged by the post-touchend move");
+});
+
+test("a second finger is ignored rather than pinching", () => {
   const { feed, img, zoom } = setupHarness();
   zoom.toggle(img, CONT_W / 2, CONT_H / 2);
+  touch(feed, "touchstart", img, 500, 400);
 
-  feed.dispatchEvent({ type: "pointermove", target: img, clientX: 0, clientY: 0, pointerType: "touch" });
-  assert.deepEqual(readTransform(img), { tx: 0, ty: 0, scale: 2 });
+  const evt = { type: "touchmove", target: img, touches: [{ clientX: 400, clientY: 400 }, { clientX: 900, clientY: 900 }], preventDefault() { evt.prevented = true; } };
+  feed.dispatchEvent(evt);
+  assert.equal(evt.prevented, true, "still holds the browser off");
+  assert.deepEqual(readTransform(img), { tx: 0, ty: 0, scale: 2 }, "but does not pan");
 });
 
 test("reset clears a zoom and is a no-op otherwise", () => {

@@ -179,6 +179,9 @@
     prevBtn.textContent = "\u276E";
     prevBtn.addEventListener("click", (e) => {
       e.stopPropagation();
+      // Before the smooth scroll, not after it lands, so the picture snaps
+      // back to fitted in place — same as the ←/→ keys do in app.js.
+      MRR.zoomController?.reset();
       const wrap = e.currentTarget.closest(".media-item");
       const gallery = wrap?.querySelector(".gallery");
       if (!gallery) return;
@@ -196,6 +199,7 @@
     nextBtn.textContent = "\u276F";
     nextBtn.addEventListener("click", (e) => {
       e.stopPropagation();
+      MRR.zoomController?.reset();
       const wrap = e.currentTarget.closest(".media-item");
       const gallery = wrap?.querySelector(".gallery");
       if (!gallery) return;
@@ -234,6 +238,11 @@
       if (slides.length === 0) return;
       const idx = Math.max(0, Math.min(Math.round(gallery.scrollLeft / gallery.clientWidth), slides.length - 1));
       if (slides[idx].classList.contains("active")) return;
+      // A slide change is a navigation, same as a feed item change, so it
+      // drops the zoom. This is the gallery's setCurrentEl: every way a slide
+      // changes — the arrows, ←/→, a swipe, autoscroll — lands here, and a
+      // zoom left behind on the slide we just left comes back with it.
+      MRR.zoomController?.reset();
       for (let i = 0; i < slides.length; i++) {
         slides[i].classList.toggle("active", i === idx);
         if (dots.children[i]) dots.children[i].classList.toggle("active", i === idx);
