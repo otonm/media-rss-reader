@@ -183,3 +183,39 @@ test("the prefetch hint is debounced across a burst of rebuilds", async () => {
   assert.equal(hints[0].item_id, "c", "the trailing call must use the newest item id");
   assert.equal(ctx.clock.pending(), 0, "timer must be cleared after hint is sent");
 });
+
+test("a successful load flips the item's cached flag", async () => {
+  // item.cached is the server's disk snapshot from when the page was fetched,
+  // and nothing else ever updates it — so an item downloaded seconds ago still
+  // read MISS in the UI_DEBUG overlay when the user scrolled back to it.
+  const items = makeItems(1, "i");
+  assert.equal(items[0].cached, undefined, "starts as a miss");
+  const ctx = makeContext(items);
+
+  ctx.window.MRR.cacheQueue.start();
+  ctx.window.MRR.cacheQueue.rebuild(0, 10, items);
+  await Promise.resolve();
+
+  ctx._images[0].dispatchEvent({ type: "load" });
+  await Promise.resolve();
+  await Promise.resolve();
+
+  assert.equal(items[0].cached, true, "the overlay must report HIT after the download");
+  ctx.clock.advance(400);
+});
+
+test("a failed load leaves the item's cached flag alone", async () => {
+  const items = makeItems(1, "i");
+  const ctx = makeContext(items);
+
+  ctx.window.MRR.cacheQueue.start();
+  ctx.window.MRR.cacheQueue.rebuild(0, 10, items);
+  await Promise.resolve();
+
+  ctx._images[0].dispatchEvent({ type: "error" });
+  await Promise.resolve();
+  await Promise.resolve();
+
+  assert.notEqual(items[0].cached, true);
+  ctx.clock.advance(400);
+});

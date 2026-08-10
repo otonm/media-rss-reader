@@ -88,6 +88,10 @@
           const started = Date.now();
           const el = await downloadOne(item);
           state.cached.add(id);
+          // item.cached is the server's disk snapshot from when the page was
+          // fetched and nothing else ever updates it, so an item downloaded
+          // seconds ago still read MISS in the UI_DEBUG overlay on scroll-back.
+          item.cached = true;
           emit("item-loaded", id, el, Date.now() - started);
         } catch (err) {
           emit("item-failed", id, err && err.message ? err.message : "load failed");
