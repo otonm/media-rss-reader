@@ -832,3 +832,38 @@ test("a swipe that lands on another slide resets the zoom", async () => {
   await new Promise((r) => setTimeout(r, 100));
   assert.equal(zoom.resets, 1, "no slide change, no reset");
 });
+
+// ---------------------------------------------------------------------------
+// The dots track the scroll position live and jump to their slide when pressed.
+// ---------------------------------------------------------------------------
+
+const dotWeight = (dots, i) => Number(dots.children[i].style.getPropertyValue("--t"));
+
+test("the dots follow a half-finished swipe instead of waiting for it to settle", () => {
+  const { wrap, gallery } = galleryHarness();
+  const dots = wrap.querySelector(".gallery-dots");
+
+  assert.equal(dotWeight(dots, 0), 1, "the first dot starts lit");
+  assert.equal(dotWeight(dots, 1), 0);
+
+  // Mid-swipe: no debounce to wait out, both dots sit halfway.
+  gallery.scrollLeft = 500;
+  gallery.dispatchEvent({ type: "scroll" });
+  assert.equal(dotWeight(dots, 0), 0.5);
+  assert.equal(dotWeight(dots, 1), 0.5);
+
+  gallery.scrollLeft = 1000;
+  gallery.dispatchEvent({ type: "scroll" });
+  assert.equal(dotWeight(dots, 0), 0);
+  assert.equal(dotWeight(dots, 1), 1);
+});
+
+test("pressing a dot scrolls to its slide and drops the zoom", () => {
+  const { wrap, gallery, zoom } = galleryHarness();
+  const dots = wrap.querySelector(".gallery-dots");
+
+  dots.dispatchEvent({ type: "click", target: dots.children[1], stopPropagation() {} });
+
+  assert.equal(gallery.scrollLeft, 1000, "the gallery lands on the second slide");
+  assert.equal(zoom.resets, 1, "and the zoom drops before it moves");
+});

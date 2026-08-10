@@ -165,11 +165,26 @@
       el.addEventListener("error", () => removeSlide(wrap, gallery, dots, slide), { once: true });
       slide.appendChild(el);
       gallery.appendChild(slide);
-      const dot = document.createElement("span");
-      dot.className = "gallery-dot" + (i === 0 ? " active" : "");
+      const dot = document.createElement("button");
+      dot.className = "gallery-dot";
+      dot.type = "button";
+      dot.setAttribute("aria-label", `Go to slide ${i + 1}`);
       dots.appendChild(dot);
     });
-    gallery.addEventListener("scroll", () => onGalleryScroll(wrap, gallery, dots), { passive: true });
+    // Delegated, not one listener per dot: removeSlide shifts the indices, so a
+    // captured loop index would point at the wrong slide afterwards.
+    dots.addEventListener("click", (e) => {
+      const dot = e.target.closest(".gallery-dot");
+      const idx = Array.prototype.indexOf.call(dots.children, dot);
+      if (idx < 0) return;
+      e.stopPropagation();
+      MRR.zoomController?.reset(); // before the scroll, same as the arrows below
+      gallery.scrollTo({ left: idx * gallery.clientWidth, behavior: "smooth" });
+    });
+    gallery.addEventListener("scroll", () => {
+      paintDots(gallery, dots);
+      onGalleryScroll(wrap, gallery);
+    }, { passive: true });
     wrap.appendChild(gallery);
     wrap.appendChild(dots);
     const prevBtn = document.createElement("button");
@@ -212,6 +227,19 @@
     });
     wrap.appendChild(prevBtn);
     wrap.appendChild(nextBtn);
+    paintDots(gallery, dots);
+  }
+
+  // Live dot tracking. Mid-swipe the scroll position is fractional, so each dot
+  // gets its closeness to the current slide as --t (1 centred, 0 a slide away)
+  // and CSS interpolates size and brightness from it. Undebounced and with no
+  // CSS transition: the scroll position IS the animation, for the arrows' smooth
+  // scroll exactly as for a finger.
+  function paintDots(gallery, dots) {
+    const pos = gallery.clientWidth ? gallery.scrollLeft / gallery.clientWidth : 0;
+    for (let i = 0; i < dots.children.length; i++) {
+      dots.children[i].style.setProperty("--t", Math.max(0, 1 - Math.abs(i - pos)));
+    }
   }
 
   // A slide's media failed to load: drop the slide and its dot so the
@@ -228,10 +256,11 @@
     }
   }
 
-  // Debounced gallery scroll: mark the active slide + dot, pause offscreen
-  // slide videos, and — when this wrap is the current feed item — re-point
-  // the visible-media rule and autoscroll at the new slide.
-  function onGalleryScroll(wrap, gallery, dots) {
+  // Debounced gallery scroll: mark the active slide, pause offscreen slide
+  // videos, and — when this wrap is the current feed item — re-point the
+  // visible-media rule and autoscroll at the new slide. The dots do not wait
+  // for this; paintDots runs on every scroll event.
+  function onGalleryScroll(wrap, gallery) {
     clearTimeout(wrap._galleryScrollTimer);
     wrap._galleryScrollTimer = setTimeout(() => {
       const slides = gallery.children;
@@ -245,7 +274,6 @@
       MRR.zoomController?.reset();
       for (let i = 0; i < slides.length; i++) {
         slides[i].classList.toggle("active", i === idx);
-        if (dots.children[i]) dots.children[i].classList.toggle("active", i === idx);
       }
       gallery.querySelectorAll("video").forEach((v) => {
         if (v.closest(".gallery-slide") !== slides[idx]) { v._pausedByJs = true; v.pause(); }

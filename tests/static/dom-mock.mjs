@@ -213,7 +213,12 @@ function makeElement(tag) {
     id: "",
     className: "",
     dataset: {},
-    style: {},
+    // Custom properties (--t on the gallery dots) only go through setProperty;
+    // plain assignment does nothing in a real browser.
+    style: {
+      setProperty(name, value) { this[name] = String(value); },
+      getPropertyValue(name) { return Object.hasOwn(this, name) ? this[name] : ""; },
+    },
     children: [],
     parentNode: null,
     attributes: {},

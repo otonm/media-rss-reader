@@ -191,9 +191,10 @@ html, body {
 
 /* -----------------------------------------------------------------------
    Galleries — entries with multiple media scroll horizontally inside the
-   feed item. Dots on the lower edge mark the slides; the active slide's
-   dot is larger. Dots are pure indicators (pointer-events: none keeps
-   video controls beneath them clickable).
+   feed item. Dots on the lower edge mark the slides, growing and fading in
+   with the scroll position rather than on settle, and each one jumps to its
+   slide when pressed. Only the dots themselves take pointer events — the
+   container stays none so video controls beside them remain clickable.
    ----------------------------------------------------------------------- */
 .gallery {
   display: flex;
@@ -234,17 +235,40 @@ html, body {
 }
 
 .gallery-dot {
-  width: 8px;
-  height: 8px;
-  border-radius: 50%;
-  background: rgba(255, 255, 255, 0.4);
-  transition: width 0.15s, height 0.15s, background 0.15s;
-}
-
-.gallery-dot.active {
+  position: relative;
   width: 12px;
   height: 12px;
-  background: rgba(255, 255, 255, 0.95);
+  padding: 0;
+  border: 0;
+  background: none;
+  appearance: none;
+  cursor: pointer;
+  pointer-events: auto; /* the container stays none; only the dots take taps */
+}
+
+/* Size and brightness track --t, set per scroll frame by feed-view.js. No
+   transition: interpolating would lag behind the finger. */
+.gallery-dot::before {
+  content: "";
+  position: absolute;
+  inset: 0;
+  border-radius: 50%;
+  background: rgba(255, 255, 255, calc(0.4 + 0.55 * var(--t, 0)));
+  transform: scale(calc(0.667 + 0.333 * var(--t, 0)));
+}
+
+/* Finger-sized target without a finger-sized dot, on the pseudo-element so the
+   scale above cannot shrink it. Taller than wide so neighbouring targets never
+   overlap at the 20px dot pitch. */
+.gallery-dot::after {
+  content: "";
+  position: absolute;
+  inset: -10px -4px;
+}
+
+.gallery-dot:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 4px;
 }
 
 .gallery-nav {
