@@ -2,9 +2,9 @@
 
 Two entry points:
 
-warm_startup_cache() — called once at startup; warms the cache with the first
-    CACHE_MAX_ITEMS items /api/items would serve, capped at 10 concurrent
-    requests.
+warm_startup_cache() — called once at startup; warms the first page /api/items
+    would serve plus PREFETCH_AHEAD, capped at 10 concurrent requests. Just the
+    cold-start gap: from the first scroll snap onward prefetch_ahead takes over.
 
 prefetch_ahead() — called from the /api/prefetch/hint endpoint; warms the
     next PREFETCH_AHEAD items after the given item in interleave order.
@@ -45,17 +45,18 @@ _sem = asyncio.Semaphore(10)
 
 # _bg_tasks holds every warm task from BOTH producers, so the event loop's weak
 # ref doesn't GC either kind (F8) and cancel_prefetch_tasks can stop both on
-# shutdown. MAX_BACKLOG must not be checked against that shared set:
-# warm_startup_cache alone queues one task per row of its startup query, up to
-# CACHE_MAX_ITEMS (500 by default) — ten times this cap — so len(_bg_tasks)
-# sits far above MAX_BACKLOG for as long as those tasks take to drain. Checking
-# it there dropped every hint for the whole cold-cache window after every
-# restart, which is precisely the window prefetching exists for. _hint_tasks
-# tracks only the request-driven path a second time, so the cap measures what
-# it is meant to: a fast scroll growing that backlog without bound (_sem caps
-# concurrency, not existence, and the hint endpoint applies no coalescing) — a
-# newer scroll position supersedes an older one, so dropping the new hint once
-# that backlog is full is the right direction.
+# shutdown. MAX_BACKLOG must not be checked against that shared set: the two
+# producers have unrelated budgets, so a startup warm still draining would spend
+# the hint path's cap on the reader's behalf. That once dropped every hint for
+# the whole cold-cache window after every restart — precisely the window
+# prefetching exists for — back when the startup warm queued CACHE_MAX_ITEMS
+# (500) tasks, ten times this cap. It is bounded far lower now, but sharing the
+# counter would still be wrong for the same reason. _hint_tasks tracks only the
+# request-driven path a second time, so the cap measures what it is meant to: a
+# fast scroll growing that backlog without bound (_sem caps concurrency, not
+# existence, and the hint endpoint applies no coalescing) — a newer scroll
+# position supersedes an older one, so dropping the new hint once that backlog
+# is full is the right direction.
 _hint_tasks: set[asyncio.Task] = set()
 
 MAX_BACKLOG = 50
@@ -110,6 +111,20 @@ async def warm_startup_cache(db: aiosqlite.Connection, client: httpx.AsyncClient
     default. Warming by pub_date DESC filled the opposite end of the library, so
     the first page was always a cold miss (see UNSEEN_FIRST_ORDER_BY).
 
+    The bound covers exactly the cold-start gap — the first page the browser
+    asks for, plus the window prefetch_ahead would have warmed had a scroll
+    already happened. It used to be CACHE_MAX_ITEMS (500), which made a cold
+    start fire up to 500 upstream fetches before the reader had opened anything;
+    every permanently-gone URL among them deletes its item (open_upstream ->
+    _mark_dead), so the boot sweep was also an unattended mass-deletion window.
+    CACHE_MAX_ITEMS is the eviction budget, not a warm-queue depth. Past this
+    window the hint path drives the cache on demand, which is the whole point of
+    prefetch_ahead.
+
+    Warming an item already on disk costs nothing: _warm returns on a cache_read
+    hit without opening a connection, so a restart with a warm cache issues no
+    upstream requests at all.
+
     Runs as an asyncio background task (fire-and-forget from the lifespan hook).
     The shared semaphore caps in-flight requests at 10 across the startup warm
     and the request-driven hint both, so upstream never sees a thundering herd
@@ -121,7 +136,7 @@ async def warm_startup_cache(db: aiosqlite.Connection, client: httpx.AsyncClient
             f"""{RANKED_ITEMS_CTE}
                 SELECT id, media_url FROM ranked
                 {UNSEEN_FIRST_ORDER_BY} LIMIT ?""",  # noqa: S608
-            (settings.cache_max_items,),
+            (settings.feed_initial_count + settings.prefetch_ahead,),
         ) as cur:
             rows = await cur.fetchall()
         logger.debug(f"warm_startup_cache: {len(rows)} item(s) to pre-warm")

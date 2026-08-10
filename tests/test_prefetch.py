@@ -321,6 +321,11 @@ async def test_warm_startup_cache_follows_the_feed_order(
     from src.api.items import list_items
     from src.media.prefetch import warm_startup_cache
 
+    # Pinned so the assertions below depend on the seeded rows, not on whatever
+    # the config defaults happen to be: the bound must cover all 8 rows.
+    monkeypatch.setattr(prefetch_mod.settings, "feed_initial_count", 10)
+    monkeypatch.setattr(prefetch_mod.settings, "prefetch_ahead", 5)
+
     for feed in ("f1", "f2"):
         await db.execute("INSERT INTO feeds(id, url, title) VALUES (?, ?, 'F')", (feed, f"http://x.com/{feed}"))
     # Interleaved pub_dates across the two feeds, plus one seen row per feed
@@ -358,16 +363,24 @@ async def test_warm_startup_cache_follows_the_feed_order(
     assert sorted(warmed[len(served) :]) == ["http://x.com/f1-seen.jpg", "http://x.com/f2-seen.jpg"]
 
 
-async def test_warm_startup_cache_stops_at_cache_max_items(
+async def test_warm_startup_cache_stops_at_the_first_page_plus_lookahead(
     db: aiosqlite.Connection, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """The LIMIT still applies, and it now truncates the tail of the feed order
-    rather than the head — the items the reader reaches last."""
-    monkeypatch.setattr(prefetch_mod.settings, "cache_max_items", 2)
+    """The startup warm covers the cold-start gap only, and truncates the tail
+    of the feed order — the items the reader reaches last.
+
+    It used to be bounded by CACHE_MAX_ITEMS (500), so a cold start fired up to
+    500 upstream fetches before the reader had opened anything. Since a
+    permanently-gone URL deletes its item, that boot sweep was also an
+    unattended mass-deletion window. Past this bound the hint path warms on
+    demand, which is what prefetch_ahead is for.
+    """
+    monkeypatch.setattr(prefetch_mod.settings, "feed_initial_count", 2)
+    monkeypatch.setattr(prefetch_mod.settings, "prefetch_ahead", 1)
     from src.media.prefetch import warm_startup_cache
 
     await db.execute("INSERT INTO feeds(id, url, title) VALUES ('f1', 'http://x.com/f', 'F')")
-    for n in range(5):
+    for n in range(9):
         await db.execute(
             """INSERT INTO items(id, feed_id, guid, title, media_url, media_type, pub_date)
                VALUES (?, 'f1', ?, 'T', ?, 'image', ?)""",
@@ -386,4 +399,86 @@ async def test_warm_startup_cache_stops_at_cache_max_items(
         await warm_startup_cache(db, client)
         await asyncio.gather(*list(prefetch_mod._bg_tasks))
 
-    assert warmed == ["http://x.com/0.jpg", "http://x.com/1.jpg"]
+    assert warmed == ["http://x.com/0.jpg", "http://x.com/1.jpg", "http://x.com/2.jpg"]
+
+
+async def test_warm_startup_cache_ignores_cache_max_items(
+    db: aiosqlite.Connection, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """CACHE_MAX_ITEMS is the eviction budget, not a warm-queue depth. A large
+    one must not turn startup back into a bulk upstream sweep."""
+    monkeypatch.setattr(prefetch_mod.settings, "cache_max_items", 500)
+    monkeypatch.setattr(prefetch_mod.settings, "feed_initial_count", 2)
+    monkeypatch.setattr(prefetch_mod.settings, "prefetch_ahead", 1)
+    from src.media.prefetch import warm_startup_cache
+
+    await db.execute("INSERT INTO feeds(id, url, title) VALUES ('f1', 'http://x.com/f', 'F')")
+    for n in range(20):
+        await db.execute(
+            """INSERT INTO items(id, feed_id, guid, title, media_url, media_type, pub_date)
+               VALUES (?, 'f1', ?, 'T', ?, 'image', datetime('now', ?))""",
+            (f"i{n}", f"g{n}", f"http://x.com/{n}.jpg", f"-{20 - n} minutes"),
+        )
+    await db.commit()
+
+    warmed: list[str] = []
+
+    async def _fake_warm(item_id: str, url: str, client: object, request_id: str | None = None) -> None:
+        warmed.append(url)
+
+    monkeypatch.setattr("src.media.prefetch._warm", _fake_warm)
+
+    async with httpx.AsyncClient() as client:
+        await warm_startup_cache(db, client)
+        await asyncio.gather(*list(prefetch_mod._bg_tasks))
+
+    assert len(warmed) == 3
+
+
+async def test_warm_startup_cache_makes_no_requests_for_cached_items(
+    db: aiosqlite.Connection, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A restart with a warm cache must issue no upstream requests at all.
+
+    _warm returns on a cache_read hit before opening a connection, so already
+    cached items are never re-checked — and so never re-tested for liveness,
+    which is why a warm restart cannot delete anything.
+
+    Asserted on route call counts, not on NoMatchFound: fetch_to_cache catches
+    every exception, so an unmocked request would be swallowed and this would
+    pass whether or not the skip works.
+    """
+    monkeypatch.setattr(cache_mod.settings, "cache_dir", str(tmp_path))
+    from src.media.prefetch import warm_startup_cache
+
+    await db.execute("INSERT INTO feeds(id, url, title) VALUES ('f1', 'http://x.com/f', 'F')")
+    for n in range(3):
+        url = f"http://example.com/{n}.jpg"
+        await db.execute(
+            """INSERT INTO items(id, feed_id, guid, title, media_url, media_type, pub_date)
+               VALUES (?, 'f1', ?, 'T', ?, 'image', ?)""",
+            (f"i{n}", f"g{n}", url, f"2026-03-0{n + 1}T00:00:00"),
+        )
+
+        async def _data(n: int = n) -> AsyncGenerator[bytes]:
+            yield f"cached{n}".encode()
+
+        await cache_mod.cache_stream_write(url, _data())
+    await db.commit()
+
+    with respx.mock:
+        routes = [
+            respx.get(_pinned(f"http://example.com/{n}.jpg")).mock(
+                return_value=httpx.Response(200, content=b"refetched", headers={"content-type": "image/jpeg"})
+            )
+            for n in range(3)
+        ]
+        async with httpx.AsyncClient() as client:
+            await warm_startup_cache(db, client)
+            await asyncio.gather(*list(prefetch_mod._bg_tasks))
+
+    assert [r.call_count for r in routes] == [0, 0, 0], "a cached item must not be fetched again"
+    for n in range(3):
+        path = cache_mod.cache_read(f"http://example.com/{n}.jpg")
+        assert path is not None
+        assert path.read_bytes() == f"cached{n}".encode()
