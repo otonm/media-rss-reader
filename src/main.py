@@ -85,7 +85,7 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None]:
     app.state.http = httpx.AsyncClient()
     app.state.http_status = httpx.AsyncClient(limits=httpx.Limits(max_connections=2))
     logger.debug("lifespan: opened the media and status HTTP clients")
-    await start_scheduler(scheduler_db)
+    await start_scheduler(scheduler_db, app.state.http)
     yield
     await stop_scheduler()
     await app.state.http_status.aclose()

@@ -32,6 +32,6 @@ UNSEEN_FIRST_ORDER_BY = "ORDER BY (seen_at IS NOT NULL) ASC, rn ASC, feed_id ASC
 
 # The cursor pair: ANCHOR_LOOKUP resolves an item id to its rank, KEYSET_AFTER
 # reads the page that follows it.
-ANCHOR_LOOKUP = f"{RANKED_ITEMS_CTE} SELECT rn, feed_id, id FROM ranked WHERE id = ?"  # noqa: S608
+ANCHOR_LOOKUP = f"{RANKED_ITEMS_CTE} SELECT rn, feed_id, id FROM ranked WHERE id = ?"  # noqa: S608 — only source-controlled SQL constants are interpolated
 
 KEYSET_AFTER = "(rn, feed_id, id) > (?, ?, ?)"

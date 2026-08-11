@@ -88,11 +88,11 @@ async def local_xml_sync(db: aiosqlite.Connection, feeds_dir: str) -> None:
     hard-delete on the next call to sync_feeds(), not here.
     """
     folder = Path(feeds_dir)
-    if not folder.is_dir():  # noqa: ASYNC240
+    if not folder.is_dir():  # noqa: ASYNC240 — one local stat on the sync loop, fine to block on
         logger.warning(f"FEEDS_DIR does not exist or is not a directory: {feeds_dir}")
         return
 
-    xml_files = sorted(folder.glob("*.xml"))  # noqa: ASYNC240
+    xml_files = sorted(folder.glob("*.xml"))  # noqa: ASYNC240 — small local directory listing
     logger.debug(f"Local XML sync found {len(xml_files)} file(s) in {feeds_dir}")
 
     for path in xml_files:
@@ -105,7 +105,7 @@ async def local_xml_sync(db: aiosqlite.Connection, feeds_dir: str) -> None:
         # with the items it stands for — it can never claim "unchanged" while
         # the items are gone.
         try:
-            mtime = path.stat().st_mtime  # noqa: ASYNC240
+            mtime = path.stat().st_mtime  # noqa: ASYNC240 — one local stat per feed file
         except OSError as exc:
             logger.warning(f"Skipping unreadable feed file {path}: {exc}")
             continue
@@ -205,7 +205,7 @@ async def _evict_items(db: aiosqlite.Connection, where: str, params: tuple) -> i
     against the deleted row, so seen_media never records them either, and
     they return to the front of the feed on every cycle.
     """
-    async with db.execute(f"DELETE FROM items WHERE {where} RETURNING feed_id, guid", params) as cur:  # noqa: S608
+    async with db.execute(f"DELETE FROM items WHERE {where} RETURNING feed_id, guid", params) as cur:  # noqa: S608 — where is a source-controlled fragment, params stay bound
         evicted = await cur.fetchall()
     if evicted:
         await db.executemany(
@@ -320,8 +320,8 @@ async def sync_feeds(
 
     folder_urls: set[str] = set()
     folder_dir = Path(feeds_dir)
-    if folder_dir.is_dir():  # noqa: ASYNC240
-        folder_urls = {p.name for p in folder_dir.glob("*.xml")}  # noqa: ASYNC240
+    if folder_dir.is_dir():  # noqa: ASYNC240 — one local stat on the sync loop, fine to block on
+        folder_urls = {p.name for p in folder_dir.glob("*.xml")}  # noqa: ASYNC240 — small local directory listing
 
     opml_urls: set[str] = set()
     if opml_path:

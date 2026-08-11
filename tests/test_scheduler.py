@@ -1,5 +1,7 @@
 from pathlib import Path
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import AsyncMock, patch
+
+import httpx
 
 import src.scheduler as sched_mod
 from src.db.connection import open_db
@@ -16,20 +18,19 @@ async def test_start_and_stop_scheduler(tmp_path: Path) -> None:
     await create_schema(conn)
     await run_migrations(conn)
 
+    client = httpx.AsyncClient()
     with patch.object(sched_mod.settings, "opml_path", str(opml_file)):
-        await sched_mod.start_scheduler(conn)
-        assert sched_mod._state.client is not None
+        await sched_mod.start_scheduler(conn, client)
         await sched_mod.stop_scheduler()
 
-    assert sched_mod._state.client is None
-
+    await client.aclose()
     await conn.close()
 
 
 async def test_stop_scheduler_noop_when_not_started() -> None:
     """stop_scheduler should not raise if called when already stopped."""
-    sched_mod._state.scheduler = []
-    sched_mod._state.client = None
+    sched_mod._running = False
+    sched_mod._scheduler_tasks.clear()
     await sched_mod.stop_scheduler()
 
 
@@ -42,16 +43,17 @@ async def test_start_scheduler_creates_background_tasks(tmp_path: Path) -> None:
     await create_schema(conn)
     await run_migrations(conn)
 
+    client = httpx.AsyncClient()
     with (
-        patch("src.scheduler.httpx.AsyncClient", return_value=MagicMock(aclose=AsyncMock())),
         patch("src.scheduler.sync_feeds", new=AsyncMock()),
         patch("src.scheduler.refresh_all_feeds", new=AsyncMock()),
     ):
-        await sched_mod.start_scheduler(conn)
-        assert len(sched_mod._state.scheduler) == 3
-        assert all(not t.done() for t in sched_mod._state.scheduler)
+        await sched_mod.start_scheduler(conn, client)
+        assert len(sched_mod._scheduler_tasks) == 3
+        assert all(not t.done() for t in sched_mod._scheduler_tasks)
         await sched_mod.stop_scheduler()
 
+    await client.aclose()
     await conn.close()
 
 

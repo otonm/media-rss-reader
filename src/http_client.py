@@ -1,8 +1,9 @@
 """The app-scoped HTTP clients, as FastAPI dependencies.
 
-Two clients, not one. The media proxy and the prefetcher share the first; the
-reddit-feeds status poll gets the second, with a small connection limit, so an
-absent or hung companion service cannot consume the pool the reader depends on.
+Two clients, not one. The media proxy, the feed scheduler and the prefetcher
+share the first; the reddit-feeds status poll gets the second, with a small
+connection limit, so an absent or hung companion service cannot consume the
+pool the reader depends on.
 The status modal polls at 1 Hz with no in-flight guard, and httpx's read
 timeout is the gap between reads rather than a whole-request budget, so a
 trickling companion on the shared pool could starve every media request.

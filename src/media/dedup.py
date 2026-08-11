@@ -131,7 +131,7 @@ async def _newer_item_for_url(db: aiosqlite.Connection, url: str, other_urls: li
 
     placeholders = ",".join("?" * len(other_urls))
     async with db.execute(
-        f"SELECT MIN(fetched_at) FROM items WHERE media_url IN ({placeholders})",  # noqa: S608
+        f"SELECT MIN(fetched_at) FROM items WHERE media_url IN ({placeholders})",  # noqa: S608 — only placeholder count is interpolated, values stay bound
         other_urls,
     ) as cur:
         row = await cur.fetchone()
