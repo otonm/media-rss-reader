@@ -1,9 +1,9 @@
 // ---------------------------------------------------------------------------
 // scroll-controller.test.mjs — tests for the seen-marking flow.
 //
-// scrollController uses three seen-marking triggers:
+// scrollController marks items seen via two triggers:
 //   1. IntersectionObserver threshold 0 — fires when element leaves viewport
-//   2. Debounced scroll event on #feed — secondary desktop fallback
+//   2. pagehide — the item on screen when the tab closes
 // Both call postSeen() which deduplicates via item.seen_at.
 // ---------------------------------------------------------------------------
 
@@ -17,20 +17,10 @@ import { createDomContext, loadScript } from "./dom-mock.mjs";
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const STATIC = resolve(__dirname, "../../src/static");
 
-// --- scroll-event test harness ---
+// --- pagehide test harness ---
 
-function setupScrollHarness({ items = [{ id: "id42", seen_at: null }] } = {}) {
+function setupPagehideHarness({ items = [{ id: "id42", seen_at: null }] } = {}) {
   const ctx = createDomContext();
-
-  let scrollHandler = null;
-  const feedEls = [];
-  const feed = ctx.document.createElement("div");
-  feed.id = "feed";
-  feed.addEventListener = (type, handler) => { if (type === "scroll") scrollHandler = handler; };
-  feed.removeEventListener = () => {};
-  feed.querySelectorAll = (_sel) => feedEls;
-  feed.getBoundingClientRect = () => ({ top: 0 });
-  ctx.document.getElementById = (id) => (id === "feed" ? feed : null);
 
   const callbacks = [];
   ctx.IntersectionObserver = class {
@@ -39,10 +29,6 @@ function setupScrollHarness({ items = [{ id: "id42", seen_at: null }] } = {}) {
     unobserve() {}
     disconnect() {}
   };
-
-  let timerId = 0;
-  ctx.setTimeout = (fn) => { ++timerId; fn(); return timerId; };
-  ctx.clearTimeout = () => {};
 
   const beaconCalls = [];
   ctx.navigator = {
@@ -73,19 +59,8 @@ function setupScrollHarness({ items = [{ id: "id42", seen_at: null }] } = {}) {
   ctx.window.MRR.scrollController.init();
 
   return {
-    ctx, feed, feedEls, markSeenCalls, beaconCalls, items,
-    getMainCb: () => callbacks[0],
-    getSeenCb: () => callbacks[1],
-    fireScroll: () => { if (scrollHandler) scrollHandler(); },
+    ctx, markSeenCalls, beaconCalls, items,
   };
-}
-
-function makeEl(ctx, id, className, bottom) {
-  const el = ctx.document.createElement("div");
-  el.className = className;
-  el.dataset.id = id;
-  el.getBoundingClientRect = () => ({ bottom });
-  return el;
 }
 
 // --- IntersectionObserver threshold-0 test harness ---
@@ -144,107 +119,29 @@ function setupIOHarness({ items = [{ id: "id42", seen_at: null }] } = {}) {
 }
 
 // --------------------------------------------------------------------
-// Scroll event tests
+// pagehide — the last item of a session
 // --------------------------------------------------------------------
 
-test("scroll: items above viewport trigger seen POST", async () => {
-  const { feedEls, beaconCalls, markSeenCalls, fireScroll, ctx } = setupScrollHarness({
-    items: [
-      { id: "id1", seen_at: null },
-      { id: "id2", seen_at: null },
-    ],
-  });
-  feedEls.push(makeEl(ctx, "id1", "media-item", -10));
-  feedEls.push(makeEl(ctx, "id2", "placeholder", 200));
-
-  fireScroll();
-  await new Promise((r) => setImmediate(r));
-
-  assert.equal(beaconCalls.length, 1);
-  assert.equal(beaconCalls[0].url, "/api/items/id1/seen");
-  // Marked locally before the beacon leaves, so the timestamp is client-side.
-  assert.ok(
-    markSeenCalls.some((c) => c.who === "store" && c.id === "id1" && typeof c.ts === "string"),
-  );
-  assert.ok(markSeenCalls.some((c) => c.who === "feed" && c.id === "id1"));
-});
-
-test("scroll: no items above viewport = no POST", async () => {
-  const { feedEls, beaconCalls, fireScroll, ctx } = setupScrollHarness({
+test("pagehide marks the item on screen, which never leaves the viewport", () => {
+  const { ctx, beaconCalls, items } = setupPagehideHarness({
     items: [{ id: "id1", seen_at: null }],
   });
-  feedEls.push(makeEl(ctx, "id1", "media-item", 100));
-  fireScroll();
-  await new Promise((r) => setImmediate(r));
+  ctx.window.MRR.itemStore.getItemAt = (idx) => items[idx];
+
+  ctx.window.dispatchEvent({ type: "pagehide" });
+
+  assert.deepEqual(beaconCalls.map((c) => c.url), ["/api/items/id1/seen"]);
+});
+
+test("pagehide does not re-mark an item already seen", () => {
+  const { ctx, beaconCalls, items } = setupPagehideHarness({
+    items: [{ id: "id1", seen_at: "2026-06-10T00:00:00" }],
+  });
+  ctx.window.MRR.itemStore.getItemAt = (idx) => items[idx];
+
+  ctx.window.dispatchEvent({ type: "pagehide" });
+
   assert.equal(beaconCalls.length, 0);
-});
-
-test("scroll: 1px tolerance handles sub-pixel bottom", async () => {
-  const { feedEls, beaconCalls, fireScroll, ctx } = setupScrollHarness({
-    items: [{ id: "id1", seen_at: null }],
-  });
-  feedEls.push(makeEl(ctx, "id1", "media-item", 0.5)); // 0.5 ≤ 0+1 = true
-  fireScroll();
-  await new Promise((r) => setImmediate(r));
-  assert.equal(beaconCalls.length, 1);
-});
-
-test("scroll: positive bottom beyond tolerance is not marked", async () => {
-  const { feedEls, beaconCalls, fireScroll, ctx } = setupScrollHarness({
-    items: [{ id: "id1", seen_at: null }],
-  });
-  feedEls.push(makeEl(ctx, "id1", "media-item", 5)); // 5 > 0+1 = false
-  fireScroll();
-  await new Promise((r) => setImmediate(r));
-  assert.equal(beaconCalls.length, 0);
-});
-
-test("scroll: already seen item deduplicates", async () => {
-  const { feedEls, beaconCalls, fireScroll, ctx } = setupScrollHarness({
-    items: [
-      { id: "id1", seen_at: "2026-06-10T00:00:00" },
-      { id: "id2", seen_at: null },
-    ],
-  });
-  feedEls.push(makeEl(ctx, "id1", "media-item", -10));
-  feedEls.push(makeEl(ctx, "id2", "media-item", -5));
-  fireScroll();
-  await new Promise((r) => setImmediate(r));
-  assert.equal(beaconCalls.length, 1);
-  assert.equal(beaconCalls[0].url, "/api/items/id2/seen");
-});
-
-test("scroll: debounce timer reset on successive scrolls", async () => {
-  let clearCalls = 0;
-  let setTimeoutCalls = 0;
-
-  const ctx = createDomContext();
-  const feed = ctx.document.createElement("div");
-  feed.id = "feed";
-  let scrollHandler = null;
-  feed.addEventListener = (type, handler) => { if (type === "scroll") scrollHandler = handler; };
-  feed.getBoundingClientRect = () => ({ top: 0 });
-  feed.querySelectorAll = () => [];
-  ctx.document.getElementById = () => feed;
-
-  let timerId = 0;
-  ctx.setTimeout = () => { setTimeoutCalls++; return ++timerId; };
-  ctx.clearTimeout = (id) => { clearCalls++; };
-  ctx.IntersectionObserver = class { constructor() {} observe() {} unobserve() {} disconnect() {} };
-  ctx.window.MRR.itemStore = { getItems: () => [], getCurrentIndex: () => 0, getItemAt: () => null, findIndexById: () => -1, setCurrentIndex: () => {} };
-  ctx.window.MRR.feedView = { markSeen: () => {}, setCurrentMedia: () => {} };
-  ctx.window.MRR.cacheQueue = { rebuild: () => {} };
-  ctx.window.MRR.autoscrollController = { reset: () => {} };
-  ctx.window.MRR.config = { feedInitialCount: 10 };
-
-  loadScript(resolve(STATIC, "scroll-controller.js"), ctx);
-  ctx.window.MRR.scrollController.init();
-
-  scrollHandler();
-  assert.equal(setTimeoutCalls, 1);
-  scrollHandler();
-  assert.equal(clearCalls, 2);
-  assert.equal(setTimeoutCalls, 2);
 });
 
 // --------------------------------------------------------------------
@@ -326,31 +223,5 @@ test("IO: already seen item deduplicates", async () => {
   });
   getSeenCb()([ioEntry(ctx, "id1", "image", false, -10)]);
   await new Promise((r) => setImmediate(r));
-  assert.equal(beaconCalls.length, 0);
-});
-
-// --------------------------------------------------------------------
-// pagehide — the last item of a session
-// --------------------------------------------------------------------
-
-test("pagehide marks the item on screen, which never leaves the viewport", () => {
-  const { ctx, beaconCalls, items } = setupScrollHarness({
-    items: [{ id: "id1", seen_at: null }],
-  });
-  ctx.window.MRR.itemStore.getItemAt = (idx) => items[idx];
-
-  ctx.window.dispatchEvent({ type: "pagehide" });
-
-  assert.deepEqual(beaconCalls.map((c) => c.url), ["/api/items/id1/seen"]);
-});
-
-test("pagehide does not re-mark an item already seen", () => {
-  const { ctx, beaconCalls, items } = setupScrollHarness({
-    items: [{ id: "id1", seen_at: "2026-06-10T00:00:00" }],
-  });
-  ctx.window.MRR.itemStore.getItemAt = (idx) => items[idx];
-
-  ctx.window.dispatchEvent({ type: "pagehide" });
-
   assert.equal(beaconCalls.length, 0);
 });
