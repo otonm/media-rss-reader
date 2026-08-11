@@ -26,7 +26,7 @@ Three planes interact at runtime:
 ┌───────────────▼─────────────────────────────────────────────┐
 │  FastAPI  (Uvicorn, async)                                  │
 │  /health  /login  /setup  /logout                           │
-│  /api/feeds  /api/items  /api/media/proxy                   │
+│  /api/items  /api/media/proxy                      │
 │  /api/prefetch/hint  /api/reddit-feeds/status                  │
 └───────────┬─────────────────────┬───────────────────────────┘
             │  aiosqlite          │  filesystem
@@ -78,7 +78,6 @@ src/
 │   └── availability.py  Track dead URLs (upstream 404); drop items whose media is gone
 │
 ├── api/
-│   ├── feeds.py        GET /api/feeds
 │   ├── items.py        GET /api/items, POST /api/items/{id}/seen
 │   ├── media.py        GET /api/media/proxy, POST /api/prefetch/hint
 │   └── reddit_feeds.py GET /api/reddit-feeds/status (proxies Reddit Feeds API)
@@ -437,9 +436,7 @@ Frontend-visible values (`feed_initial_count`, `image_autoscroll_delay_s`, `zoom
 
 ### `UI_DEBUG` overlay
 
-`UI_DEBUG=1` makes `controls.js` build a fixed overlay in the top-right corner describing the item the feed is currently snapped to: feed name, title, media type and file extension, publish date, cache `HIT`/`MISS` with the measured load time, and the download queue depth. It is `pointer-events: none` so it never intercepts a tap.
-
-The feed *name* comes from a one-off `GET /api/feeds` mapping `feed_id → title`, because `/api/items` carries only `feed_id`. It lives in `controls.js` rather than its own file so no new `<script>` tag and no new entry in the service worker's hardcoded precache list are needed.
+`UI_DEBUG=1` makes `controls.js` build a fixed overlay in the top-right corner describing the item the feed is currently snapped to: feed id, title, media type and file extension, publish date, cache `HIT`/`MISS` with the measured load time, and the download queue depth. It is `pointer-events: none` so it never intercepts a tap.
 
 ---
 

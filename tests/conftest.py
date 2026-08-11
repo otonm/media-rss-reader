@@ -14,7 +14,6 @@ from fastapi import FastAPI
 from httpx import ASGITransport
 from httpx import AsyncClient as HttpxAsyncClient
 
-from src.api import feeds as feeds_router
 from src.api import items as items_router
 from src.api import media as media_router
 from src.api import reddit_feeds as reddit_feeds_router
@@ -69,7 +68,6 @@ async def http_client() -> AsyncGenerator[HttpxAsyncClient]:
 async def client(db: aiosqlite.Connection, http_client: HttpxAsyncClient) -> AsyncGenerator[HttpxAsyncClient]:
     test_app = FastAPI()
     test_app.add_middleware(RequestIDMiddleware)
-    test_app.include_router(feeds_router.router, prefix="/api")
     test_app.include_router(items_router.router, prefix="/api")
     test_app.include_router(media_router.router, prefix="/api")
     test_app.include_router(reddit_feeds_router.router, prefix="/api")

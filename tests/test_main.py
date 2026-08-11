@@ -120,7 +120,7 @@ async def test_api_items_requires_a_session(db: aiosqlite.Connection) -> None:
 
 async def test_nosniff_on_every_response(db: aiosqlite.Connection) -> None:
     """The header was hand-attached to the three responses whose author
-    thought of it; /api/items, /api/feeds, /api/items/{id}/seen,
+    thought of it; /api/items, /api/items/{id}/seen,
     /prefetch/hint, /, /login, /setup and the whole /static mount went
     without."""
     from src.auth.session import SESSION_COOKIE, sign_session

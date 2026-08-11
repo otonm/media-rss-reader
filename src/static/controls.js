@@ -151,7 +151,6 @@
   // -------------------------------------------------------------------------
   const debug = {
     el: null,
-    feedTitles: {},   // feed_id -> title, fetched once
     loadMs: {},       // item id -> ms taken by the cache queue
   };
 
@@ -160,14 +159,6 @@
     debug.el = document.createElement("div");
     debug.el.id = "debug-overlay";
     document.body.appendChild(debug.el);
-    // /api/items carries feed_id but not the feed's name; fetch the mapping once.
-    fetch("/api/feeds")
-      .then((r) => (r.ok ? r.json() : []))
-      .then((feeds) => {
-        feeds.forEach((f) => { debug.feedTitles[f.id] = f.title; });
-        renderDebug();
-      })
-      .catch(() => {});
     renderDebug();
   }
 
@@ -212,7 +203,7 @@
     const ms = debug.loadMs[item.id];
     const stats = MRR.cacheQueue.getStats();
 
-    debug.el.appendChild(row("feed", debug.feedTitles[item.feed_id] || item.feed_id));
+    debug.el.appendChild(row("feed", item.feed_id));
     debug.el.appendChild(row("title", item.title || "(untitled)"));
     debug.el.appendChild(row("type", count > 1 ? `${type} · ${count} slides` : type));
     debug.el.appendChild(row("pubdate", item.pub_date || "—"));

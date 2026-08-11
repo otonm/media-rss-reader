@@ -13,7 +13,7 @@ from fastapi.exceptions import RequestValidationError
 from fastapi.responses import HTMLResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 
-from src.api import feeds, items, media, reddit_feeds
+from src.api import items, media, reddit_feeds
 from src.auth import routes as auth_routes
 from src.auth.middleware import AuthMiddleware
 from src.config import settings
@@ -98,7 +98,6 @@ app = FastAPI(lifespan=lifespan)
 app.add_middleware(AuthMiddleware)
 app.add_middleware(RequestIDMiddleware)
 app.include_router(auth_routes.router)
-app.include_router(feeds.router, prefix="/api")
 app.include_router(items.router, prefix="/api")
 app.include_router(media.router, prefix="/api")
 app.include_router(reddit_feeds.router, prefix="/api")

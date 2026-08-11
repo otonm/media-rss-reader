@@ -31,12 +31,8 @@ const ITEM = {
   cached: true,
 };
 
-const FEEDS = [{ id: "f1", title: "r/EarthPorn" }];
-
 function makeContext({ uiDebug, item = ITEM }) {
   const ctx = createDomContext();
-  ctx.fetch = (url) =>
-    Promise.resolve({ ok: true, json: async () => (url === "/api/feeds" ? FEEDS : {}) });
   ctx.window.MRR.itemStore = {
     getItems: () => (item ? [item] : []),
     getCurrentIndex: () => 0,
@@ -67,16 +63,14 @@ test("no overlay is created when UI_DEBUG is off", () => {
   assert.equal(ctx.document.body.children.length, 0);
 });
 
-test("the overlay names the current item's feed, title, type and pubdate", async () => {
+test("the overlay names the current item's feed, title, type and pubdate", () => {
   const ctx = makeContext({ uiDebug: true });
   ctx.window.MRR.controls.initDebugOverlay();
-  // Flush the one-off /api/feeds lookup: fetch -> .json() -> render.
-  await new Promise((r) => setImmediate(r));
 
   const overlay = overlayOf(ctx);
   assert.ok(overlay, "UI_DEBUG=1 must create the overlay");
   const r = rows(overlay);
-  assert.equal(r.feed, "r/EarthPorn", "feed_id must be resolved to the feed's name");
+  assert.equal(r.feed, "f1", "feed_id must be displayed as-is");
   assert.equal(r.title, "Sunrise over the Dolomites");
   assert.equal(r.type, "image · jpg", "extension parsed off the URL, query string stripped");
   assert.equal(r.pubdate, "2026-08-02 14:31:00");
