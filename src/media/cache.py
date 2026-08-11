@@ -223,42 +223,44 @@ def _evict_sync(cache_dir: Path, max_age_secs: float, max_items: int, max_bytes:
     if not cache_dir.exists():
         logger.debug(f"_evict_sync: cache dir {cache_dir} does not exist, nothing to do")
         return
+
+    def drop(f: Path, why: str) -> None:
+        logger.debug(f"Evicting cache file {f} due to {why}")
+        f.unlink(missing_ok=True)
+        f.with_suffix(".meta").unlink(missing_ok=True)
+
     now = time.time()
     files = sorted(cache_dir.iterdir(), key=lambda p: p.stat().st_mtime)
     inflight = sum(1 for f in files if f.suffix == ".tmp")
     surviving: list[Path] = []
-    by_age = 0
+    evicted: dict[str, int] = {"age": 0, "count": 0, "bytes": 0}
     for f in files:
         if f.suffix in (".meta", ".tmp"):
             continue
         if now - f.stat().st_mtime > max_age_secs:
-            logger.debug(f"Evicting cache file {f} due to age")
-            f.unlink(missing_ok=True)
-            f.with_suffix(".meta").unlink(missing_ok=True)
-            by_age += 1
+            drop(f, "age")
+            evicted["age"] += 1
         else:
             surviving.append(f)
-    by_count = 0
+
     while len(surviving) > max_items:
-        logger.debug(f"Evicting cache file {surviving[0]} due to count limit")
         head = surviving.pop(0)
-        head.unlink(missing_ok=True)
-        head.with_suffix(".meta").unlink(missing_ok=True)
-        by_count += 1
-    by_bytes = 0
+        drop(head, "count limit")
+        evicted["count"] += 1
+
     if max_bytes:
         total = sum(f.stat().st_size for f in surviving)
+
         while surviving and total > max_bytes:
             head = surviving.pop(0)
             total -= head.stat().st_size
-            logger.debug(f"Evicting cache file {head} due to byte budget")
-            head.unlink(missing_ok=True)
-            head.with_suffix(".meta").unlink(missing_ok=True)
-            by_bytes += 1
+            drop(head, "byte budget")
+            evicted["bytes"] += 1
+
     logger.debug(
         f"_evict_sync: {len(surviving)} entries remain (limit {max_items}); "
-        f"evicted {by_age} by age, {by_count} by count, {by_bytes} by bytes; "
-        f"skipped {inflight} in-flight .tmp"
+        f"evicted {evicted['age']} by age, {evicted['count']} by count, "
+        f"{evicted['bytes']} by bytes; skipped {inflight} in-flight .tmp"
     )
 
 
