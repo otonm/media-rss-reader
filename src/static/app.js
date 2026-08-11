@@ -198,23 +198,6 @@
       window.addEventListener("pointercancel", onUp, { passive: true });
     });
 
-    // Periodic check to fetch more pages when nearing the end of the loaded list.
-    setInterval(() => {
-      MRR.controls?.renderDebug(); // keeps the queue counters live
-      const cur = MRR.itemStore.getCurrentIndex();
-      const total = MRR.itemStore.getItems().length;
-      if (MRR.itemStore.hasMoreItems() && total - cur < MRR.config.feedInitialCount) {
-        MRR.itemStore.fetchPage().then(() => {
-          // appendItem checks the live DOM, so it sees the nodes this very
-          // loop just added.
-          MRR.itemStore.getItems().forEach((it) => {
-            const placeholder = MRR.feedView.appendItem(it);
-            if (placeholder) MRR.scrollController.observe(placeholder);
-          });
-        });
-      }
-    }, 2000);
-
     if ("serviceWorker" in navigator) {
       navigator.serviceWorker.register("/static/sw.js").catch(() => {});
     }

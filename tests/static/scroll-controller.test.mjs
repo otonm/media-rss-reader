@@ -99,10 +99,15 @@ function setupIOHarness({ items = [{ id: "id42", seen_at: null }] } = {}) {
     getItemAt: () => null,
     findIndexById: (id) => items.findIndex((i) => i.id === id),
     setCurrentIndex: () => {},
+    hasMoreItems: () => false,
+    fetchPage: async () => {},
     markSeen: (id, ts) => { markSeenCalls.push({ who: "store", id, ts }); },
   };
   ctx.window.MRR.feedView = {
     markSeen: (id) => { markSeenCalls.push({ who: "feed", id }); },
+    setCurrentEl: () => {},
+    activeMediaEl: () => null,
+    appendItem: () => null,
     setCurrentMedia: () => {},
   };
   ctx.window.MRR.cacheQueue = { rebuild: () => {} };
@@ -115,6 +120,7 @@ function setupIOHarness({ items = [{ id: "id42", seen_at: null }] } = {}) {
   return {
     ctx, markSeenCalls, beaconCalls, items,
     getSeenCb: () => callbacks[1],
+    getIoCb: () => callbacks[0],
   };
 }
 
@@ -153,7 +159,7 @@ function ioEntry(ctx, id, mediaType, isIntersecting, bottom) {
   el.dataset.id = id;
   if (mediaType) el.dataset.mediaType = mediaType;
   el.getBoundingClientRect = () => ({ bottom });
-  return { target: el, isIntersecting, boundingClientRect: { bottom } };
+  return { target: el, isIntersecting, intersectionRatio: 1, boundingClientRect: { bottom } };
 }
 
 test("IO: item leaving viewport upward triggers seen POST", async () => {
@@ -224,4 +230,34 @@ test("IO: already seen item deduplicates", async () => {
   getSeenCb()([ioEntry(ctx, "id1", "image", false, -10)]);
   await new Promise((r) => setImmediate(r));
   assert.equal(beaconCalls.length, 0);
+});
+
+// --------------------------------------------------------------------
+// Pagination top-up — fired from the main observer, not a timer
+// --------------------------------------------------------------------
+
+test("IO: visible item near the end of the loaded list fetches the next page", async () => {
+  const items = Array.from({ length: 10 }, (_, i) => ({ id: `id${i}`, seen_at: null }));
+  const { ctx, getIoCb } = setupIOHarness({ items });
+  const fetches = [];
+  ctx.window.MRR.itemStore.hasMoreItems = () => true;
+  ctx.window.MRR.itemStore.fetchPage = async () => { fetches.push(1); };
+  ctx.window.MRR.feedView.appendItem = () => null;
+
+  getIoCb()([ioEntry(ctx, "id9", "image", true, 0)]); // 10 - 9 < feedInitialCount
+  await new Promise((r) => setImmediate(r));
+  assert.equal(fetches.length, 1);
+});
+
+test("IO: visible item far from the end does not top up", async () => {
+  const items = Array.from({ length: 20 }, (_, i) => ({ id: `id${i}`, seen_at: null }));
+  const { ctx, getIoCb } = setupIOHarness({ items });
+  const fetches = [];
+  ctx.window.MRR.itemStore.hasMoreItems = () => true;
+  ctx.window.MRR.itemStore.fetchPage = async () => { fetches.push(1); };
+  ctx.window.MRR.feedView.appendItem = () => null;
+
+  getIoCb()([ioEntry(ctx, "id5", "image", true, 0)]); // 20 - 5 >= feedInitialCount
+  await new Promise((r) => setImmediate(r));
+  assert.equal(fetches.length, 0);
 });

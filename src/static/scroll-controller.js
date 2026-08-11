@@ -57,6 +57,18 @@
     MRR.cacheQueue.rebuild(idx, MRR.config.feedInitialCount, MRR.itemStore.getItems());
     MRR.autoscrollController.reset(best.target);
     MRR.controls?.renderDebug();
+
+    // Top-up: when the visible item nears the end of the loaded list, fetch
+    // the next page. Scroll-driven, so an idle feed makes no requests.
+    const total = MRR.itemStore.getItems().length;
+    if (MRR.itemStore.hasMoreItems() && total - idx < MRR.config.feedInitialCount) {
+      MRR.itemStore.fetchPage().then(() => {
+        MRR.itemStore.getItems().forEach((it) => {
+          const placeholder = MRR.feedView.appendItem(it);
+          if (placeholder) observe(placeholder);
+        });
+      });
+    }
   }
 
   // Threshold 0 observer: fires on every binary enter/leave of the viewport.
