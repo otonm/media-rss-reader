@@ -1,12 +1,12 @@
 """Integer-versioned schema migrations.
 
-MIGRATIONS is an ordered list of SQL statements. PRAGMA user_version stores
-the count of applied migrations. On every startup, any statements from
-MIGRATIONS[current_version:] are applied in sequence, with user_version
-incremented after each one.
+MIGRATIONS is an ordered list of SQL statements and callables taking the
+connection. PRAGMA user_version stores the count of applied migrations. On
+every startup, any entries from MIGRATIONS[current_version:] are applied in
+sequence, with user_version incremented after each one.
 
-To add a migration: append one SQL string to MIGRATIONS. Never edit or
-reorder existing entries — doing so would corrupt the version counter.
+To add a migration: append one entry to MIGRATIONS. Never edit or reorder
+existing entries — doing so would corrupt the version counter.
 
 Each entry must also be idempotent. SQLite runs DDL outside any transaction,
 so a statement takes effect before the version bump that records it, and a
@@ -16,6 +16,7 @@ clauses and run_migrations' duplicate-column handling are there for.
 
 import logging
 import sqlite3
+from collections.abc import Awaitable, Callable
 
 import aiosqlite
 
@@ -23,7 +24,36 @@ from src.media.normalize import media_key
 
 logger = logging.getLogger(__name__)
 
-MIGRATIONS: list[str] = [
+MigrationStep = str | Callable[[aiosqlite.Connection], Awaitable[None]]
+
+
+async def _backfill_seen_media(db: aiosqlite.Connection) -> None:
+    """v14's data step — see the v19 comment in MIGRATIONS."""
+    rows: list[aiosqlite.Row] = []
+    # Rows still carrying their own seen mark.
+    async with db.execute("SELECT media_url, seen_at FROM items WHERE seen_at IS NOT NULL") as cur:
+        rows.extend(await cur.fetchall())
+    # Rows whose mark survives only in seen_guids, because pruning removed the
+    # item and a later fetch re-inserted it unseen.
+    async with db.execute(
+        """SELECT i.media_url AS media_url, sg.seen_at AS seen_at
+           FROM seen_guids sg
+           JOIN items i ON i.feed_id = sg.feed_id AND i.guid = sg.guid"""
+    ) as cur:
+        rows.extend(await cur.fetchall())
+
+    await db.executemany(
+        "INSERT OR IGNORE INTO seen_media (media_key, seen_at) VALUES (?, ?)",
+        [(media_key(row["media_url"]), row["seen_at"]) for row in rows],
+    )
+    # Any item still marked unseen whose media is now known seen was re-inserted
+    # after a prune; seen_media is the authority, so drop it.
+    await db.execute("DELETE FROM items WHERE seen_at IS NULL AND media_key IN (SELECT media_key FROM seen_media)")
+    await db.commit()
+    logger.debug(f"_backfill_seen_media reconciled {len(rows)} pre-v14 seen record(s)")
+
+
+MIGRATIONS: list[MigrationStep] = [
     # v1: index on fetched_at to support age-based pruning queries
     "CREATE INDEX IF NOT EXISTS idx_items_fetched_at ON items(fetched_at)",
     # v2: seen_guids tombstone table — tracks seen state independently of pruning
@@ -108,6 +138,13 @@ MIGRATIONS: list[str] = [
         "resolved_at TIMESTAMP NOT NULL DEFAULT (datetime('now')), "
         "PRIMARY KEY (feed_id, guid))"
     ),
+    # v19: v14's data step, which originally escaped the version gate and ran
+    # on every startup. Populate seen_media from the pre-v14 seen records
+    # (items.seen_at and the seen_guids tombstone), then drop items that a
+    # pre-v14 prune+re-insert left unseen. A fresh database has no rows to
+    # move; INSERT OR IGNORE and the DELETE are both idempotent, so a crash
+    # replay is safe. Runs once, when a database passes v18.
+    _backfill_seen_media,
 ]
 
 
@@ -124,14 +161,17 @@ async def run_migrations(db: aiosqlite.Connection) -> None:
         return
 
     logger.debug(f"run_migrations applying {len(pending)} pending migration(s)")
-    for i, sql in enumerate(pending, start=current_version + 1):
+    for i, step in enumerate(pending, start=current_version + 1):
         try:
-            await db.execute(sql)
+            if callable(step):
+                await step(db)
+            else:
+                await db.execute(step)
         except sqlite3.OperationalError as exc:
-            # ADD COLUMN for a column that is already there: create_schema
-            # declared it in its CREATE TABLE (feeds.site_link), or the
-            # statement ran before a crash lost its version bump. Either way
-            # the column exists as the migration wanted, so count it applied.
+            # ADD COLUMN for a column that is already there: DDL auto-commits,
+            # so a crash before the version bump replays the ALTER on the next
+            # startup. The column exists as the migration wanted, so count it
+            # applied.
             if "duplicate column name" not in str(exc):
                 raise
             logger.debug(f"run_migrations step {i} ignored duplicate column error")
@@ -141,34 +181,3 @@ async def run_migrations(db: aiosqlite.Connection) -> None:
         await db.execute(f"PRAGMA user_version = {i}")
         await db.commit()
         logger.debug(f"run_migrations applied step {i}, user_version now {i}")
-
-
-async def backfill_seen_media(db: aiosqlite.Connection) -> None:
-    """Populate seen_media from the pre-v14 seen records, then clean up.
-
-    Cannot be a plain SQL migration: the seen_media key is media_key(), which is
-    Python. Runs on every startup rather than once, which is safe because both
-    statements are idempotent.
-    """
-    rows: list[aiosqlite.Row] = []
-    # Rows still carrying their own seen mark.
-    async with db.execute("SELECT media_url, seen_at FROM items WHERE seen_at IS NOT NULL") as cur:
-        rows.extend(await cur.fetchall())
-    # Rows whose mark survives only in seen_guids, because pruning removed the
-    # item and a later fetch re-inserted it unseen.
-    async with db.execute(
-        """SELECT i.media_url AS media_url, sg.seen_at AS seen_at
-           FROM seen_guids sg
-           JOIN items i ON i.feed_id = sg.feed_id AND i.guid = sg.guid"""
-    ) as cur:
-        rows.extend(await cur.fetchall())
-
-    await db.executemany(
-        "INSERT OR IGNORE INTO seen_media (media_key, seen_at) VALUES (?, ?)",
-        [(media_key(row["media_url"]), row["seen_at"]) for row in rows],
-    )
-    # Any item still marked unseen whose media is now known seen was re-inserted
-    # after a prune; seen_media is the authority, so drop it.
-    await db.execute("DELETE FROM items WHERE seen_at IS NULL AND media_key IN (SELECT media_key FROM seen_media)")
-    await db.commit()
-    logger.debug(f"backfill_seen_media reconciled {len(rows)} pre-v14 seen record(s)")

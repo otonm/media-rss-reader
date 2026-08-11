@@ -5,15 +5,6 @@ self.addEventListener("install", (event) => {
     caches.open(CACHE).then((cache) =>
       cache.addAll([
         "/",
-        "/static/style.css",
-        "/static/app.js",
-        "/static/controls.js",
-        "/static/feed-view.js",
-        "/static/item-store.js",
-        "/static/scroll-controller.js",
-        "/static/autoscroll-controller.js",
-        "/static/cache-queue.js",
-        "/static/zoom-controller.js",
         "/static/manifest.json",
         "/static/icon-192.png",
         "/static/icon-512.png",

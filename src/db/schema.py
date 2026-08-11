@@ -3,11 +3,10 @@
 All statements use IF NOT EXISTS so this module is safe to call on every
 startup without checking whether the schema already exists.
 
-Every later table and column belongs in migrations.py: an existing database
-only ever sees what migrations.py adds. run_migrations() runs right after
-create_schema() on every startup, so a fresh database gets both. Where the two
-overlap — feeds.site_link is declared here and added again by migration v8 —
-run_migrations swallows the resulting duplicate-column error.
+This is the frozen v1 shape. Every later table and column belongs in
+migrations.py: an existing database only ever sees what migrations.py adds,
+and run_migrations() runs right after create_schema() on every startup, so a
+fresh database gets both.
 """
 
 import logging
@@ -24,7 +23,6 @@ CREATE TABLE IF NOT EXISTS feeds (
     id              TEXT PRIMARY KEY,
     url             TEXT NOT NULL UNIQUE,
     title           TEXT,
-    site_link       TEXT,
     last_fetched_at TIMESTAMP,
     created_at      TIMESTAMP DEFAULT (datetime('now'))
 )
