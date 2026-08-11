@@ -13,6 +13,14 @@ from src.media import prefetch as prefetch_mod
 from src.media.prefetch import _warm, prefetch_ahead
 
 
+async def _seed_cache(url: str, data: bytes) -> None:
+    async def chunks() -> AsyncGenerator[bytes]:
+        yield data
+
+    async for _ in cache_mod.cache_stream_tee(url, chunks()):
+        pass
+
+
 def _pinned(url: str) -> str:
     """The url as open_upstream now sends it: host replaced by the stubbed IP."""
     return fetch_mod._pinned_url(url, "93.184.216.34")
@@ -41,10 +49,7 @@ async def test_warm_skips_if_cached(tmp_path: Path, monkeypatch: pytest.MonkeyPa
     url = "http://example.com/cached.jpg"
 
     # Pre-populate cache
-    async def _data() -> AsyncGenerator[bytes]:
-        yield b"cached"
-
-    await cache_mod.cache_stream_write(url, _data())
+    await _seed_cache(url, b"cached")
 
     with respx.mock:
         # If _warm makes any request, respx will raise NoMatchFound
@@ -460,10 +465,7 @@ async def test_warm_startup_cache_makes_no_requests_for_cached_items(
             (f"i{n}", f"g{n}", url, f"2026-03-0{n + 1}T00:00:00"),
         )
 
-        async def _data(n: int = n) -> AsyncGenerator[bytes]:
-            yield f"cached{n}".encode()
-
-        await cache_mod.cache_stream_write(url, _data())
+        await _seed_cache(url, f"cached{n}".encode())
     await db.commit()
 
     with respx.mock:

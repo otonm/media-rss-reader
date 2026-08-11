@@ -150,21 +150,6 @@ async def cache_stream_tee(
         raise
 
 
-async def cache_stream_write(
-    url: str, chunks: AsyncIterable[bytes], content_type: str = "application/octet-stream"
-) -> tuple[Path, str]:
-    """Drain cache_stream_tee into the cache for callers that don't want the bytes.
-
-    Returns (path, sha256) — every media byte passes through here, so the
-    content digest is accumulated for free and used by src.media.dedup to
-    collapse the same picture arriving under two different URLs.
-    """
-    digest = hashlib.sha256()
-    async for chunk in cache_stream_tee(url, chunks, content_type):
-        digest.update(chunk)
-    return _cache_path(url), digest.hexdigest()
-
-
 def cache_read(url: str) -> Path | None:
     """Return the cached path for a URL, or None on a cache miss."""
     path = _cache_path(url)

@@ -12,146 +12,6 @@ replaces it, and roughly how many lines go. Confidence is stated where the call 
 genuinely arguable rather than clear-cut.
 
 
-
-## 8. Three `httpx.AsyncClient` instances, and a class used as a namespace
-
-**Locations:** [src/main.py:86-87](src/main.py#L86-L87),
-[src/scheduler.py:23-29,72-94](src/scheduler.py#L23-L29)
-
-The app opens three clients:
-
-| client | opened in | used by |
-|---|---|---|
-| `app.state.http` | `main.lifespan` | media proxy, `prefetch_hint` |
-| `app.state.http_status` | `main.lifespan` | reddit-feeds poll (capped at 2 conns) |
-| `_state.client` | `start_scheduler` | feed XML fetch, **and `warm_startup_cache`** |
-
-`src/http_client.py`'s module docstring says "**Two clients, not one**" — it is unaware
-of the third.
-
-The separation of `http_status` is well-justified and documented (an optional companion
-polling at 1 Hz must not starve the media pool). The scheduler's client is not: it
-serves feed-XML fetches *and* `warm_startup_cache`, which pulls media — the same traffic
-`app.state.http` exists for.
-
-**Consequences of the third client:**
-
-- `stop_scheduler` must close it, which means warm tasks must be cancelled first, which
-  is the entire `cancel_prefetch_tasks()` + `_bg_tasks` shutdown dance in
-  [prefetch.py:78-89](src/media/prefetch.py#L78-L89) and
-  [scheduler.py:87-94](src/scheduler.py#L87-L94).
-- `_state.client` is `Optional`, so every use site needs the type to be
-  `httpx.AsyncClient | None` and `stop_scheduler` needs an `if _state.client:` guard.
-
-**Replacement.** `start_scheduler(db, client)` takes `app.state.http`. `main.lifespan`
-already owns its lifetime and closes it after `stop_scheduler()` returns — which is
-already the correct ordering in the existing code.
-
-**Separately, `_State`:**
-
-```python
-class _State:
-    scheduler: list[asyncio.Task] = []   # noqa: RUF012
-    client: httpx.AsyncClient | None = None
-    running: bool = False
-
-_state = _State()
-```
-
-A class with one instance, three mutable class-level attributes (both needing `noqa:
-RUF012` to silence the mutable-class-default rule), used purely as a namespace — beside
-a separate module-level `_bg_tasks: set` that does not live in it. Three module globals
-do the same job in three lines with no `noqa`.
-
-**Cut:** -12 lines, one HTTP client, two `noqa` suppressions, and most of the shutdown
-ordering constraint.
-
-**Confidence:** High on `_State`. Medium-high on the client merge — verify no
-feed-fetch-specific timeout or header config is implied before merging.
-
----
-
-## 9. `_log_outcome` — a module global to demote a log level
-
-**Location:** [src/api/reddit_feeds.py:28-46](src/api/reddit_feeds.py#L28-L46)
-
-```python
-_last_reachable: bool | None = None   # None = never polled
-
-def _log_outcome(reachable, message, *, exc_info=False) -> None:
-    global _last_reachable
-    ...
-```
-
-A hand-rolled edge detector: WARNING on the transition into failure, DEBUG while it
-persists, INFO on recovery. 20 lines, plus mutable module state, to avoid repeating a
-warning for an optional service.
-
-**Costs it imposes:**
-
-- Module-level mutable state that leaks across requests and must be reset between tests
-  — [tests/conftest.py:104](tests/conftest.py#L104):
-  `monkeypatch.setattr("src.api.reddit_feeds._last_reachable", None)`.
-- The comment defending it opens with "Module state is normally a smell" — which is the
-  tell.
-- The status modal polls at 1 Hz *only while open*. It is not a background poller. The
-  log-spam scenario it guards against requires the operator to sit with the modal open,
-  watching, while the service is down — i.e. exactly when they want the log lines.
-
-**Replacement.** One WARNING when the fetch fails, or DEBUG unconditionally for the
-unreachable case. The operator has a log level; that is the knob.
-
-**Cut:** -20 lines, one module global, one conftest fixture line.
-
-**Confidence:** Medium-high. If you have actually been drowned in these warnings in
-production, keep it — but then it belongs behind a shared helper, not in one router.
-
----
-
-## 10. `cache_stream_write` — dead in production
-
-**Location:** [src/media/cache.py:153-165](src/media/cache.py#L153-L165)
-
-```python
-async def cache_stream_write(url, chunks, content_type="application/octet-stream"):
-    digest = hashlib.sha256()
-    async for chunk in cache_stream_tee(url, chunks, content_type):
-        digest.update(chunk)
-    return _cache_path(url), digest.hexdigest()
-```
-
-Grep across `src/` finds exactly one occurrence: the definition. Every caller is a test:
-
-- `tests/test_dedup.py` — lines 41, 196, 264
-- `tests/test_cache.py` — lines 15, 49, 64, 94
-
-The production path is `src/media/fetch.py:tee_to_cache`, which drives
-`cache_stream_tee` and accumulates its own `hashlib.sha256()` inline (fetch.py:301,
-318). So the digest logic exists twice — once for real, once for tests.
-
-Its docstring — "for callers that don't want the bytes... the content digest is
-accumulated for free and used by `src.media.dedup`" — describes an architecture that is
-no longer the one in the tree. `src.media.dedup` receives the digest from
-`tee_to_cache`, not from here.
-
-**Replacement.** Tests drain `cache_stream_tee` directly, which is a two-line helper in
-the test module and tests the code that actually runs:
-
-```python
-async def _drain(url, chunks, ct="application/octet-stream"):
-    d = hashlib.sha256()
-    async for c in cache_mod.cache_stream_tee(url, chunks, ct):
-        d.update(c)
-    return cache_mod._cache_path(url), d.hexdigest()
-```
-
-**Cut:** -13 lines src. Test line count is a wash; test *fidelity* improves — they stop
-exercising a function no user reaches.
-
-**Confidence:** High.
-
----
-
 ## 11. Service worker precaches URLs the page never requests
 
 **Location:** [src/static/sw.js:5-24](src/static/sw.js#L5-L24) vs
@@ -517,17 +377,6 @@ Leave it alone.
 
 | # | Tag | Item | Lines | Confidence |
 |---|-----|------|-------|------------|
-| 0 | **bug** | `except TypeError, ValueError:` — app does not import | 1 | certain |
-| 1 | delete | Bug archaeology in comments/docstrings | ~500 | high |
-| 2 | native | `src/auth/totp.py` wrappers over `pyotp` | 29 | high |
-| 3 | shrink | Gallery arrows duplicate `galleryPrev`/`galleryNext` | 26 | high |
-| 4 | yagni | `GET /api/feeds` for a default-off debug overlay | 30 | high |
-| 5 | delete | Redundant scroll-listener seen-marking | 18 | high |
-| 6 | shrink | `_evict_sync` three copies of the unlink | 12 | high |
-| 7 | native | 2s `setInterval` pagination poll → IntersectionObserver | 14 | high |
-| 8 | yagni | Third `httpx` client + `_State` namespace class | 12 | med-high |
-| 9 | yagni | `_log_outcome` transition detector | 20 | med-high |
-| 10 | delete | `cache_stream_write` — production-dead | 13 | high |
 | 11 | delete | `sw.js` precaches URLs never requested | 9 | high |
 | 12 | yagni | `backfill_seen_media` runs a v14 one-shot forever | 0 | high |
 | 13 | stdlib | `src/timing.py` wraps `time.perf_counter` | ~36 | low-med |
@@ -537,8 +386,8 @@ Leave it alone.
 | 17 | shrink | `cache_read_meta` folded into `cache_lookup` | 6 | high |
 | 18 | delete | `uvicorn[standard]` unused extras | — | medium |
 
-**net: -700 lines, -3 transitive packages.**
+**net remaining: ~-64 lines, -3 transitive packages.**
 
-Suggested order: fix #0, then take #15, #16, #10, #17, #6 (mechanical, no judgement
-required, ~36 lines), then #5, #11, #3, #7 (frontend, each needs one manual check),
-then #2, #4, #8, #9, #14 (backend, each touches tests), and #1 last and by hand.
+Suggested order: take #15, #16, #17 (mechanical, no judgement required, ~11 lines),
+then #11 (frontend, needs one manual check), then #14, #12 (backend, each touches
+tests), and #13, #18 last.

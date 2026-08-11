@@ -1,4 +1,3 @@
-import hashlib
 import logging
 from collections.abc import AsyncIterator, Callable
 from pathlib import Path
@@ -6,8 +5,13 @@ from pathlib import Path
 import aiosqlite
 import pytest
 
-from src.media.cache import cache_stream_write
+from src.media import cache as cache_mod
 from src.media.dedup import record_media_hash
+
+
+async def _drain(url: str, chunks: AsyncIterator[bytes]) -> None:
+    async for _ in cache_mod.cache_stream_tee(url, chunks):
+        pass
 
 
 async def _chunks(*parts: bytes) -> AsyncIterator[bytes]:
@@ -30,18 +34,6 @@ async def _add_item(
         (item_id, feed_id, guid, media_url, media_url, fetched_at),
     )
     await db.commit()
-
-
-async def test_cache_stream_write_returns_content_digest(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    from src.config import settings
-
-    monkeypatch.setattr(settings, "cache_dir", str(tmp_path))
-    payload = b"hello world"
-
-    path, digest = await cache_stream_write("https://example.com/a.jpg", _chunks(b"hello ", b"world"))
-
-    assert path.read_bytes() == payload
-    assert digest == hashlib.sha256(payload).hexdigest()
 
 
 async def test_record_media_hash_stores_digest(db: aiosqlite.Connection) -> None:
@@ -193,7 +185,7 @@ async def _cache_file(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, url: str,
 
     monkeypatch.setattr(settings, "cache_dir", str(tmp_path / "cache"))
     payload = src.read_bytes()  # noqa: ASYNC240
-    await cache_stream_write(url, _chunks(payload))
+    await _drain(url, _chunks(payload))
 
 
 async def test_phash_survives_recompression(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -261,7 +253,7 @@ async def test_phash_skips_undecodable_media(tmp_path: Path, monkeypatch: pytest
 
     monkeypatch.setattr(settings, "dedup_similarity", 97)
     monkeypatch.setattr(settings, "cache_dir", str(tmp_path / "cache"))
-    await cache_stream_write("https://a.example.com/clip.mp4", _chunks(b"\x00\x00\x00\x20ftypmp42"))
+    await _drain("https://a.example.com/clip.mp4", _chunks(b"\x00\x00\x00\x20ftypmp42"))
 
     assert await _compute_phash("https://a.example.com/clip.mp4") is None
 

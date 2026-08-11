@@ -1,6 +1,6 @@
 import asyncio
 import os
-from collections.abc import AsyncGenerator
+from collections.abc import AsyncGenerator, AsyncIterable
 from pathlib import Path
 
 import pytest
@@ -8,11 +8,16 @@ import pytest
 from src.media import cache as cache_mod
 
 
+async def _drain(url: str, chunks: AsyncIterable[bytes], content_type: str = "application/octet-stream") -> None:
+    async for _ in cache_mod.cache_stream_tee(url, chunks, content_type):
+        pass
+
+
 async def _write(url: str, data: bytes, content_type: str = "application/octet-stream") -> None:
     async def chunks() -> AsyncGenerator[bytes]:
         yield data
 
-    await cache_mod.cache_stream_write(url, chunks(), content_type)
+    await _drain(url, chunks(), content_type)
 
 
 async def test_write_and_read(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -46,7 +51,7 @@ async def test_stream_write_records_content_type_sidecar(tmp_path: Path, monkeyp
         for b in (b"GIF", b"89a"):
             yield b
 
-    await cache_mod.cache_stream_write("https://example.com/anim.gif", chunks(), "image/gif")
+    await _drain("https://example.com/anim.gif", chunks(), "image/gif")
     path = cache_mod.cache_read("https://example.com/anim.gif")
     assert path is not None
     assert path.read_bytes() == b"GIF89a"
@@ -61,7 +66,7 @@ async def test_stream_write_failure_cleans_sidecar(tmp_path: Path, monkeypatch: 
         yield b""  # pragma: no cover
 
     with pytest.raises(RuntimeError, match="boom"):
-        await cache_mod.cache_stream_write("https://example.com/bad.gif", bad_chunks(), "image/gif")
+        await _drain("https://example.com/bad.gif", bad_chunks(), "image/gif")
     assert cache_mod.cache_read("https://example.com/bad.gif") is None
     assert cache_mod.cache_read_meta("https://example.com/bad.gif") is None
     assert not any(p.suffix == ".tmp" for p in tmp_path.iterdir())  # noqa: ASYNC240
@@ -91,8 +96,8 @@ async def test_concurrent_writes_same_url_keep_entry_valid(tmp_path: Path, monke
         resumed.set()
 
     await asyncio.gather(
-        cache_mod.cache_stream_write(url, slow_chunks(), "image/jpeg"),
-        cache_mod.cache_stream_write(url, fast_chunks(), "image/jpeg"),
+        _drain(url, slow_chunks(), "image/jpeg"),
+        _drain(url, fast_chunks(), "image/jpeg"),
     )
 
     path = cache_mod.cache_read(url)

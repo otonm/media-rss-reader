@@ -242,7 +242,7 @@ Current migrations (v1–v14): `fetched_at` index, `seen_guids` table + backfill
 
 Files are stored at `{CACHE_DIR}/{sha256(url)}` — no subdirectories, no extension. The sha256 filename makes lookup O(1) and avoids filesystem issues with special characters in URLs.
 
-**Write**: `cache_stream_tee(url, byte_iterator, content_type)` is the primitive — it streams chunks to a temp file *and yields each one onward*, so the proxy can serve the browser and fill the cache in a single pass. `cache_stream_write(...)` simply drains it and returns `(path, sha256)` for callers that only want the file. Neither buffers the full file in memory.
+**Write**: `cache_stream_tee(url, byte_iterator, content_type)` is the primitive — it streams chunks to a temp file *and yields each one onward*, so the proxy can serve the browser and fill the cache in a single pass. It buffers nothing beyond one chunk.
 
 Two details that matter, both fixes for cache entries that failed permanently:
 
