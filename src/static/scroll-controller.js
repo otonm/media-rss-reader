@@ -6,10 +6,6 @@
 //                                 video play/pause, and cache rebuild
 //   seenObserver (threshold 0)   — fires when any element leaves the viewport
 //                                 (binary enter/leave, no ratio crossing gap)
-//
-// A debounced scroll event listener on #feed acts as a secondary trigger
-// (desktop browsers fire scroll events on overflow containers reliably).
-// Both mechanisms call postSeen() which deduplicates via item.seen_at.
 // ---------------------------------------------------------------------------
 
 (function () {
@@ -20,8 +16,6 @@
   const state = {
     observer: null,
     seenObserver: null,
-    feed: null,
-    scrollTimer: null,
   };
 
   function init() {
@@ -30,11 +24,8 @@
     });
     state.seenObserver = new IntersectionObserver(onSeen, { threshold: 0 });
 
-    state.feed = document.getElementById("feed");
-    state.feed.addEventListener("scroll", onFeedScroll, { passive: true });
-
-    // The item on screen when the tab closes never leaves the viewport, so
-    // neither trigger above would ever mark it; mark it here instead.
+    // The item on screen when the tab closes never leaves the viewport, so no
+    // leave event ever fires for it; mark it here instead.
     window.addEventListener("pagehide", markCurrent);
   }
 
@@ -79,23 +70,6 @@
       if (entry.boundingClientRect.bottom > 0) return;
       if (!entry.target.dataset.mediaType) return;
       postSeen(entry.target.dataset.id);
-    });
-  }
-
-  function onFeedScroll() {
-    clearTimeout(state.scrollTimer);
-    state.scrollTimer = setTimeout(markItemsAboveViewport, 200);
-  }
-
-  function markItemsAboveViewport() {
-    const feedTop = state.feed.getBoundingClientRect().top;
-    const items = state.feed.querySelectorAll(".placeholder, .media-item");
-    items.forEach((el) => {
-      // 1px tolerance: scroll-snap snaps items to exact viewport height;
-      // getBoundingClientRect().bottom can be 0.0001 on high-DPI displays.
-      if (el.getBoundingClientRect().bottom <= feedTop + 1) {
-        postSeen(el.dataset.id);
-      }
     });
   }
 

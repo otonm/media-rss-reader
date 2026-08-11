@@ -51,47 +51,6 @@ check above.
 
 ---
 
-## 4. `GET /api/feeds` exists only for a debug overlay that ships disabled
-
-**Locations:** [src/api/feeds.py](src/api/feeds.py) (30 lines),
-[src/main.py:102](src/main.py#L102) (router registration),
-[src/static/controls.js:158-172](src/static/controls.js#L158-L172) (the sole consumer),
-plus tests.
-
-The endpoint returns `SELECT id, title FROM feeds ORDER BY title COLLATE NOCASE`. Its
-own docstring names the single consumer:
-
-> "The one consumer is `initDebugOverlay` (src/static/controls.js:158-168), which builds
-> a feed-id → title map for the UI_DEBUG overlay."
-
-`initDebugOverlay` returns immediately unless `MRR.config.uiDebug`, which comes from
-`--ui-debug`, which comes from `settings.ui_debug`, **default `0`**. So in every default
-deployment this is a router module, a route registration, a network round trip that
-never fires, and a test file, for a mapping used by one line of debug UI.
-
-The docstring also records that this endpoint has already been trimmed once — it used to
-return `item_count` and `unseen_count` from a `LEFT JOIN` + `GROUP BY` over the whole
-items table "for counts nobody requested". This is the second pass of the same cut.
-
-**Replacement options, in order of laziness:**
-
-1. Add `feed_title` to the `/api/items` row shape (`_row_to_item` already builds a dict;
-   the CTE would need a join on `feeds`). The overlay then needs no second request and
-   no map. Costs one join on the hot path — measure before choosing this.
-2. Have the overlay display the raw `feed_id` (it already falls back to it:
-   `debug.feedTitles[item.feed_id] || item.feed_id`). Delete the endpoint and the fetch
-   outright.
-
-Option 2 is the lazy one: the overlay is a diagnostic, and a feed id is a perfectly good
-diagnostic identifier.
-
-**Cut:** -30 lines src, plus the router registration, plus its tests.
-
-**Confidence:** High that it is disproportionate; the choice between the two
-replacements is a product call.
-
----
-
 ## 5. Three overlapping seen-marking mechanisms
 
 **Location:** [src/static/scroll-controller.js](src/static/scroll-controller.js)
