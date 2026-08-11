@@ -16,11 +16,11 @@ router = APIRouter()
 async def list_feeds(db: DbDep) -> list[dict[str, Any]]:
     """Return every feed's id and title.
 
-    The one consumer is initDebugOverlay (src/static/controls.js:158-168),
-    which builds a feed-id -> title map for the UI_DEBUG overlay. It used to
-    return item_count and unseen_count too, from a LEFT JOIN and GROUP BY over
-    the whole items table, defended by a docstring about the round-trips it
-    saved — for counts nobody requested.
+    The one consumer is initDebugOverlay in src/static/controls.js: /api/items
+    carries feed_id but not the feed's name, so the UI_DEBUG overlay fetches
+    this once to build a feed-id -> title map. Deliberately no item counts —
+    they cost a LEFT JOIN and GROUP BY over the whole items table and nothing
+    asks for them.
     """
     logger.debug("list_feeds querying all feeds")
     elapsed = timer()

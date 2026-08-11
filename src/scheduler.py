@@ -1,8 +1,7 @@
 """Background scheduler: OPML sync, feed refresh, and cache warmup.
 
-Replaces APScheduler with plain asyncio task loops. Each loop sleeps for
-its configured interval between runs. The startup sync fires immediately
-so the reader is populated on first boot without waiting.
+Each loop sleeps for its configured interval between runs. The startup sync
+fires immediately so the reader is populated on first boot without waiting.
 """
 
 import asyncio
@@ -85,7 +84,7 @@ async def stop_scheduler() -> None:
         task.cancel()
     _state.scheduler = []
     # The startup-sync task and the prefetcher's warm tasks are tracked
-    # elsewhere; both hold the client we are about to close (R6).
+    # elsewhere; both hold the client we are about to close.
     for task in list(_bg_tasks):
         task.cancel()
     await cancel_prefetch_tasks()

@@ -54,11 +54,9 @@
     const slide = mediaEl ? mediaEl.closest(".gallery-slide") : null;
     const type = slide ? slide.dataset.mediaType : wrap.dataset.mediaType;
     state.boundType = type;
-    // Minimum dwell — a floor on the snap-to-next delay so that short
-    // GIFs (parsed sub-100ms durations), very short videos, or fast
-    // scroll-snap overshoots don't make the user perceive items as
-    // "jumped over". Reuses the existing IMAGE_DISPLAY_DELAY_MS config
-    // value as a sensible default.
+    // Minimum dwell: a floor on the snap-to-next delay so short GIFs,
+    // very short videos, or scroll-snap overshoots don't read as skipped
+    // items. Reuses the imageAutoscrollDelayMs config value as the default.
     const cfg = MRR.config;
     const minDwellMs = cfg.imageAutoscrollDelayMs;
     const fireSnap = () => {

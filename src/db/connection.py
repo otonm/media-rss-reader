@@ -1,12 +1,12 @@
-"""Database connection factory.
+"""Database connections and the write lock that guards the shared one.
 
-open_db() opens a connection held for the process lifetime. src/main.py opens two:
-one the requests share via get_db(), one the scheduler keeps to itself.
-get_db() is a FastAPI dependency returning the request-side connection.
-run_with_own_db() is for work that outlives the request that started it.
+open_db() opens a connection held for the process lifetime; src/main.py opens
+two, one the requests share via get_db() and one the scheduler keeps to itself.
+Every write on the shared connection goes through write_transaction(); writes
+with no connection to borrow use run_with_own_db().
 
-DbDep is the annotated dependency four modules in two other packages import;
-it is deliberately public.
+DbDep is the public form of get_db(): route handlers in src/api and src/auth
+annotate their db parameter with it rather than depending on get_db directly.
 """
 
 import asyncio
@@ -25,23 +25,26 @@ logger = logging.getLogger(__name__)
 
 
 async def open_db(path: str | None = None) -> aiosqlite.Connection:
-    """Open an aiosqlite connection with WAL mode and foreign keys enabled.
+    """Open an aiosqlite connection configured the way every caller expects.
 
-    Creates the parent directory if it does not yet exist so the container
-    can start cleanly even when the data volume is empty.
+    The parent directory is created first, so the container starts cleanly on
+    an empty data volume.
+
+    None of the four settings is a default:
+    - a 30 s busy timeout — how long a writer waits for the lock before raising
+      "database is locked". The 5 s default is too tight when many
+      run_with_own_db writers contend for it at once.
+    - Row as the row factory, so rows index by column name as callers expect.
+    - WAL, so readers keep working while the scheduler writes.
+    - foreign_keys=ON, which SQLite leaves off; without it the items → feeds
+      ON DELETE CASCADE declared in schema.py does nothing.
     """
     path_str = path or settings.db_path
     logger.debug(f"open_db opening {path_str}")
     Path(path_str).parent.mkdir(parents=True, exist_ok=True)
-    # timeout is SQLite's busy timeout: how long a writer waits for the lock
-    # before raising "database is locked". The 5s default is too tight when a
-    # whole feed 404s at once and every request wants the writer lock.
     db = await aiosqlite.connect(path_str, timeout=30)
-    # Row objects behave like dicts — access columns by name throughout the codebase.
     db.row_factory = aiosqlite.Row
-    # WAL allows concurrent readers while the scheduler is writing.
     await db.execute("PRAGMA journal_mode=WAL")
-    # Enforce ON DELETE CASCADE on the items → feeds foreign key.
     await db.execute("PRAGMA foreign_keys=ON")
     return db
 
@@ -49,30 +52,21 @@ async def open_db(path: str | None = None) -> aiosqlite.Connection:
 async def get_db(request: Request) -> aiosqlite.Connection:
     """FastAPI dependency: the process-wide connection opened at startup.
 
-    Opening one per request cost a blocking mkdir, an aiosqlite.connect that
-    starts an OS thread and two PRAGMA round-trips, on every request including
-    the highest-rate route in the app. aiosqlite serialises statements on the
-    connection's worker thread, so DB access queues app-wide; with WAL and
-    queries this small that is cheaper than a thread per request.
+    aiosqlite serialises statements on the connection's own worker thread, so
+    every request queues behind every other; with WAL and queries this small
+    that is cheaper than starting a thread and running two PRAGMAs per request.
 
-    Sharing one connection means sharing one implicit transaction: any write
-    here, single statement or not, has to go through write_transaction rather
-    than assume it owns the connection. The scheduler is kept on a separate
-    connection for the same reason.
-
-    Work that outlives the request still needs run_with_own_db — a streaming
-    body or a warm task running after the route returned must not borrow a
-    connection whose lifetime is the request's.
+    The cost is a shared implicit transaction — sqlite3 opens one per
+    connection, not per coroutine. Any write on this connection, single
+    statement or not, has to go through write_transaction. The scheduler is
+    kept on its own connection for the same reason.
     """
     return request.app.state.db
 
 
 DbDep = Annotated[aiosqlite.Connection, Depends(get_db)]
 
-# The shared connection's write lock. It lived in src/api/items.py as a private
-# name while this module's get_db docstring named it from another package, so
-# no other writer could take it — and post_setup, the other request-path writer,
-# did not. The invariant belongs with the resource it protects.
+# Lives here, beside the connection it guards, so every writer takes this one.
 _write_lock = asyncio.Lock()
 
 
@@ -80,14 +74,10 @@ _write_lock = asyncio.Lock()
 async def write_transaction(db: aiosqlite.Connection) -> AsyncIterator[None]:
     """Serialise a write on the shared connection, then commit.
 
-    get_db hands every request the same connection, and sqlite3 opens one
-    implicit transaction per connection rather than per coroutine. Every write
-    needs this, not just a multi-statement one: a bare single-statement
-    execute + commit by one coroutine commits whatever another coroutine has
-    in flight. Without this two overlapping writers share a transaction and
-    either one's ROLLBACK discards the other's statements, leaving seen_media
-    written and items.seen_at not (F11) — or discarding a TOTP secret
-    mid-setup.
+    Every write needs this, not only a multi-statement one: two coroutines on
+    one connection share one transaction, so a bare execute + commit by one of
+    them commits whatever the other has in flight, and either one's rollback
+    discards the other's statements.
 
     BaseException rather than Exception: a CancelledError arriving at any await
     inside the block would otherwise unwind past the rollback and leave the
@@ -108,25 +98,25 @@ async def write_transaction(db: aiosqlite.Connection) -> AsyncIterator[None]:
             raise
 
 
-# ponytail: every call here opens its own connection — a blocking mkdir, an
-# aiosqlite.connect that spawns an OS thread, two PRAGMA round trips, then a
-# close — for every cached media file. Sharing one long-lived connection is
-# the fix, but tried once and reverted: it needs a lock (writers here do
-# multi-statement writes with a bare commit and no rollback, so a shared
-# connection reopens the interleaving write_transaction exists to prevent),
-# rollback-on-exception (closing a private connection mid-write rolls back
-# for free; a shared one left open does not), and a teardown that waits for
-# writes still in flight — together, not incrementally. Do it as one task.
+# Known cost: one open and close per call — a blocking mkdir, an
+# aiosqlite.connect that spawns an OS thread, two PRAGMA round trips — for every
+# cached media file. Moving these writers onto a shared long-lived connection
+# needs three things at once: a write lock, an explicit rollback (a private
+# connection rolls back for free when it closes mid-write, a shared one does
+# not), and a teardown that waits for writes still in flight.
 async def run_with_own_db(
     label: str,
     write: Callable[[aiosqlite.Connection], Awaitable[object]],
 ) -> None:
     """Run one DB write on a fresh connection, logging and swallowing failures.
 
-    For work that outlives the request that started it: fire-and-forget warm
-    tasks, and streaming-response bodies, which run after the route function
-    has returned and its request-scoped connection has already been closed.
-    Borrowing that connection raises "no active connection" instead.
+    For writers with no connection to borrow: background prefetch tasks, and
+    streaming-response bodies, which run after the route function has returned.
+    A private connection also keeps these writes out of the shared connection's
+    implicit transaction — they commit without going through write_transaction.
+
+    Failures are logged and dropped: every caller is fire-and-forget bookkeeping
+    (cache digests, dead-URL marks) that must not fail the media it belongs to.
     """
     try:
         db = await open_db()

@@ -26,15 +26,15 @@ class Settings:
     cache_max_items: int = 500
     cache_max_age_hours: int = 48
     # Largest single media transfer, in bytes (256 MiB). 0 disables the check.
-    # Both the declared Content-Length and the running total are checked: a
-    # slow-drip server never trips the per-operation timeout (R7).
+    # Both the declared Content-Length and the running total are checked, so a
+    # slow-drip server never trips the per-operation timeout.
     media_max_bytes: int = 268435456
     # Total cache size budget in bytes (2 GiB). 0 disables. Eviction by file
     # count alone cannot bound a directory of multi-gigabyte videos.
     cache_max_bytes: int = 2147483648
     # 1 lets media URLs point at loopback/RFC1918 addresses. Off by default:
     # media URLs come from third-party feed content and the prefetcher fetches
-    # them with no session at all (R1). Turn it on only if you serve media from
+    # them with no session at all. Turn it on only if you serve media from
     # another container on the same Docker network. An int, not a bool, because
     # _load_settings only parses int and str.
     allow_private_media_hosts: int = 0

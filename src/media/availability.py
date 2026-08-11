@@ -1,11 +1,12 @@
-"""Track media URLs that have returned 404 and drop posts whose media is gone.
+"""Track media URLs that are permanently gone and drop posts whose media is dead.
 
-mark_url_dead_and_maybe_drop(url, item_id, db) is called from the proxy and
-the prefetch warmer on every upstream non-success. It records the URL in
-dead_urls, then for each item that contains it, deletes the item row and
-writes a tombstone to unavailable_guids when every URL of that item is now
-dead. Tombstones are read by _refresh_feed to skip re-insert on the next
-feed poll.
+mark_url_dead_and_maybe_drop(url, item_id, db) is called from the proxy (on
+a failed upstream fetch and on a browser-reported load failure) and the
+prefetch warmer when an upstream fetch fails permanently (404, 403, ...) or
+returns a non-media body. It records the URL in dead_urls, then for each
+item that contains it, deletes the item row and writes a tombstone to
+unavailable_guids when every URL of that item is now dead. Tombstones are
+read by _refresh_feed to skip re-insert on the next feed poll.
 """
 
 from __future__ import annotations
@@ -29,9 +30,9 @@ async def _candidate_items(db: aiosqlite.Connection, url: str, item_id: str | No
        if that item actually contains `url`.
     2. By media_url (to find all items sharing the same primary URL).
 
-    Non-primary gallery slide URLs are intentionally not scanned here —
-    real callers (proxy + prefetch) always pass item_id when they observed
-    a non-primary slide 404.
+    Non-primary gallery slide URLs are only reachable through the item_id
+    path — they are not a row's media_url — so callers must pass item_id
+    when the observed failure was on a slide.
     """
     seen: dict[str, aiosqlite.Row] = {}
 
@@ -43,7 +44,7 @@ async def _candidate_items(db: aiosqlite.Connection, url: str, item_id: str | No
             for row in await cur.fetchall():
                 # The caller supplies item_id and url independently — the proxy
                 # takes both from the query string — so an item that does not
-                # actually contain this URL must not be a deletion candidate (R5).
+                # actually contain this URL must not be a deletion candidate.
                 if url in _item_urls(row):
                     seen[row["id"]] = row
 
@@ -75,10 +76,9 @@ async def is_known_media_url(url: str, db: aiosqlite.Connection) -> bool:
     the LIKE prefilter, so the prefilter can only ever be too generous.
 
     The pattern is built with json.dumps so it carries the same escaping the
-    column holds. media_json is written with the default ensure_ascii=True, so
-    a URL containing `é` is stored as `caf\\u00e9`; a pattern built from the raw
-    value could never match it, and every gallery slide with a non-ASCII
-    character answered 404 (M3).
+    column holds: media_json is written with ensure_ascii=True, so a URL
+    containing a non-ASCII character is stored as a \\uXXXX escape, and a
+    pattern built from the raw value could never match it.
     """
     async with db.execute("SELECT 1 FROM items WHERE media_url = ? LIMIT 1", (url,)) as cur:
         if await cur.fetchone() is not None:

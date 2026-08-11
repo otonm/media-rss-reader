@@ -17,12 +17,19 @@ _AUTH_FREE_EXACT = {"/login", "/setup"}
 
 
 def _is_auth_free(path: str) -> bool:
+    """Return True for paths that must be reachable without a session."""
     if path in _AUTH_FREE_EXACT:
         return True
     return any(path.startswith(prefix) for prefix in _AUTH_FREE_PREFIXES)
 
 
 class AuthMiddleware(BaseHTTPMiddleware):
+    """Gates every request: health probe, then HTTPS, then session cookie.
+
+    Order matters — the HTTPS check runs before the auth-free check so the
+    login page is never served over plain HTTP.
+    """
+
     async def dispatch(self, request: Request, call_next: RequestResponseEndpoint) -> Response:
         path = request.url.path
         # Health endpoint bypasses all checks — internal liveness probe only.

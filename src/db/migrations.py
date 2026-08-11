@@ -7,6 +7,11 @@ incremented after each one.
 
 To add a migration: append one SQL string to MIGRATIONS. Never edit or
 reorder existing entries — doing so would corrupt the version counter.
+
+Each entry must also be idempotent. SQLite runs DDL outside any transaction,
+so a statement takes effect before the version bump that records it, and a
+crash in between replays it on the next startup. That is what the IF NOT EXISTS
+clauses and run_migrations' duplicate-column handling are there for.
 """
 
 import logging
@@ -76,25 +81,24 @@ MIGRATIONS: list[str] = [
     # v13: index on sha256 — probed for every freshly downloaded media file
     "CREATE INDEX IF NOT EXISTS idx_media_hashes_sha256 ON media_hashes(sha256)",
     # v14: seen_media — the durable seen record, keyed on the normalised media
-    # URL so a picture stays seen across feeds and across re-inserts. It
-    # deliberately has NO foreign key to feeds: seen_guids was cascaded away
-    # whenever sync_feeds removed a feed row. NOT NULL is explicit because
-    # SQLite allows NULL in a TEXT PRIMARY KEY.
+    # URL so a picture stays seen across feeds and across re-inserts. No foreign
+    # key to feeds, deliberately: a cascade would erase the seen state whenever
+    # sync_feeds drops a feed row. NOT NULL is explicit because SQLite allows
+    # NULL in a TEXT PRIMARY KEY.
     ("CREATE TABLE IF NOT EXISTS seen_media (media_key TEXT PRIMARY KEY NOT NULL, seen_at TIMESTAMP NOT NULL)"),
     # v15/v16: HTTP validators for conditional feed fetches. A 304 skips the
-    # download, the feedparser pass and the media detection for the whole feed,
-    # which is the bulk of what every restart used to redo.
+    # download, the feedparser pass and the media detection for the whole feed.
     "ALTER TABLE feeds ADD COLUMN etag TEXT",
     "ALTER TABLE feeds ADD COLUMN last_modified TEXT",
     # v17: mtime of the local *.xml source — same purpose for FEEDS_DIR files,
     # which have no HTTP layer to carry validators.
     "ALTER TABLE feeds ADD COLUMN source_mtime REAL",
-    # v18: resolved_guids — entries that were detected and then deliberately
-    # not stored, because _INSERT_ITEM's guards rejected them. Those guards are
-    # keyed on media_key, which only exists after detection, while the
-    # pre-detection skip set is keyed on guid; without this tombstone a rejected
-    # entry never reaches items, so its guid never reaches the skip set and the
-    # entry is re-detected on every poll for as long as the feed lists it.
+    # v18: resolved_guids — entries that were detected and then deliberately not
+    # stored, because _INSERT_ITEM's guards rejected them. Those guards key on
+    # media_key, which only exists after detection, while the pre-detection skip
+    # set keys on guid: a rejected entry never reaches items, so its guid never
+    # reaches the skip set, and it is re-detected on every poll for as long as
+    # the feed lists it. This tombstone is what the skip set reads instead.
     # CASCADE like unavailable_guids: dropping a feed drops its items too, so a
     # re-added feed should start clean.
     (
@@ -124,14 +128,16 @@ async def run_migrations(db: aiosqlite.Connection) -> None:
         try:
             await db.execute(sql)
         except sqlite3.OperationalError as exc:
-            # Gracefully handle ALTER TABLE ADD COLUMN when the column already
-            # exists — this happens when run_migrations is called after
-            # create_schema (which ships the latest schema in CREATE TABLE).
+            # ADD COLUMN for a column that is already there: create_schema
+            # declared it in its CREATE TABLE (feeds.site_link), or the
+            # statement ran before a crash lost its version bump. Either way
+            # the column exists as the migration wanted, so count it applied.
             if "duplicate column name" not in str(exc):
                 raise
             logger.debug(f"run_migrations step {i} ignored duplicate column error")
-        # Commit version update immediately so a crash mid-migration leaves a
-        # consistent state — partially applied migrations are not retried.
+        # Bump the version after each statement rather than once at the end, so
+        # a failure part-way through keeps the steps that already succeeded and
+        # the next startup resumes at the one that failed.
         await db.execute(f"PRAGMA user_version = {i}")
         await db.commit()
         logger.debug(f"run_migrations applied step {i}, user_version now {i}")
@@ -140,17 +146,16 @@ async def run_migrations(db: aiosqlite.Connection) -> None:
 async def backfill_seen_media(db: aiosqlite.Connection) -> None:
     """Populate seen_media from the pre-v14 seen records, then clean up.
 
-    Cannot be a plain SQL migration: media_key() is Python. Both sources are
-    read — items.seen_at covers rows still marked seen, and the seen_guids
-    join recovers rows that were pruned and re-inserted unseen (which is
-    exactly the state that made seen posts reappear).
-
-    Idempotent, so it is safe to run on every startup; the DELETE doubles as a
-    safety net for anything the insert guard in sync.py somehow lets through.
+    Cannot be a plain SQL migration: the seen_media key is media_key(), which is
+    Python. Runs on every startup rather than once, which is safe because both
+    statements are idempotent.
     """
     rows: list[aiosqlite.Row] = []
+    # Rows still carrying their own seen mark.
     async with db.execute("SELECT media_url, seen_at FROM items WHERE seen_at IS NOT NULL") as cur:
         rows.extend(await cur.fetchall())
+    # Rows whose mark survives only in seen_guids, because pruning removed the
+    # item and a later fetch re-inserted it unseen.
     async with db.execute(
         """SELECT i.media_url AS media_url, sg.seen_at AS seen_at
            FROM seen_guids sg
@@ -162,6 +167,8 @@ async def backfill_seen_media(db: aiosqlite.Connection) -> None:
         "INSERT OR IGNORE INTO seen_media (media_key, seen_at) VALUES (?, ?)",
         [(media_key(row["media_url"]), row["seen_at"]) for row in rows],
     )
+    # Any item still marked unseen whose media is now known seen was re-inserted
+    # after a prune; seen_media is the authority, so drop it.
     await db.execute("DELETE FROM items WHERE seen_at IS NULL AND media_key IN (SELECT media_key FROM seen_media)")
     await db.commit()
     logger.debug(f"backfill_seen_media reconciled {len(rows)} pre-v14 seen record(s)")

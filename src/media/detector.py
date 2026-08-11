@@ -25,7 +25,7 @@ from src.logging_utils import loggable
 logger = logging.getLogger(__name__)
 
 # Supported extensions per media type. Query strings are stripped before matching.
-_IMAGE_EXTS = {".jpg", ".jpeg", ".png", ".webp", ".avif"}  # no .svg: active document (R8)
+_IMAGE_EXTS = {".jpg", ".jpeg", ".png", ".webp", ".avif"}  # no .svg: an active document, not safe to serve
 _GIF_EXTS = {".gif"}
 _VIDEO_EXTS = {".mp4", ".webm", ".mov", ".avi"}
 

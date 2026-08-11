@@ -3,10 +3,11 @@
 All statements use IF NOT EXISTS so this module is safe to call on every
 startup without checking whether the schema already exists.
 
-Everything added later (seen_guids, dead_urls, unavailable_guids, the
-media_json and site_link columns) lives in migrations.py and only there —
-run_migrations() runs right after create_schema() on every startup, so a
-fresh database ends up with the full schema either way.
+Every later table and column belongs in migrations.py: an existing database
+only ever sees what migrations.py adds. run_migrations() runs right after
+create_schema() on every startup, so a fresh database gets both. Where the two
+overlap — feeds.site_link is declared here and added again by migration v8 —
+run_migrations swallows the resulting duplicate-column error.
 """
 
 import logging
@@ -15,7 +16,8 @@ import aiosqlite
 
 logger = logging.getLogger(__name__)
 
-# feeds stores one row per RSS feed URL found in the OPML file.
+# feeds stores one row per RSS feed, from either the OPML file or an *.xml file
+# in FEEDS_DIR (whose filename stands in for the url).
 # id is sha256(url) so it is stable across restarts without a sequence counter.
 _CREATE_FEEDS = """
 CREATE TABLE IF NOT EXISTS feeds (
@@ -28,9 +30,10 @@ CREATE TABLE IF NOT EXISTS feeds (
 )
 """
 
-# items stores every media entry extracted from feed content.
-# ON DELETE CASCADE means removing a feed automatically removes all its items.
-# The (feed_id, guid) unique constraint is the deduplication key used by INSERT OR IGNORE.
+# items stores every media entry extracted from feed content. Dropping a feed
+# takes its items with it, which the tombstone tables in migrations.py are
+# written around. UNIQUE(feed_id, guid) is the key sync.py's INSERT OR IGNORE
+# relies on to skip entries it has already stored.
 _CREATE_ITEMS = """
 CREATE TABLE IF NOT EXISTS items (
     id          TEXT PRIMARY KEY,
@@ -46,14 +49,14 @@ CREATE TABLE IF NOT EXISTS items (
 )
 """
 
-# Indexes to support the common query patterns: filter by feed, sort by date,
-# filter unseen, and prune by fetched_at.
+# The first three serve one query each: filter by feed, and sync.py's two prune
+# passes, which order by pub_date and select on seen_at.
 #
-# idx_items_feed_pub matches src/db/queries.py's window exactly
-# (PARTITION BY feed_id ORDER BY pub_date, id), so ROW_NUMBER reads it in order
-# instead of sorting the whole table. /api/items materialises that CTE twice per
-# page — once to resolve the cursor anchor, once for the page itself — and it is
-# the endpoint every scroll hits.
+# idx_items_feed_pub matches RANKED_ITEMS_CTE's window exactly (PARTITION BY
+# feed_id ORDER BY pub_date, id), so ROW_NUMBER reads it in order instead of
+# sorting the whole table. /api/items materialises that CTE twice per page —
+# once to resolve the cursor anchor, once for the page itself — and it is the
+# endpoint every scroll hits.
 _CREATE_INDEXES = [
     "CREATE INDEX IF NOT EXISTS idx_items_feed_id  ON items(feed_id)",
     "CREATE INDEX IF NOT EXISTS idx_items_pub_date ON items(pub_date DESC)",

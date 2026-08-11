@@ -34,7 +34,7 @@
     state.feed.addEventListener("scroll", onFeedScroll, { passive: true });
 
     // The item on screen when the tab closes never leaves the viewport, so
-    // neither trigger above would ever mark it and it returned every session.
+    // neither trigger above would ever mark it; mark it here instead.
     window.addEventListener("pagehide", markCurrent);
   }
 
@@ -99,18 +99,18 @@
     });
   }
 
-  // sendBeacon, not fetch: the browser cancels in-flight fetches when the tab
-  // closes, so marks made in the last moments of a session were silently lost
-  // and those items came back on the next load. Beacons are queued by the
-  // browser and delivered regardless. Marking locally first (rather than on
-  // the response) is what makes that possible — there is no response to wait
-  // for. Same-origin, so the session cookie rides along.
+  // sendBeacon, not fetch: the browser cancels in-flight fetches when the
+  // tab closes, so marks made in the last moments of a session would be
+  // lost. Beacons are queued by the browser and delivered regardless.
+  // Marking locally first (rather than on the response) makes that possible
+  // — there is no response to wait for. Same-origin, so the session cookie
+  // rides along.
   function postSeen(id) {
     const item = MRR.itemStore.getItems().find((i) => i.id === id);
     if (!item || item.seen_at) return;
-    // ponytail: optimistic — a dropped beacon loses the mark for this session,
-    // exactly as the old swallowed fetch error did. Add a retry queue if the
-    // server-side count ever drifts noticeably from what was scrolled past.
+    // Optimistic: a dropped beacon loses the mark for this session. Add a
+    // retry queue if the server-side count ever drifts noticeably from what
+    // was scrolled past.
     MRR.itemStore.markSeen(id, new Date().toISOString());
     MRR.feedView.markSeen(id);
     // media_url rides along so the mark survives the row being pruned between

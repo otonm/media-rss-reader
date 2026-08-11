@@ -30,20 +30,13 @@ def item_slides(row: Mapping[str, Any]) -> list[dict[str, str]]:
     """The media slides of an items row: the media_json array, or a 1-element
     fallback built from media_url/media_type.
 
-    This shape — a JSON array of {url, type}, NULL meaning "fall back to the
-    primary columns" — was decoded independently in src/api/items.py and
-    src/media/availability.py. It lives here because both sides already import
-    this module and src/media must not depend on src/api, which is where the
-    type that could have been shared lived.
-
-    Rows predating migration v5 have media_json NULL. A truncated or otherwise
-    unparseable value falls back the same way rather than taking the caller
-    down: the decode used to run unguarded inside a list comprehension over a
-    whole page.
+    media_json is NULL on rows written before the column existed and can be
+    unparseable if corrupted; both fall back to the primary columns rather
+    than failing the caller.
     """
     raw = row["media_json"]
     if not raw:
-        logger.debug(f"item_slides: item {row['id']} has no media_json (pre-v5 row), using media_url")
+        logger.debug(f"item_slides: item {row['id']} has no media_json, using media_url")
         return [{"url": row["media_url"], "type": row["media_type"]}]
     try:
         return json.loads(raw)

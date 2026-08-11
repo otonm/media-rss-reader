@@ -243,7 +243,7 @@ html, body {
   background: none;
   appearance: none;
   cursor: pointer;
-  pointer-events: auto; /* the container stays none; only the dots take taps */
+  pointer-events: auto;
 }
 
 /* Size and brightness track --t, set per scroll frame by feed-view.js. No

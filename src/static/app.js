@@ -47,12 +47,11 @@
   }
 
   // Refetch with the current showSeen filter, replacing the rendered
-  // feed. Called once on startup and again whenever the user toggles
-  // the show-seen preference.
+  // feed. Called on startup and whenever the user toggles the preference.
   //
-  // The old wraps' IntersectionObserver registrations are left dangling:
-  // scrollController exposes no unobserve, but the feed is empty so it
-  // doesn't matter for correctness.
+  // The removed wraps' IntersectionObserver registrations stay registered
+  // (scrollController exposes no unobserve); harmless while the feed is
+  // empty.
   function reloadFeed() {
     document.getElementById("feed").replaceChildren();
     MRR.itemStore.resetForReload();
@@ -63,7 +62,6 @@
         MRR.feedView.renderInitial(items);
         MRR.cacheQueue.reset();
         MRR.cacheQueue.rebuild(0, MRR.config.feedInitialCount, items);
-        // Reset scroll to the top of the feed.
         document.getElementById("feed").scrollTop = 0;
       })
       .catch((err) => console.error("feed load failed", err));
@@ -156,11 +154,11 @@
       }
     });
 
-    // Click-and-hold drag = swipe emulation for mouse/pen. Touch is left
-    // to native scrolling (Task 1 fixed the vertical-bubble bug). We only
-    // read coordinates during the drag and snap on release, so native
-    // scroll-snap and video controls keep working. Below THRESHOLD it is
-    // a plain click — arrow buttons, video controls, etc. unaffected.
+    // Click-and-hold drag = swipe emulation for mouse/pen. Touch is left to
+    // native scrolling. Coordinates are only read during the drag, and the
+    // snap happens on release, so native scroll-snap and video controls keep
+    // working. Below the threshold it is a plain click — arrow buttons,
+    // video controls, etc. unaffected.
     const DRAG_THRESHOLD = 40; // px — below this is a click, not a swipe
     let dragStart = null;       // {x, y} on pointerdown, null when not dragging
 
@@ -207,9 +205,8 @@
       const total = MRR.itemStore.getItems().length;
       if (MRR.itemStore.hasMoreItems() && total - cur < MRR.config.feedInitialCount) {
         MRR.itemStore.fetchPage().then(() => {
-          // appendItem checks the live DOM, so it sees the nodes this very loop
-          // just added. The old snapshot of feed.children was taken once, before
-          // the loop, and went stale inside it.
+          // appendItem checks the live DOM, so it sees the nodes this very
+          // loop just added.
           MRR.itemStore.getItems().forEach((it) => {
             const placeholder = MRR.feedView.appendItem(it);
             if (placeholder) MRR.scrollController.observe(placeholder);

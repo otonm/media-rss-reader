@@ -59,7 +59,7 @@
     statusModal.classList.add("open");
     showSpinner();
     refreshStatus(true);
-    // ponytail: 1 s polling. Reddit Feeds upstream is a JSON file rewritten
+    // 1 s polling. The Reddit Feeds upstream is a JSON file rewritten
     // atomically; SSE would only move this loop one hop back. Revisit if
     // the upstream starts pushing natively.
     pollHandle = setInterval(() => refreshStatus(false), 1000);

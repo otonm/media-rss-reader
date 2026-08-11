@@ -4,12 +4,7 @@ Both callers want the same thing: pull a URL from its origin into the disk
 cache, record its content digest for dedup, and mark it dead if the origin
 says it is gone. The only difference is that the proxy also needs the bytes
 as they arrive, so the primitive here is a generator that yields each chunk
-onward while writing it.
-
-The proxy used to download the whole file to disk and only then reply, so the
-browser saw nothing at all until the origin transfer finished — a full-screen
-spinner for the entire download. Teeing the response means first byte out is
-first byte in.
+onward while writing it — first byte in, first byte out.
 
 Every DB write here goes through run_with_own_db: a streaming response body
 runs *after* the route function returned, by which point the request-scoped
@@ -42,17 +37,17 @@ CHUNK_SIZE = 65536
 # Per-operation httpx budget: connect, read, write and pool each get this.
 UPSTREAM_TIMEOUT_S = 30
 # Redirect hops the manual loop will follow. httpx's own follow_redirects is
-# off here because each hop has to be re-validated (R1).
+# off here because each hop has to be re-validated.
 MAX_REDIRECTS = 5
 
 # Statuses that mean the media is gone for good, so the item may be deleted and
 # its guid tombstoned. 429, 5xx, timeouts and connection errors are a busy or
 # unreachable CDN, not a missing file, and must never reach
-# mark_url_dead_and_maybe_drop — marking dead on those erased posts permanently
-# (R5). 403 is here because removed and hotlink-protected media answers 403 far
-# more often than 404 on the sites this reader is pointed at; the cost is that
-# an origin which 403s every request without a Referer header will have its
-# items erased rather than merely failing to load.
+# mark_url_dead_and_maybe_drop — marking dead on those erases posts
+# permanently. 403 is here because removed and hotlink-protected media answers
+# 403 far more often than 404 on the sites this reader is pointed at; the cost
+# is that an origin which 403s every request without a Referer header will
+# have its items erased rather than merely failing to load.
 PERMANENT_STATUSES = frozenset({403, 404, 410, 451})
 
 
@@ -63,20 +58,21 @@ class UpstreamError(Exception):
 class NonMediaUpstreamError(Exception):
     """The response body is not media this reader can show; nothing cached.
 
-    Two independent causes, both of which mark the URL dead and drop the item:
+    Both causes mark the URL dead and drop the item:
 
-    - `image/svg+xml`. Refused on the R8 security ground, and dropped because
-      this reader renders photos and video — an SVG is not media it will ever
-      show, so the item is permanently useless whatever the origin does next.
+    - `image/svg+xml`. Refused on security grounds — an SVG is an active
+      document — and dropped because this reader renders photos and video:
+      an SVG is not media it will ever show, so the item is permanently
+      useless whatever the origin does next.
     - Any other non-media type. An image URL answering with HTML is
-      overwhelmingly a removed post redirected to a landing page. Leaving it
-      alive meant the item re-missed the cache on every open forever. The trade
-      is that a WAF challenge page, which can flip back to media later, now
-      erases the item — the same shape of risk as R5, accepted deliberately.
+      overwhelmingly a removed post redirected to a landing page; leaving
+      the item alive would re-miss the cache on every open forever. The
+      trade is that a WAF challenge page, which can flip back to media
+      later, now erases the item.
 
-    Distinct from UpstreamError only so the proxy can tell the two apart in the
-    502 detail it returns. Raised from open_upstream so the prefetch path cannot
-    cache HTML and later serve it as a cache hit (F5).
+    Distinct from UpstreamError only so the proxy can tell the two apart in
+    the 502 detail it returns. Raised from open_upstream so the prefetch
+    path cannot cache HTML and later serve it as a cache hit.
     """
 
 
@@ -156,8 +152,8 @@ async def _check_url(url: str) -> list[str]:
 async def _mark_dead(url: str, item_id: str | None) -> None:
     """Record `url` as permanently gone, dropping the item if all its URLs are.
 
-    Its own connection because a streaming response body runs after the route
-    function returned, by which point the request-scoped connection is closed.
+    Uses its own DB connection: callers may run this after the request-scoped
+    connection is closed.
     """
     await run_with_own_db(
         f"mark_url_dead_and_maybe_drop for {loggable(url)}",
@@ -178,7 +174,7 @@ async def open_upstream(
 
     Every fetch target — the original URL and each redirect hop — is checked
     against _check_url first, which is why redirects are followed manually
-    here rather than by httpx (R1).
+    here rather than by httpx.
 
     On a PERMANENT_STATUSES answer, or a non-media content type, the URL is
     marked dead (and a fully-dead item is dropped) before raising — that is what
@@ -225,7 +221,7 @@ async def open_upstream(
         await response.aclose()
         # Only a permanent answer may reach _mark_dead: it DELETEs the item and
         # tombstones its guid so the next sync will not re-insert it. A 429 or
-        # 503 from a busy CDN is transient (R5).
+        # 503 from a busy CDN is transient.
         if status in PERMANENT_STATUSES:
             logger.warning(
                 f"open_upstream: {safe_url} returned {status}, marking dead "
@@ -249,7 +245,7 @@ async def open_upstream(
         if is_svg:
             # SVG starts with image/ but is an active document: served from our
             # own origin its <script> runs there with the session cookie
-            # attached (R8). This reader renders photos and video, so an SVG is
+            # attached. This reader renders photos and video, so an SVG is
             # not media it will ever show — the item is dropped by policy, not
             # because anything upstream is wrong with it.
             reason = "refusing SVG (an active document, and not media this reader renders)"
@@ -320,7 +316,7 @@ async def tee_to_cache(
                         if settings.media_max_bytes and sent > settings.media_max_bytes:
                             # The response body has already started, so the client
                             # sees a truncated file. That is the trade for not
-                            # letting an undeclared stream fill the volume (R7).
+                            # letting an undeclared stream fill the volume.
                             server_abort = True
                             logger.warning(
                                 f"tee_to_cache: server aborted {safe_url} after {sent} bytes "

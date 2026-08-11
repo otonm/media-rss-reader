@@ -6,10 +6,10 @@ import secrets
 from pathlib import Path
 
 import aiosqlite
+import pyotp
 from fastapi import APIRouter, Form, HTTPException, Request
 from fastapi.responses import HTMLResponse, RedirectResponse, Response
 
-from src.auth import totp as totp_module
 from src.auth.lockout import LockoutTracker
 from src.auth.session import (
     SESSION_COOKIE,
@@ -32,6 +32,7 @@ _static = Path(__file__).parent.parent / "static"
 _login_html: str = (_static / "login.html").read_text()
 _setup_html: str = (_static / "setup.html").read_text()
 
+# One tracker shared by /login and /setup so attempts against either count together.
 _lockout = LockoutTracker(
     max_attempts=settings.auth_lockout_attempts,
     lockout_seconds=settings.auth_lockout_minutes * 60,
@@ -70,6 +71,7 @@ def _set_setup_cookie(response: Response, totp_secret: str) -> None:
 
 
 async def _load_totp_secret(db: aiosqlite.Connection) -> str | None:
+    """Return the enrolled TOTP secret, or None if enrollment has not happened yet."""
     async with db.execute("SELECT value FROM auth_config WHERE key = 'totp_secret'") as cur:
         row = await cur.fetchone()
     return row[0] if row else None
@@ -89,6 +91,11 @@ async def post_login(
     *,
     db: DbDep,
 ) -> Response:
+    """Check username and password, then the TOTP code, and issue a session cookie.
+
+    On the very first login no TOTP secret exists yet, so a correct password
+    hands off to /setup for enrollment instead of granting a session.
+    """
     ip = _client_ip(request)
     logger.debug(f"post_login ip={ip} username_provided={bool(username)}")
 
@@ -108,12 +115,14 @@ async def post_login(
 
     if stored_secret is None:
         logger.debug(f"post_login ip={ip} no TOTP configured, redirecting to /setup")
-        new_secret = totp_module.generate_secret()
+        # The candidate secret lives only in the signed setup cookie until the
+        # user proves they can generate a code from it in POST /setup.
+        new_secret = pyotp.random_base32()
         response = RedirectResponse("/setup", status_code=303)
         _set_setup_cookie(response, new_secret)
         return response
 
-    if not totp_module.verify_code(stored_secret, totp_code):
+    if not totp_code or not pyotp.TOTP(stored_secret).verify(totp_code, valid_window=1):
         _lockout.record_failure(ip)
         logger.debug(f"post_login ip={ip} TOTP verification failed")
         return Response("Invalid credentials.", status_code=401)
@@ -127,6 +136,7 @@ async def post_login(
 
 @router.get("/setup")
 async def get_setup(request: Request, db: DbDep) -> Response:
+    """Render the QR code for the pending secret carried in the setup cookie."""
     logger.debug("get_setup entered")
     if await _load_totp_secret(db) is not None:
         logger.debug("get_setup TOTP already configured, redirecting to /login")
@@ -139,7 +149,7 @@ async def get_setup(request: Request, db: DbDep) -> Response:
         return Response("Setup session expired. Please log in again.", status_code=403)
 
     logger.debug("get_setup rendering setup page")
-    uri = totp_module.build_uri(secret, settings.auth_username)
+    uri = pyotp.TOTP(secret).provisioning_uri(name=settings.auth_username, issuer_name="MediaRSSReader")
     html = (
         _setup_html.replace("{{TOTP_URI}}", _html.escape(uri))
         .replace("{{TOTP_SECRET}}", _html.escape(secret))
@@ -155,6 +165,7 @@ async def post_setup(
     *,
     db: DbDep,
 ) -> Response:
+    """Confirm the pending secret from the setup cookie, persist it, and log the user in."""
     ip = _client_ip(request)
     logger.debug(f"post_setup ip={ip}")
     if _lockout.is_locked(ip):
@@ -171,16 +182,18 @@ async def post_setup(
         logger.debug("post_setup setup cookie missing or expired")
         return Response("Setup session expired. Please log in again.", status_code=403)
 
-    if not totp_module.verify_code(secret, totp_code):
+    if not totp_code or not pyotp.TOTP(secret).verify(totp_code, valid_window=1):
         _lockout.record_failure(ip)
         logger.debug(f"post_setup ip={ip} TOTP verification failed")
-        uri = totp_module.build_uri(secret, settings.auth_username)
+        uri = pyotp.TOTP(secret).provisioning_uri(name=settings.auth_username, issuer_name="MediaRSSReader")
         html = (
             _setup_html.replace("{{TOTP_URI}}", _html.escape(uri))
             .replace("{{TOTP_SECRET}}", _html.escape(secret))
             .replace("{{ERROR}}", "Invalid code. Try again.")
         )
         resp = HTMLResponse(html)
+        # Re-issue the cookie so a retry gets a fresh window instead of
+        # expiring mid-enrollment and forcing a new QR code.
         _set_setup_cookie(resp, secret)
         return resp
 

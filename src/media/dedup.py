@@ -35,16 +35,15 @@ PHASH_BITS = 256
 def _phash(path: Path) -> int:
     """Return a 256-bit block-mean perceptual hash of an image file.
 
-    Ported from the reddit_bro extension's "similar" mode: centre-crop to 80%
-    (dropping watermarks and letterboxing), reduce to a 16x16 grid of block
-    means, and take one bit per cell for "brighter than the image average".
+    Centre-crop to 80% (dropping watermarks and letterboxing), reduce to a
+    16x16 grid of block means, and take one bit per cell for "brighter than
+    the image average".
 
-    PIL's "L" conversion is ITU-R 601-2 luma (0.299R + 0.587G + 0.114B),
-    matching the reference exactly, and an Image.BOX downscale *is* the
-    4x4 block average the reference computes by hand.
+    PIL's "L" conversion is ITU-R 601-2 luma (0.299R + 0.587G + 0.114B), and
+    an Image.BOX downscale is exactly the 4x4 block average the hash needs.
 
-    Raises whatever PIL raises for a file it cannot decode — video is not
-    an image, and the caller treats that as "no perceptual hash".
+    Raises whatever PIL raises for a file it cannot decode — video is not an
+    image, and the caller treats that as "no perceptual hash".
     """
     from PIL import Image
 
@@ -91,9 +90,8 @@ async def _similar_urls(db: aiosqlite.Connection, url: str, phash: str) -> list[
     ) as cur:
         rows = await cur.fetchall()
 
-    # ponytail: O(n) scan over <= KEEP_ITEMS hashes, a few hundred microseconds.
-    # Index with a BK-tree (see deduplicators/rededup-master/rededup.js:403) if
-    # this ever shows up in a profile.
+    # O(n) scan over at most KEEP_ITEMS hashes, a few hundred microseconds.
+    # A BK-tree index is the upgrade path if this ever shows up in a profile.
     matches = []
     for row in rows:
         distance = (bits ^ int(row["phash"], 16)).bit_count()

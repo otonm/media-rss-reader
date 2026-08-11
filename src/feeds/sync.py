@@ -21,14 +21,12 @@ from src.media.cache import evict
 logger = logging.getLogger(__name__)
 
 # INSERT ... SELECT ... WHERE NOT EXISTS rather than plain VALUES. Two guards:
-#   items      — rejects a picture already present in *any* feed, which stops
-#                the same image appearing once per feed that carried it.
+#   items      — rejects a picture already present in any feed.
 #   seen_media — rejects a picture the user has already seen. Without this,
 #                prune_items evicts the seen row and the next sync re-inserts
 #                it straight out of a feed that still lists it, unseen.
-# Both paths (local_xml_sync and _refresh_feed) share this statement, so the
-# guard cannot go missing on one of them the way the old restore UPDATE did.
-# OR IGNORE still covers the (feed_id, guid) UNIQUE constraint for re-polls.
+# Both paths (local_xml_sync and _refresh_feed) share this statement.
+# OR IGNORE covers the (feed_id, guid) UNIQUE constraint for re-polls.
 _INSERT_ITEM = """INSERT OR IGNORE INTO items
    (id, feed_id, guid, title, media_url, media_key, media_type, media_json, pub_date)
    SELECT :id, :feed_id, :guid, :title, :media_url, :media_key, :media_type, :media_json, :pub_date
@@ -39,17 +37,15 @@ _INSERT_ITEM = """INSERT OR IGNORE INTO items
 async def _skip_guids(db: aiosqlite.Connection, feed_id: str) -> frozenset[str]:
     """GUIDs of this feed that need no media detection.
 
-    Three sources, all meaning "already resolved": rows already in items, guids
-    tombstoned in unavailable_guids as dead, and guids in resolved_guids that
-    _INSERT_ITEM's guards rejected. The last leg is not optional — those guards
-    key on media_key, which only exists after detection, so a rejected entry
-    leaves no trace in items and would be re-detected on every poll forever.
+    Three sources, all meaning "already resolved": rows already in items, GUIDs
+    tombstoned in unavailable_guids as dead, and GUIDs in resolved_guids that
+    _INSERT_ITEM's guards rejected. The guards key on media_key, which only
+    exists after detection, so a rejected entry leaves no trace in items and
+    would be re-detected on every poll without this tombstone.
 
-    Loaded once per feed rather than probed per entry — aiosqlite serialises
-    every call onto one worker thread, so a 100-entry feed would otherwise pay
-    100 round trips instead of one indexed query. Bounded by KEEP_ITEMS on the
-    items side; idx_items_feed_id and the two tombstone primary keys cover the
-    lookups.
+    Loaded once per feed rather than per entry to avoid repeated queries.
+    Bounded by KEEP_ITEMS; idx_items_feed_id and the tombstone primary keys
+    cover the lookups.
     """
     async with db.execute(
         """SELECT guid FROM items WHERE feed_id = ?
@@ -63,14 +59,12 @@ async def _skip_guids(db: aiosqlite.Connection, feed_id: str) -> frozenset[str]:
 async def _insert_item(db: aiosqlite.Connection, item: dict) -> int:
     """INSERT one item, tombstoning its guid when the guard rejects it.
 
-    Returns the number of rows inserted (0 or 1). Both ingest paths go through
-    here for the same reason they share _INSERT_ITEM: a tombstone that is
-    written on one path and not the other silently reintroduces the re-detection
-    it exists to prevent.
+    Returns the number of rows inserted (0 or 1). Both ingest paths use this
+    to ensure tombstones are written consistently.
 
-    rowcount == 0 here always means a guard rejection — an entry whose
-    (feed_id, guid) is already in items never gets this far, because
-    entry_to_item skips it before detection.
+    rowcount == 0 means a guard rejection — an entry whose (feed_id, guid) is
+    already in items never reaches this point, because entry_to_item skips it
+    before detection.
     """
     cursor = await db.execute(_INSERT_ITEM, item)
     if cursor.rowcount == 0:
@@ -165,14 +159,13 @@ async def _refresh_feed(
 ) -> None:
     """Fetch new items for one feed and write them to the database.
 
-    INSERT OR IGNORE on (feed_id, guid) silently skips items that are
-    already in the database, so this function is safe to call repeatedly.
-    Known and tombstoned guids are filtered inside entry_to_item, before media
-    detection runs, so a previously-dropped dead post is never re-added and a
-    post already stored is never re-detected.
+    INSERT OR IGNORE on (feed_id, guid) silently skips items already in the
+    database. Known and tombstoned GUIDs are filtered inside entry_to_item,
+    before media detection runs, so a previously-dropped dead post is never
+    re-added and a post already stored is never re-detected.
 
-    The stored ETag/Last-Modified are replayed as conditional headers; a 304
-    yields no items at all and the validators are written back unchanged.
+    Stored ETag/Last-Modified are replayed as conditional headers; a 304
+    yields no items and the validators are written back unchanged.
     """
     skip = await _skip_guids(db, feed_id)
     async with db.execute("SELECT etag, last_modified FROM feeds WHERE id = ?", (feed_id,)) as cur:
@@ -204,16 +197,13 @@ async def _refresh_feed(
 async def _evict_items(db: aiosqlite.Connection, where: str, params: tuple) -> int:
     """DELETE items matching `where`, tombstoning every guid it takes.
 
-    Every eviction goes through here, for the same reason both ingest paths
-    share _INSERT_ITEM: a tombstone written on one branch and not another
-    reintroduces the churn it exists to stop.
-
-    Without the tombstone an evicted row is re-inserted by the very next sync,
-    unseen, under the same id — and /api/items serves oldest-first while this
-    function evicts oldest-first, so the rows it takes are the ones a reader is
-    looking at right now. Their seen beacons 404 against the deleted row, so
-    seen_media never records them either, and they come back to the front of
-    the feed on every cycle: the reader can never advance past them.
+    Every eviction goes through here to ensure tombstones are written
+    consistently. Without the tombstone, an evicted row is re-inserted by
+    the next sync, unseen, under the same id. Since /api/items serves
+    oldest-first while this function evicts oldest-first, the evicted rows
+    are the ones a reader is currently viewing. Their seen beacons 404
+    against the deleted row, so seen_media never records them either, and
+    they return to the front of the feed on every cycle.
     """
     async with db.execute(f"DELETE FROM items WHERE {where} RETURNING feed_id, guid", params) as cur:  # noqa: S608
         evicted = await cur.fetchall()
@@ -307,8 +297,8 @@ async def refresh_all_feeds(db: aiosqlite.Connection, client: httpx.AsyncClient)
             await _refresh_feed(db, feed["id"], feed["url"], client)
         except Exception as exc:
             logger.warning("Feed refresh failed for %s: %s", feed["url"], exc)
-    # Prune and evict always run regardless of individual feed failures so
-    # keep_items and cache size limits are reliably enforced.
+    # Prune and evict always run regardless of individual feed failures
+    # so keep_items and cache size limits are reliably enforced.
     await prune_items(db)
     await evict()
 
@@ -361,9 +351,7 @@ async def sync_feeds(
         # Only placeholder count is interpolated; URL values remain bound.
         await db.execute(f"DELETE FROM feeds WHERE url NOT IN ({placeholders})", list(union))  # noqa: S608
     else:
-        # An empty union is almost always a missing mount or a companion
-        # service mid-restart, not an instruction to drop every feed — and the
-        # delete cascades into items and the tombstone tables. Leave it alone.
+        # Empty union usually means unreadable sources, not "drop all feeds".
         logger.warning(f"No feeds found in {feeds_dir} or {opml_path or '(no OPML)'}; keeping existing feeds")
 
     await db.commit()

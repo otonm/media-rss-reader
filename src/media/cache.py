@@ -183,11 +183,9 @@ def cache_lookup(url: str) -> tuple[Path, str] | None:
     """Return (path, content_type) for a cached URL, or None on a miss.
 
     One blocking call for the proxy's hit path instead of three. The stat is
-    what makes a miss unambiguous — cache_read only checked existence, so a file
-    evicted between the check and the stat was a separate race the caller had to
-    handle — but its result is deliberately not returned: forwarding it to
-    FileResponse suppresses Starlette's own os.stat, which is the check that
-    fails before any bytes go out (R2).
+    what makes a miss unambiguous, but its result is deliberately not
+    returned: forwarding it to FileResponse would suppress Starlette's own
+    os.stat, the check that fails before any bytes go out.
     """
     path = _cache_path(url)
     try:
@@ -200,12 +198,9 @@ def cache_lookup(url: str) -> tuple[Path, str] | None:
 def cache_names_present(names: set[str]) -> set[str]:
     """Which of `names` are on disk. One thread hop, len(names) stats.
 
-    The previous shape iterated the whole cache directory: Path.iterdir yields
-    Paths with no cached stat, so is_file() issued one stat per entry — data
-    files and .meta sidecars both, ~1000 at the default cache_max_items — to
-    answer at most `size` questions, where the frontend's first page is 10.
-    Batching per-row checks into one to_thread keeps the single event-loop hop
-    (F18) and makes the cost scale with the page rather than the cache.
+    Batching the per-row checks into one to_thread keeps the single
+    event-loop hop and makes the cost scale with the page rather than
+    with the cache directory.
     """
     cache_dir = Path(settings.cache_dir)
     try:

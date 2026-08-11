@@ -19,6 +19,8 @@ class _Entry:
 
 
 class LockoutTracker:
+    """Counts failures per IP and locks that IP once the threshold is hit."""
+
     def __init__(self, max_attempts: int, lockout_seconds: int) -> None:
         self._max_attempts = max_attempts
         self._lockout_seconds = lockout_seconds
@@ -50,6 +52,6 @@ class LockoutTracker:
             logger.debug(f"record_failure ip={ip} failures={entry.failures}")
 
     def reset(self, ip: str) -> None:
-        """Clear all failure state for this IP (call on successful login)."""
+        """Clear all failure state for this IP after a successful authentication."""
         self._entries.pop(ip, None)
         logger.debug(f"reset ip={ip} cleared failures")

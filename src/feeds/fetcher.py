@@ -33,9 +33,9 @@ def _item_id(feed_id: str, guid: str) -> str:
 def _parse_pub_date(entry: dict) -> str | None:
     """Normalise feed dates to a SQLite-sortable ISO string (UTC).
 
-    feedparser hands us a struct_time in `published_parsed`/`updated_parsed`;
-    the raw `published` string is RFC-822 for RSS 2.0, which sorts
-    alphabetically by weekday name in SQLite TEXT comparison (F1).
+    feedparser hands us a struct_time in `published_parsed`/`updated_parsed`.
+    The raw `published` string is unusable: RSS 2.0 spells it RFC-822, which a
+    SQLite TEXT comparison sorts alphabetically by weekday name.
     Returns None when no parseable date is present.
     """
     parsed = entry.get("published_parsed") or entry.get("updated_parsed")
@@ -43,21 +43,18 @@ def _parse_pub_date(entry: dict) -> str | None:
         return None
     try:
         return datetime(*parsed[:6]).isoformat(sep=" ")
-    except TypeError, ValueError:
+    except (TypeError, ValueError):
         return None
 
 
 def entry_to_item(feed_id: str, entry: dict, skip_guids: frozenset[str] = frozenset()) -> dict | None:
     """Convert one parsed feed entry into an items-table row dict.
 
-    Returns None when the entry carries no media with a recognisable
-    extension, or when its GUID is in `skip_guids` — either way the caller's
-    signal to skip it.
+    Returns None when the entry has no detectable media, or when its GUID is
+    in `skip_guids` (already stored or tombstoned for this feed).
 
-    `skip_guids` holds the GUIDs already stored or already tombstoned for this
-    feed. Detection is a pure function of the entry and entries never change,
-    so re-deriving it for a GUID we have already resolved is pure waste — hence
-    the check runs *before* detect_all_media rather than after the INSERT.
+    The GUID check runs before media detection to avoid re-detecting entries
+    we've already processed.
     """
     # Use entry.id as the canonical GUID; fall back to link, then media URL.
     guid = entry.get("id") or entry.get("link")
@@ -73,9 +70,8 @@ def entry_to_item(feed_id: str, entry: dict, skip_guids: frozenset[str] = frozen
     media_url, media_type = results[0]
     logger.debug(f"Detected {len(results)} slide(s) in entry {entry.get('title')}: {media_url} ({media_type})")
 
-    # ponytail: an entry with neither id nor link only gets a GUID once
-    # detection has run, so it is re-detected on every poll. Rare; fixing it
-    # needs a detection cache keyed on something cheaper than the GUID.
+    # Entry without id/link gets a GUID only after detection runs, so it
+    # would be re-detected on every poll. Rare; a detection cache would fix it.
     if not guid:
         guid = media_url
         if guid in skip_guids:
@@ -103,14 +99,12 @@ async def fetch_feed(
 ) -> tuple[list[dict], str | None, str | None]:
     """Fetch and parse one RSS feed; return (items, etag, last_modified).
 
-    Each item dict matches the columns of the items table. Entries without a
-    recognisable media URL, and entries whose GUID is in `skip_guids`, are
-    excluded.
+    Each item dict matches the items table columns. Entries without detectable
+    media, or whose GUID is in `skip_guids`, are excluded.
 
-    `etag` and `last_modified` are whatever the previous fetch stored. They are
-    replayed as conditional headers, and a 304 returns them unchanged with an
-    empty item list — nothing is downloaded, parsed or detected. The return
-    shape is the same either way so the caller's write-back is uniform.
+    `etag` and `last_modified` from the previous fetch are sent as conditional
+    headers. A 304 returns them unchanged with an empty item list — nothing is
+    downloaded or parsed. The return shape is identical for both paths.
     """
     headers = {}
     if etag:

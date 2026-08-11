@@ -1,10 +1,7 @@
 """Duration measurement for the log lines at src/api boundaries.
 
-The perf_counter / x1000 / {:.1f}ms block was copy-pasted nine times across
-four modules, with seven variable names and two precisions, and the copies had
-already drifted: one computed its duration after the `async with`, so a 404
-exited untimed, while another computed it before the 404 check. Reading the
-clock at the log site removes that choice.
+The clock is read at the log site, so the measured span always covers the
+call it reports.
 """
 
 import time

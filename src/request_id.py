@@ -1,11 +1,9 @@
-"""Per-request correlation id, carried via a contextvar and an X-Request-ID header.
+"""Per-request correlation id, carried via a contextvar and the X-Request-ID header.
 
-A DEBUG log run can be reassembled end-to-end across modules by filtering on
-the request id. The middleware sets the contextvar on entry and the response
-header on exit; RequestIDFilter copies it onto every log record, and the
-format string installed in src/main.py renders it. Call sites do not mention
-it at all — a previous attempt prescribed `extra={"request_id": ...}` at each
-site, which no production code ever passed.
+The middleware sets the contextvar on entry and the response header on exit;
+RequestIDFilter copies it onto every log record, and the format string
+installed in src/main.py renders it, so a DEBUG run can be reassembled
+end-to-end across modules by filtering on the id.
 
 Work that outlives the request — background warm tasks, streaming response
 bodies — runs after the contextvar is reset, so those call chains take an

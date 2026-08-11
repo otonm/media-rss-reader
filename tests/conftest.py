@@ -101,7 +101,7 @@ def reddit_api_url(monkeypatch: pytest.MonkeyPatch) -> str:
     machine running them exports REDDIT_FEEDS_API_URL."""
     url = "http://rf.local"
     monkeypatch.setattr(settings, "reddit_feeds_api_url", url)
-    monkeypatch.setattr("src.api.reddit_feeds._last_reachable", None)
+    monkeypatch.setattr("src.api.reddit_feeds._status.last_reachable", None)
     return url
 
 

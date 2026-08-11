@@ -3,8 +3,6 @@
 //
 // Owns the list of items. Pulls metadata from /api/items (paginated).
 // Exposes a small API:
-//   on('items-appended', cb)
-//   on('currentindex-changed', cb)
 //   getItems(), getCurrentIndex(), hasMoreItems(), getItemAt(idx),
 //   findIndexById(id), setCurrentIndex(idx), fetchPage()
 //
@@ -40,20 +38,19 @@
   // row inserted with an older pub_date shifts it up. Sending both lets the
   // server bound the next page at min(after_rn, the anchor's resolved rank)
   // — a shift in either direction turns into duplicates instead of a silent
-  // skip (R3), and the known-set guard below drops the duplicates. pub_date
-  // is not sent: an undated item serialised as the string "null", which the
-  // server compared as text against real dates.
+  // skip, and the known-set guard below drops the duplicates. pub_date is
+  // not sent: an undated item serialises as the string "null", which the
+  // server would compare as text against real dates.
   //
   // `back` steps the anchor towards items we received earlier. A 410 means that
   // anchor row is gone — pruned, or its feed left the OPML — and an earlier
   // item is the next best anchor. Reloading from page one instead would clear
   // state.items and drop the user back to the top of the scroll.
   //
-  // The step doubles rather than walking one at a time. A feed leaving the OPML
-  // cascades its whole item set, so the run of dead anchors is not small; a
-  // fixed cap stopped pagination for good once the run outgrew it, and walking
-  // one by one costs a request per dead row. Doubling finds a surviving anchor
-  // in log(n) requests whenever one exists at all.
+  // The step doubles rather than walking one at a time: a feed leaving the
+  // OPML cascades its whole item set, so the run of dead anchors is not
+  // small, and walking one by one costs a request per dead row. Doubling
+  // finds a surviving anchor in log(n) requests whenever one exists at all.
   function cursorItem(back) {
     const idx = state.items.length - 1 - back;
     return idx >= 0 ? state.items[idx] : null;
@@ -188,12 +185,10 @@
     state.items = [];
     state.currentIndex = 0;
     state.hasMore = true;
-    // Clearing `fetching` on its own used to let reloadFeed start a second
-    // fetchPage beside one still in flight. Both wrote state.items, so the
-    // store ended up holding two different pages and every item the top-up
-    // loop had already rendered got a second node from renderInitial. The
-    // generation bump is what makes clearing the flag safe: the in-flight
-    // fetch now discards its own result instead of merging into the new feed.
+    // Clearing `fetching` lets reloadFeed start a second fetchPage beside
+    // one still in flight; the generation bump makes that safe — the
+    // in-flight fetch discards its own result instead of merging into the
+    // new feed.
     state.fetching = false;
     state.generation += 1;
   }

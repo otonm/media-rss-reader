@@ -13,9 +13,8 @@
 //   on('item-failed', (id, reason) => ...)
 //
 // Workers do not preempt an in-flight download; they abort it on a deadline
-// instead. A single worker used to mean one slow origin froze every
-// placeholder behind it, including items already cached on disk that would
-// have painted instantly.
+// instead. Multiple workers keep one slow origin from freezing every
+// placeholder behind it — including items already cached on disk.
 // ---------------------------------------------------------------------------
 (function () {
   "use strict";
@@ -27,10 +26,9 @@
   // prefetch hints.
   const WORKERS = 3;
   // A download that has not produced a decodable frame by this deadline is
-  // treated as failed: the item is reported to /api/media/failed, deleted, and
-  // removed from the feed. That makes the value consequential rather than
-  // cosmetic — MEDIA_LOAD_TIMEOUT_S is the knob, and it defaults below the
-  // server's own 30s upstream timeout, so slow-but-working media is erased.
+  // treated as failed: the item is reported to /api/media/failed, deleted,
+  // and removed from the feed. Defaults below the server's own 30s upstream
+  // timeout, so slow-but-working media is erased too.
   const DEFAULT_LOAD_TIMEOUT_MS = 10000;
   const loadTimeoutMs = () => (MRR.config && MRR.config.mediaLoadTimeoutMs) || DEFAULT_LOAD_TIMEOUT_MS;
 
@@ -88,9 +86,9 @@
           const started = Date.now();
           const el = await downloadOne(item);
           state.cached.add(id);
-          // item.cached is the server's disk snapshot from when the page was
-          // fetched and nothing else ever updates it, so an item downloaded
-          // seconds ago still read MISS in the UI_DEBUG overlay on scroll-back.
+          // item.cached is the server's disk snapshot from page load and
+          // nothing else updates it; set it here so the UI_DEBUG overlay
+          // reports HIT after a download.
           item.cached = true;
           emit("item-loaded", id, el, Date.now() - started);
         } catch (err) {
@@ -155,10 +153,10 @@
     state.loading = new Set();
     state.cached = new Set();
   }
-  // rebuild() runs on every scroll snap (scroll-controller.js:62). Each hint
-  // costs the server two ROW_NUMBER passes over the whole items table on the
-  // connection /api/items shares, so an undebounced burst made the endpoint
-  // that exists to smooth scrolling compete with the scroll itself.
+  // rebuild() runs on every scroll snap (scroll-controller.js:66). Each hint
+  // costs the server two ROW_NUMBER passes over the items table on the
+  // connection /api/items shares, so hints are debounced to keep that
+  // endpoint free for the scrolling itself.
   let hintTimer = null;
   function sendHint(itemId, unseen) {
     if (hintTimer !== null) clearTimeout(hintTimer);

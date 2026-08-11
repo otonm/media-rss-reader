@@ -27,8 +27,8 @@ logging.basicConfig(
     level=settings.log_level.upper(),
     format="%(asctime)s %(levelname)s [%(request_id)s] %(name)s: %(message)s",
 )
-# basicConfig is a no-op if handlers already exist (pytest's logging plugin,
-# a previous import); set the filter and format on them regardless.
+# basicConfig is a no-op once handlers already exist (e.g. pytest's logging
+# plugin), so the filter and format are applied to existing handlers too.
 _log_fmt = "%(asctime)s %(levelname)s [%(request_id)s] %(name)s: %(message)s"
 for _handler in logging.getLogger().handlers:
     _handler.addFilter(RequestIDFilter())
@@ -51,9 +51,8 @@ def _build_html() -> str:
         f"--ui-debug:{settings.ui_debug};"
         f"}}</style>"
     )
-    # ponytail: per-startup token — the constant package version let browser/SW
-    # caches serve stale assets across deploys. Content hash if bytes must
-    # survive restarts.
+    # Per-startup token: a constant package version lets browser/service-worker
+    # caches serve stale assets across deploys.
     v = str(int(time.time()))
     html = _index_path.read_text().replace("<!-- CONFIG_VARS -->", style).replace("{{VERSION}}", v)
     logger.debug(f"_build_html: injected {style} (asset version {v})")
@@ -74,15 +73,15 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None]:
     await run_migrations(db)
     await backfill_seen_media(db)
     app.state.db = db
-    # The scheduler gets its own connection. sqlite3's implicit transaction is
-    # per connection, not per coroutine, and sync.py writes many rows before it
-    # commits — sharing meant a mark_seen commit could land mid-refresh and
-    # commit a partial feed, or its rollback discard one.
+    # The scheduler gets its own connection: sqlite3's implicit transaction is
+    # per connection, not per coroutine, and sync.py writes many rows before
+    # committing, so a shared connection could commit or roll back a partial
+    # refresh mid-write.
     scheduler_db = await open_db(settings.db_path)
     # Two clients: the reddit-feeds poll must not share the media proxy's pool.
     # It runs at 1 Hz against an optional service, and httpx's read timeout is
-    # the gap between reads, so a trickling companion on the shared pool held
-    # slots until every media request failed on pool timeout (M4).
+    # the gap between reads, so a trickling companion on the shared pool would
+    # hold slots until every media request fails on pool timeout.
     app.state.http = httpx.AsyncClient()
     app.state.http_status = httpx.AsyncClient(limits=httpx.Limits(max_connections=2))
     logger.debug("lifespan: opened the media and status HTTP clients")
@@ -109,16 +108,15 @@ app.mount("/static", StaticFiles(directory=str(_static_dir)), name="static")
 
 @app.exception_handler(RequestValidationError)
 async def _log_validation_error(request: Request, exc: RequestValidationError) -> JSONResponse:
-    """FastAPI rejects a bad body before the route runs, so nothing in this
-    project logged it — and cache-queue.js attaches only `.catch(() => {})`,
-    which does not fire for an HTTP 422. A client-side change that serialises a
-    field wrongly would disable prefetching with no trace but uvicorn's access
-    log."""
-    # exc.errors() carries the full offending `input` value per error — for
-    # PrefetchHint's item_id that is bounded by max_length, but pydantic has no
-    # size limit of its own, so an oversized body elsewhere would log its
-    # entire input synchronously. loc/msg/type are the diagnostic value; input
-    # is dropped rather than logged unbounded.
+    """Log 422s that FastAPI raises before route code runs.
+
+    cache-queue.js attaches only `.catch(() => {})`, which does not fire for an
+    HTTP 422 — a client serialising a field wrongly would disable prefetching
+    with no trace but uvicorn's access log.
+    """
+    # exc.errors() carries the full offending `input` value per error, and
+    # pydantic has no size limit of its own, so logging it could dump an
+    # unbounded body. loc/msg/type are the diagnostic value; input is dropped.
     safe_errors = [{k: v for k, v in error.items() if k != "input"} for error in exc.errors()]
     logger.warning(f"422 on {request.method} {request.url.path}: {safe_errors}")
     return JSONResponse(status_code=422, content={"detail": jsonable_encoder(exc.errors())})

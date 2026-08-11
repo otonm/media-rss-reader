@@ -6,17 +6,13 @@
 // cacheQueue 'item-loaded', the placeholder is replaced with the loaded
 // media element wrapped in a .media-item.
 //
-// The "visible media" rule: at most one <video> plays at a time. The visible
-// video is the one with the highest intersectionRatio (set by the scroll
-// controller). All other videos are paused. (We deliberately do NOT mutate
-// the old video's muted state on transition: setting `muted` on a paused
-// video would fire `volumechange`, which the browser uses to infer user
-// interaction in some implementations and would suppress future autoplay.)
+// The "visible media" rule: at most one <video> plays at a time — the one
+// with the highest intersectionRatio, set by the scroll controller. All
+// other videos are paused.
 //
 // Public API:
-//   on('currentindex-changed', ...)  // forwards scroll-controller events
 //   renderInitial(items)
-//   createPlaceholder(item)            // exposed for app.js's "append more"
+//   createPlaceholder(item)
 //   onItemLoaded(id, el)
 //   onItemFailed(id)
 //   snapToNext(), snapToPrev()
@@ -42,8 +38,8 @@
   // rendered — deliberately not a Set kept alongside it, since a second copy
   // of that answer is exactly what drifts and puts an item on screen twice.
   //
-  // ponytail: linear scan of #feed's children, so a full render is O(n²).
-  // n is the loaded page count (tens), not the feed. Index it if that changes.
+  // Linear scan of #feed's children, so a full render is O(n²); n is the
+  // loaded page count (tens), not the feed. Index it if that changes.
   function isRendered(id) {
     const kids = state.feed.children;
     for (let i = 0; i < kids.length; i++) {
@@ -52,19 +48,14 @@
     return false;
   }
 
-  // The only way a node enters #feed. renderInitial appended with no dedup at
-  // all, and app.js's pagination top-up filtered against a snapshot of
-  // feed.children taken before its loop — so a reload racing an in-flight page
-  // could paint a second node for an item already on screen. A duplicate node
-  // is not cosmetic: findIndexById returns the FIRST store index with that id,
-  // so landing on the second copy drags currentIndex back to the first.
+  // The only way a node enters #feed, with dedup. A duplicate node is not
+  // cosmetic: findIndexById returns the FIRST store index with that id, so
+  // landing on the second copy drags currentIndex back to the first.
   //
   // Returns the new placeholder, or null when the append was refused.
   function appendItem(item) {
     if (!state.feed) state.feed = document.getElementById("feed");
     if (isRendered(item.id)) {
-      // Named so the producer shows up in the console instead of needing
-      // another round of instrumentation.
       console.warn("feedView: refused duplicate append", item.id);
       return null;
     }
@@ -197,15 +188,7 @@
       // Before the smooth scroll, not after it lands, so the picture snaps
       // back to fitted in place — same as the ←/→ keys do in app.js.
       MRR.zoomController?.reset();
-      const wrap = e.currentTarget.closest(".media-item");
-      const gallery = wrap?.querySelector(".gallery");
-      if (!gallery) return;
-      const idx = Math.round(gallery.scrollLeft / gallery.clientWidth);
-      if (idx > 0) {
-        gallery.scrollTo({ left: (idx - 1) * gallery.clientWidth, behavior: "smooth" });
-      } else {
-        MRR.feedView.snapToPrev();
-      }
+      MRR.feedView.galleryPrev();
     });
     const nextBtn = document.createElement("button");
     nextBtn.className = "gallery-nav next";
@@ -215,15 +198,7 @@
     nextBtn.addEventListener("click", (e) => {
       e.stopPropagation();
       MRR.zoomController?.reset();
-      const wrap = e.currentTarget.closest(".media-item");
-      const gallery = wrap?.querySelector(".gallery");
-      if (!gallery) return;
-      const idx = Math.round(gallery.scrollLeft / gallery.clientWidth);
-      if (idx < gallery.children.length - 1) {
-        gallery.scrollTo({ left: (idx + 1) * gallery.clientWidth, behavior: "smooth" });
-      } else {
-        MRR.feedView.snapToNext();
-      }
+      MRR.feedView.galleryNext();
     });
     wrap.appendChild(prevBtn);
     wrap.appendChild(nextBtn);
@@ -376,14 +351,11 @@
     }
   }
 
-  // An item whose media could not be downloaded leaves the feed entirely — the
-  // node and the store entry together.
-  //
-  // It used to leave a visible error tile behind while the store entry was
-  // spliced out, and that mismatch is what wedged the feed: the tile was a node
-  // with no store entry, so reaching it made onIntersect's findIndexById return
-  // -1 and bail before rebuilding the cache queue or re-arming autoscroll.
-  // Nothing after it ever loaded and autoscroll never fired again.
+  // An item whose media could not be downloaded leaves the feed entirely —
+  // the node and the store entry together. The DOM and the store must stay
+  // in sync: a node with no store entry makes onIntersect's findIndexById
+  // return -1 and bails before the cache queue is rebuilt or autoscroll is
+  // re-armed.
   function onItemFailed(id, reason) {
     const el = state.feed && state.feed.querySelector(`.placeholder[data-id="${id}"], .media-item[data-id="${id}"]`);
     if (el) {
@@ -410,10 +382,9 @@
   }
 
   // The wrap the observer last reported as most-visible. Navigation walks from
-  // here rather than indexing the DOM by itemStore's index: those are two
-  // different index spaces, and onItemFailed already splices the store while
-  // leaving its error tile in the DOM, so they diverge permanently after any
-  // failed media load. Sibling walking cannot be off by one.
+  // here rather than re-deriving the element from itemStore's index: the two
+  // are separate index spaces (the store splices failed items), and sibling
+  // walking from the observed element cannot be off by one.
   function setCurrentEl(el) {
     // Landing on a different item drops any zoom — the single choke point for
     // every path that moves the feed: keys, wheel, autoscroll advance, a touch
@@ -439,10 +410,10 @@
   function setCurrentMedia(el) {
     if (state.currentVisibleEl === el) return;
     // Enforce the visible-media rule across the WHOLE feed, not just the
-    // previous currentVisibleEl. Each video is created with autoplay=true
-    // and starts as soon as it lands in the DOM; the old single-pause code
-    // left the others running, so unmuting any one of them (via the global
-    // mute toggle) leaked audio from non-visible items.
+    // previous currentVisibleEl: every video is created with autoplay=true
+    // and starts as soon as it lands in the DOM, so pausing only the previous
+    // one leaves the rest playing — and unmuting any one of them (via the
+    // global mute toggle) would leak audio from non-visible items.
     if (state.feed) {
       state.feed.querySelectorAll("video").forEach((v) => {
         v._pausedByJs = true;
