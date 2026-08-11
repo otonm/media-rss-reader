@@ -1,4 +1,4 @@
-FROM python:3.14-alpine
+FROM public.ecr.aws/docker/library/python:3.14-alpine
 
 COPY --from=ghcr.io/astral-sh/uv:latest /uv /usr/local/bin/uv
 
