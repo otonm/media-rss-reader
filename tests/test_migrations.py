@@ -38,6 +38,7 @@ async def test_feeds_columns_fresh_vs_v1_rollback() -> None:
     CREATE TABLE. A database whose v8 version bump was lost (DDL auto-commits,
     a crash in between) replays every ALTER as a duplicate column, which
     run_migrations must swallow. Both entry paths must leave feeds identical."""
+
     async def feeds_columns(conn: aiosqlite.Connection) -> set[str]:
         async with conn.execute("PRAGMA table_info(feeds)") as cur:
             return {row["name"] for row in await cur.fetchall()}
