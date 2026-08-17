@@ -103,13 +103,13 @@ async def test_local_xml_sync_reparses_when_file_changes(db: aiosqlite.Connectio
 
 
 async def test_local_xml_sync_skips_tombstoned_guid(db: aiosqlite.Connection, tmp_path: Path) -> None:
-    """The unavailable_guids check moved ahead of detection; it must still bite."""
+    """The resolved_guids check moved ahead of detection; it must still bite."""
     path = tmp_path / "feed-one.xml"
     path.write_text(_RSS)
     feed_id = _feed_id("feed-one.xml")
     await db.execute("INSERT INTO feeds (id, url, title) VALUES (?, ?, ?)", (feed_id, "feed-one.xml", "Feed"))
     await db.execute(
-        "INSERT INTO unavailable_guids (feed_id, guid, marked_at) VALUES (?, ?, datetime('now'))",
+        "INSERT INTO resolved_guids (feed_id, guid, resolved_at) VALUES (?, ?, datetime('now'))",
         (feed_id, "g1"),
     )
     await db.commit()
@@ -275,7 +275,7 @@ async def test_tombstoned_item_is_not_reinserted_after_being_reported_unloadable
     """The end-to-end 'ignored in the future' claim.
 
     A media file the browser could not load is reported to /api/media/failed,
-    which deletes the item and writes an unavailable_guids tombstone. _skip_guids
+    which deletes the item and writes a resolved_guids tombstone. _skip_guids
     reads that table, so the next sync skips the entry before detection even runs.
     """
     from src.media.availability import mark_url_dead_and_maybe_drop

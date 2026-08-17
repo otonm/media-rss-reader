@@ -696,7 +696,7 @@ async def test_proxy_404_marks_item_unavailable(
     # Single-media post: all (1) URLs are dead -> item should be gone.
     async with db.execute("SELECT id FROM items WHERE id = ?", (item_id,)) as cur:
         assert await cur.fetchone() is None
-    async with db.execute("SELECT guid FROM unavailable_guids WHERE feed_id = ?", (feed_id,)) as cur:
+    async with db.execute("SELECT guid FROM resolved_guids WHERE feed_id = ?", (feed_id,)) as cur:
         rows = await cur.fetchall()
     assert [r[0] for r in rows] == ["g1"]
 
@@ -2417,7 +2417,7 @@ async def test_report_media_failed_drops_the_item_and_tombstones_it(
         assert (await cur.fetchone())[0] == 0, "the item must be gone from the database"
     async with db.execute("SELECT COUNT(*) FROM dead_urls WHERE url = 'https://i.redd.it/a.jpg'") as cur:
         assert (await cur.fetchone())[0] == 1
-    async with db.execute("SELECT guid FROM unavailable_guids WHERE feed_id = 'f1'") as cur:
+    async with db.execute("SELECT guid FROM resolved_guids WHERE feed_id = 'f1'") as cur:
         assert (await cur.fetchone())["guid"] == "g1", "the tombstone is what keeps it from coming back"
 
 

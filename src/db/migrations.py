@@ -53,6 +53,24 @@ async def _backfill_seen_media(db: aiosqlite.Connection) -> None:
     logger.debug(f"_backfill_seen_media reconciled {len(rows)} pre-v14 seen record(s)")
 
 
+async def _merge_unavailable_guids(db: aiosqlite.Connection) -> None:
+    """v20's data step — see the v20 comment in MIGRATIONS.
+
+    Guarded on the source table's existence: a replay of the whole pending
+    batch from an early checkpoint (test_feeds_columns_fresh_vs_v1_rollback
+    exercises exactly this) can reach this step after v21 already dropped
+    unavailable_guids in an earlier pass. Without the guard that is a hard
+    OperationalError instead of the no-op idempotency requires.
+    """
+    async with db.execute("SELECT name FROM sqlite_master WHERE type='table' AND name='unavailable_guids'") as cur:
+        if await cur.fetchone() is None:
+            return
+    await db.execute(
+        "INSERT OR IGNORE INTO resolved_guids (feed_id, guid, resolved_at)"
+        " SELECT feed_id, guid, marked_at FROM unavailable_guids"
+    )
+
+
 MIGRATIONS: list[MigrationStep] = [
     # v1: index on fetched_at to support age-based pruning queries
     "CREATE INDEX IF NOT EXISTS idx_items_fetched_at ON items(fetched_at)",
@@ -129,8 +147,8 @@ MIGRATIONS: list[MigrationStep] = [
     # set keys on guid: a rejected entry never reaches items, so its guid never
     # reaches the skip set, and it is re-detected on every poll for as long as
     # the feed lists it. This tombstone is what the skip set reads instead.
-    # CASCADE like unavailable_guids: dropping a feed drops its items too, so a
-    # re-added feed should start clean.
+    # CASCADE for the same reason as v7's tombstone table: dropping a feed
+    # drops its items too, so a re-added feed should start clean.
     (
         "CREATE TABLE IF NOT EXISTS resolved_guids ("
         "feed_id TEXT NOT NULL REFERENCES feeds(id) ON DELETE CASCADE, "
@@ -145,6 +163,17 @@ MIGRATIONS: list[MigrationStep] = [
     # move; INSERT OR IGNORE and the DELETE are both idempotent, so a crash
     # replay is safe. Runs once, when a database passes v18.
     _backfill_seen_media,
+    # v20: unavailable_guids and resolved_guids were two tables answering one
+    # question. Both are PK(feed_id, guid), both cascade from feeds, both are
+    # written only by INSERT OR IGNORE, and both were read by exactly one query
+    # — the skip-set UNION in feeds/sync.py. Move the rows, keeping the original
+    # timestamp so age information is not lost. A callable rather than a bare
+    # statement because the merge must tolerate unavailable_guids already
+    # being gone (see _merge_unavailable_guids).
+    _merge_unavailable_guids,
+    # v21: drop the now-empty table. Separate step because db.execute takes one
+    # statement, and because a crash between the two replays v20 harmlessly.
+    "DROP TABLE IF EXISTS unavailable_guids",
 ]
 
 

@@ -56,7 +56,7 @@ async def test_record_media_hash_drops_newer_duplicate(db: aiosqlite.Connection)
 
     async with db.execute("SELECT id FROM items") as cur:
         assert [r["id"] for r in await cur.fetchall()] == ["item-old"]
-    async with db.execute("SELECT feed_id, guid FROM unavailable_guids") as cur:
+    async with db.execute("SELECT feed_id, guid FROM resolved_guids") as cur:
         assert [(r["feed_id"], r["guid"]) for r in await cur.fetchall()] == [("feed-b", "guid-b")]
 
 

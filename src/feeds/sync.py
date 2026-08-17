@@ -37,21 +37,20 @@ _INSERT_ITEM = """INSERT OR IGNORE INTO items
 async def _skip_guids(db: aiosqlite.Connection, feed_id: str) -> frozenset[str]:
     """GUIDs of this feed that need no media detection.
 
-    Three sources, all meaning "already resolved": rows already in items, GUIDs
-    tombstoned in unavailable_guids as dead, and GUIDs in resolved_guids that
-    _INSERT_ITEM's guards rejected. The guards key on media_key, which only
-    exists after detection, so a rejected entry leaves no trace in items and
-    would be re-detected on every poll without this tombstone.
+    Two sources, both meaning "already resolved": rows already in items, and
+    GUIDs in resolved_guids that either _INSERT_ITEM's guards rejected or that
+    were dropped after every media URL went dead. The guards key on media_key,
+    which only exists after detection, so a rejected entry leaves no trace in
+    items and would be re-detected on every poll without this tombstone.
 
     Loaded once per feed rather than per entry to avoid repeated queries.
-    Bounded by KEEP_ITEMS; idx_items_feed_id and the tombstone primary keys
+    Bounded by KEEP_ITEMS; idx_items_feed_id and the tombstone primary key
     cover the lookups.
     """
     async with db.execute(
         """SELECT guid FROM items WHERE feed_id = ?
-           UNION SELECT guid FROM unavailable_guids WHERE feed_id = ?
            UNION SELECT guid FROM resolved_guids WHERE feed_id = ?""",
-        (feed_id, feed_id, feed_id),
+        (feed_id, feed_id),
     ) as cur:
         return frozenset(row["guid"] for row in await cur.fetchall())
 

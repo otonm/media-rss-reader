@@ -1,7 +1,10 @@
+from pathlib import Path
+
 import aiosqlite
 
 import src.db.migrations as mig_mod
 from src.db.connection import open_db
+from src.db.migrations import MIGRATIONS, run_migrations
 from src.db.schema import create_schema
 
 
@@ -100,7 +103,9 @@ async def test_multiple_migrations_apply_in_order() -> None:
 async def test_backfill_seen_media_from_items(db: aiosqlite.Connection) -> None:
     """v19 records pre-existing seen rows with the URL normalised, then the
     version gate makes a second run a no-op."""
-    await db.execute(f"PRAGMA user_version = {len(mig_mod.MIGRATIONS) - 1}")
+    # 18: pins v19 (_backfill_seen_media) as pending. len(MIGRATIONS) - 1 would
+    # retarget silently every time a later task appends another migration.
+    await db.execute("PRAGMA user_version = 18")
     await db.execute("INSERT INTO feeds (id, url) VALUES ('f1', 'http://f1.com')")
     await db.execute(
         """INSERT INTO items (id, feed_id, guid, media_url, media_type, seen_at)
@@ -121,7 +126,9 @@ async def test_backfill_seen_media_from_items(db: aiosqlite.Connection) -> None:
 async def test_backfill_seen_media_recovers_and_drops_resurrected_rows(db: aiosqlite.Connection) -> None:
     """The state the bug left behind: a seen_guids tombstone whose item came
     back with seen_at NULL. The record is recovered and the row removed."""
-    await db.execute(f"PRAGMA user_version = {len(mig_mod.MIGRATIONS) - 1}")
+    # 18: pins v19 (_backfill_seen_media) as pending. len(MIGRATIONS) - 1 would
+    # retarget silently every time a later task appends another migration.
+    await db.execute("PRAGMA user_version = 18")
     await db.execute("INSERT INTO feeds (id, url) VALUES ('f1', 'http://f1.com')")
     await db.execute(
         """INSERT INTO items (id, feed_id, guid, media_url, media_key, media_type, seen_at)
@@ -137,3 +144,32 @@ async def test_backfill_seen_media_recovers_and_drops_resurrected_rows(db: aiosq
         assert [r["media_key"] for r in await cur.fetchall()] == ["http://cdn.example.com/a.jpg"]
     async with db.execute("SELECT COUNT(*) FROM items") as cur:
         assert (await cur.fetchone())[0] == 0
+
+
+async def test_v20_merges_unavailable_guids(tmp_path: Path) -> None:
+    """v20 moves unavailable_guids rows into resolved_guids, then v21 drops the table."""
+    db = await open_db(str(tmp_path / "m.db"))
+    await create_schema(db)
+    # Stop before v20 so the old table still exists.
+    for i, step in enumerate(MIGRATIONS[:19], start=1):
+        if callable(step):
+            await step(db)
+        else:
+            await db.execute(step)
+        await db.execute(f"PRAGMA user_version = {i}")
+    await db.execute("INSERT INTO feeds (id, url) VALUES ('f1', 'https://e.com/f')")
+    await db.execute(
+        "INSERT INTO unavailable_guids (feed_id, guid, marked_at) VALUES ('f1', 'g1', '2026-01-01 00:00:00')"
+    )
+    await db.commit()
+
+    await run_migrations(db)
+
+    async with db.execute("SELECT resolved_at FROM resolved_guids WHERE feed_id='f1' AND guid='g1'") as cur:
+        row = await cur.fetchone()
+    assert row is not None, "the tombstone must survive the merge"
+    assert row["resolved_at"] == "2026-01-01 00:00:00", "the original timestamp must be preserved"
+
+    async with db.execute("SELECT name FROM sqlite_master WHERE name='unavailable_guids'") as cur:
+        assert await cur.fetchone() is None, "the old table must be gone"
+    await db.close()

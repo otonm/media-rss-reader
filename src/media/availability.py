@@ -5,7 +5,7 @@ a failed upstream fetch and on a browser-reported load failure) and the
 prefetch warmer when an upstream fetch fails permanently (404, 403, ...) or
 returns a non-media body. It records the URL in dead_urls, then for each
 item that contains it, deletes the item row and writes a tombstone to
-unavailable_guids when every URL of that item is now dead. Tombstones are
+resolved_guids when every URL of that item is now dead. Tombstones are
 read by _refresh_feed to skip re-insert on the next feed poll.
 """
 
@@ -126,7 +126,7 @@ async def mark_url_dead_and_maybe_drop(url: str, item_id: str | None, db: aiosql
             continue
         await db.execute("DELETE FROM items WHERE id = ?", (row["id"],))
         await db.execute(
-            "INSERT OR IGNORE INTO unavailable_guids (feed_id, guid, marked_at) VALUES (?, ?, datetime('now'))",
+            "INSERT OR IGNORE INTO resolved_guids (feed_id, guid, resolved_at) VALUES (?, ?, datetime('now'))",
             (row["feed_id"], row["guid"]),
         )
         dropped.append(row["id"])

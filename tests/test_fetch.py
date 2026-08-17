@@ -613,7 +613,7 @@ async def _is_dropped(db: aiosqlite.Connection, url: str) -> bool:
     async with db.execute("SELECT COUNT(*) FROM items WHERE id = 'i1'") as cur:
         if (await cur.fetchone())[0] != 0:
             return False
-    async with db.execute("SELECT COUNT(*) FROM unavailable_guids WHERE feed_id = 'f1' AND guid = 'g1'") as cur:
+    async with db.execute("SELECT COUNT(*) FROM resolved_guids WHERE feed_id = 'f1' AND guid = 'g1'") as cur:
         return (await cur.fetchone())[0] == 1
 
 

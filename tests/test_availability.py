@@ -47,7 +47,7 @@ async def test_single_media_url_404_drops_item(db: aiosqlite.Connection) -> None
     async with db.execute("SELECT id FROM items") as cur:
         rows = await cur.fetchall()
     assert rows == []
-    async with db.execute("SELECT guid FROM unavailable_guids WHERE feed_id = ?", ("f1",)) as cur:
+    async with db.execute("SELECT guid FROM resolved_guids WHERE feed_id = ?", ("f1",)) as cur:
         rows = await cur.fetchall()
     assert [r[0] for r in rows] == ["g1"]
     async with db.execute("SELECT url FROM dead_urls") as cur:
@@ -70,7 +70,7 @@ async def test_gallery_partial_404_keeps_item(db: aiosqlite.Connection) -> None:
     async with db.execute("SELECT id FROM items") as cur:
         rows = await cur.fetchall()
     assert [r[0] for r in rows] == ["i1"]
-    async with db.execute("SELECT COUNT(*) FROM unavailable_guids") as cur:
+    async with db.execute("SELECT COUNT(*) FROM resolved_guids") as cur:
         assert (await cur.fetchone())[0] == 0
 
 
@@ -89,7 +89,7 @@ async def test_gallery_all_404_drops_item(db: aiosqlite.Connection) -> None:
     async with db.execute("SELECT id FROM items") as cur:
         rows = await cur.fetchall()
     assert rows == []
-    async with db.execute("SELECT guid FROM unavailable_guids WHERE feed_id = ?", ("f1",)) as cur:
+    async with db.execute("SELECT guid FROM resolved_guids WHERE feed_id = ?", ("f1",)) as cur:
         rows = await cur.fetchall()
     assert [r[0] for r in rows] == ["g1"]
 
@@ -104,7 +104,7 @@ async def test_url_shared_by_two_items_drops_both(db: aiosqlite.Connection) -> N
     async with db.execute("SELECT id FROM items ORDER BY id") as cur:
         rows = await cur.fetchall()
     assert rows == []
-    async with db.execute("SELECT feed_id, guid FROM unavailable_guids ORDER BY feed_id") as cur:
+    async with db.execute("SELECT feed_id, guid FROM resolved_guids ORDER BY feed_id") as cur:
         rows = await cur.fetchall()
     assert [tuple(r) for r in rows] == [("f1", "g1"), ("f2", "g2")]
 
@@ -217,3 +217,22 @@ async def test_mark_dead_ignores_item_that_lacks_the_url(db: aiosqlite.Connectio
     assert dropped == []
     async with db.execute("SELECT COUNT(*) FROM items WHERE id = 'victim'") as cur:
         assert (await cur.fetchone())[0] == 1
+
+
+async def test_dropped_item_is_not_reinserted_by_next_poll(db: aiosqlite.Connection) -> None:
+    """The merged tombstone must still block re-insert on the next feed poll."""
+    from src.db.connection import write_transaction
+    from src.feeds.sync import _skip_guids
+
+    await db.execute("INSERT INTO feeds (id, url) VALUES ('f1', 'https://e.com/f')")
+    await db.execute(
+        "INSERT INTO items (id, feed_id, guid, media_url, media_type)"
+        " VALUES ('i1', 'f1', 'g1', 'https://e.com/a.jpg', 'image')"
+    )
+    await db.commit()
+
+    async with write_transaction(db):
+        dropped = await mark_url_dead_and_maybe_drop("https://e.com/a.jpg", "i1", db)
+    assert dropped == ["i1"]
+
+    assert "g1" in await _skip_guids(db, "f1"), "the dropped guid must be in the skip set"

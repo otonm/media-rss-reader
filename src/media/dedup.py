@@ -8,7 +8,7 @@ record_media_hash(url, digest, db) is called from the proxy and the prefetch
 warmer every time a media file is downloaded — the bytes are already in hand
 at that point, so this costs no extra network traffic. It stores the digest,
 and if a *different* URL already carries it, drops the newer of the two items
-and tombstones it into unavailable_guids, which _refresh_feed already reads to
+and tombstones it into resolved_guids, which _refresh_feed already reads to
 skip re-insert on the next poll. That is what makes the drop stick.
 
 This deliberately mirrors src.media.availability, which performs the same
@@ -105,7 +105,7 @@ async def _drop_item(db: aiosqlite.Connection, row: aiosqlite.Row, reason: str) 
     """Delete an item row and tombstone its (feed_id, guid) against re-insert."""
     await db.execute("DELETE FROM items WHERE id = ?", (row["id"],))
     await db.execute(
-        "INSERT OR IGNORE INTO unavailable_guids (feed_id, guid, marked_at) VALUES (?, ?, datetime('now'))",
+        "INSERT OR IGNORE INTO resolved_guids (feed_id, guid, resolved_at) VALUES (?, ?, datetime('now'))",
         (row["feed_id"], row["guid"]),
     )
     logger.info(
