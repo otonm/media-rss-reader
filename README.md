@@ -7,16 +7,18 @@ The backend continuously fetches feeds in the background (no browser session req
 ## Features
 
 - **Media-first** — only images, GIFs, and videos are shown; text content is ignored
-- **Gallery support** — items with multiple images display as horizontally scrollable galleries with dot indicators and arrow-key navigation
+- **Gallery support** — items with multiple images display as horizontally scrollable galleries with dot indicators, on-screen arrows, and arrow-key navigation
 - **Scroll mode** — continuous vertical feed with keyboard/swipe navigation and auto-scroll
 - **Auto-scroll** — per-item dwell timer: images advance after a configurable delay, GIFs after one full cycle, videos after play-through
+- **Zoom to 100%** — double-tap, double-click or `z` scales an image to 1:1 and pans it with the cursor or a finger
 - **Pre-fetch cache** — upcoming media is downloaded before you reach it, eliminating load stalls
-- **Persistent storage** — feed items survive restarts; seen state tracked per item
-- **OPML-driven** — manage your feed list with any RSS reader's export format
+- **Persistent storage** — feed items survive restarts; seen state is durable and survives pruning, feed removal and cross-posting
+- **Deduplication** — the same picture posted to several feeds is stored once, by URL identity, by exact bytes, and optionally by perceptual similarity (catching re-uploads and re-encodes)
+- **OPML-driven** — manage your feed list with any RSS reader's export format, or drop RSS `*.xml` files in a watched folder
 - **Authentication** — username/password + TOTP (set up on first login), signed 7-day session cookies, IP-based brute-force lockout
 - **Docker-native** — single container, volume-mounted data, no external database service
 - **PWA-ready** — installable as a standalone app; service worker caches the UI for offline-capable loading
-- **Dead-URL self-healing** — 404 media URLs are tracked; items whose media is entirely gone are automatically dropped and not re-inserted on the next feed poll
+- **Dead-URL self-healing** — media URLs that are permanently gone are tracked; items whose media is entirely gone are automatically dropped and not re-inserted on the next feed poll
 - **Reddit Feeds integration** — status modal showing companion service health (feed names, last fetch, item counts)
 
 ## Key Bindings
@@ -25,12 +27,16 @@ The backend continuously fetches feeds in the background (no browser session req
 |---|---|
 | `j` / `↓` | Next item |
 | `k` / `↑` | Previous item |
-| `←` / `→` | Previous / next gallery slide |
+| `←` / `→` | Previous / next gallery slide (steps items at the boundary) |
+| `z` | Zoom the current image to 100% / back |
 | `a` | Toggle auto-scroll |
 | `m` | Toggle mute |
 | `s` | Toggle show seen items |
+| `Esc` | Close the status modal |
 
-On mobile, swipe up/down to navigate. Tap ☰ to open the control menu.
+On mobile, swipe up/down to navigate and left/right within a gallery; double-tap
+an image to zoom it to 100% and drag to pan. Tap ☰ to open the control menu. With
+a mouse or pen, click-and-drag past ~40 px acts as a swipe.
 
 ## Prerequisites
 
@@ -55,9 +61,27 @@ Open http://localhost:8082 in your browser. You will be redirected to `/login`. 
 
 The first feed fetch runs immediately on startup; media appears within a few seconds after logging in.
 
-## OPML Feed List
+## Feed Sources
 
-The reader is driven by an [OPML](https://opml.org/) file — the same export format used by RSS readers like Feedly, NetNewsWire, and Reeder.
+Feeds come from two places, and both are used together:
+
+1. **An [OPML](https://opml.org/) file** (`OPML_PATH`) listing remote feed URLs,
+   which the reader fetches over HTTP.
+2. **A watched folder** (`FEEDS_DIR`) of RSS `*.xml` files already on local disk —
+   for feeds produced by a companion service on the same host. These are read
+   directly, never fetched, and are re-parsed only when the file's modification
+   time changes.
+
+The two are reconciled into one feed list on every sync. If a folder file has the
+same basename as an OPML entry, the folder wins. A feed that disappears from
+**both** sources is deleted along with all its stored items — except when the
+union comes back completely empty, which is treated as "the sources are
+unreadable" (an unmounted volume, a companion mid-restart) rather than "delete
+everything".
+
+### OPML file
+
+The same export format used by RSS readers like Feedly, NetNewsWire, and Reeder.
 
 Create `feeds.opml` in the project directory (the default path the container mounts):
 
@@ -76,6 +100,9 @@ Create `feeds.opml` in the project directory (the default path the container mou
 
 The file is re-read on the interval set by `OPML_SYNC_INTERVAL`. Adding or removing a feed takes effect on the next sync. Removing a feed cascades — all its stored items are deleted from the database.
 
+A missing or malformed OPML file is logged and skipped, not fatal — useful if you
+drive the reader from `FEEDS_DIR` alone.
+
 ## Configuration
 
 All settings are environment variables configured directly in `docker-compose.yml`.
@@ -90,29 +117,53 @@ All settings are environment variables configured directly in `docker-compose.ym
 
 Generate a suitable secret key with `openssl rand -hex 32`.
 
-### Optional
+The container refuses to start if any of the three is missing. Empty credentials
+are **not** a "no auth" mode — the first visitor would be handed the TOTP
+enrollment flow and become the owner.
+
+### Optional — paths
+
+| Variable | Default | Description |
+|---|---|---|
+| `OPML_PATH` | `/data/feeds.opml` | Path to the OPML file inside the container. Empty string disables the OPML pass |
+| `FEEDS_DIR` | `/feeds-output` | Directory scanned for `*.xml` RSS feeds already on local disk |
+| `DB_PATH` | `/data/db/reader.db` | SQLite database path inside the container |
+| `CACHE_DIR` | `/cache` | Directory for cached media files |
+
+### Optional — schedule and retention
+
+| Variable | Default | Description |
+|---|---|---|
+| `OPML_SYNC_INTERVAL` | `3600` | Seconds between feed-list reconciliations |
+| `FEED_REFRESH_INTERVAL` | `900` | Seconds between feed content refresh cycles |
+| `KEEP_ITEMS` | `1000` | Max items kept in the database |
+| `ITEMS_MAX_AGE_HOURS` | `168` | Delete **seen** items older than this (168 = 7 days). Unseen items get 4× this budget, since you haven't had a chance to see them yet |
+| `CACHE_MAX_ITEMS` | `500` | Max number of media files kept on disk |
+| `CACHE_MAX_AGE_HOURS` | `48` | Max age of cached files before eviction |
+| `CACHE_MAX_BYTES` | `2147483648` | Total cache size budget in bytes (2 GiB). `0` disables. A file count alone cannot bound a directory of multi-gigabyte videos |
+| `MEDIA_MAX_BYTES` | `268435456` | Largest single media transfer in bytes (256 MiB). `0` disables. Both the declared `Content-Length` and the running total are checked |
+
+### Optional — behaviour
+
+| Variable | Default | Description |
+|---|---|---|
+| `PREFETCH_AHEAD` | `5` | Items to pre-fetch ahead of the current scroll position |
+| `FEED_INITIAL_COUNT` | `10` | Items per API page and browser lookahead. Must be 1–200; the container refuses to start outside that range |
+| `IMAGE_AUTOSCROLL_DELAY_S` | `2` | Dwell time per image in auto-scroll (seconds); also the **minimum** dwell for GIFs and videos |
+| `MEDIA_LOAD_TIMEOUT_S` | `10` | How long the browser waits for a media download before giving up. **A timeout deletes the item**, so this erases posts that were merely slow — raise it if usable posts start disappearing. Must be 1–300 |
+| `ZOOM_TRANSITION_MS` | `200` | How long the zoom-to-100% gesture animates (milliseconds); `0` snaps instantly. Panning is never animated, and `prefers-reduced-motion` overrides this to `0` |
+| `DEDUP_SIMILARITY` | `97` | Perceptual-hash threshold as a percentage of matching bits. `0` disables perceptual matching (URL-key and exact-byte dedup always run). 97 drops an image whose 256-bit hash differs by ≤5 bits |
+| `ALLOW_PRIVATE_MEDIA_HOSTS` | `0` | `1` lets media URLs point at loopback/RFC1918 addresses. Off by default: media URLs come from third-party feed content and are fetched with no session at all. Turn it on only if you serve media from another container on the same Docker network |
+| `UI_DEBUG` | `0` | Set to `1` to show a diagnostic overlay in the top-right corner: the current item's feed, title, media type, slide count, publish date, cache hit/miss with load time, and the download queue depth |
+
+### Optional — server and integrations
 
 | Variable | Default | Description |
 |---|---|---|
 | `AUTH_LOCKOUT_ATTEMPTS` | `5` | Failed login attempts before IP lockout |
 | `AUTH_LOCKOUT_MINUTES` | `15` | Lockout duration in minutes |
-| `OPML_PATH` | `/data/feeds.opml` | Path to the OPML file inside the container |
-| `FEEDS_DIR` | `/feeds-output` | Directory scanned for `*.xml` RSS feeds (takes precedence over OPML) |
-| `DB_PATH` | `/data/db/reader.db` | SQLite database path inside the container |
-| `CACHE_DIR` | `/cache` | Directory for cached media files |
-| `OPML_SYNC_INTERVAL` | `3600` | Seconds between OPML re-reads |
-| `FEED_REFRESH_INTERVAL` | `900` | Seconds between feed refresh cycles |
-| `CACHE_MAX_ITEMS` | `500` | Max number of media files kept on disk |
-| `CACHE_MAX_AGE_HOURS` | `48` | Max age of cached files before eviction |
-| `KEEP_ITEMS` | `1000` | Max items kept in the database |
-| `ITEMS_MAX_AGE_HOURS` | `168` | Delete seen items older than this (hours; 168 = 7 days) |
-| `PREFETCH_AHEAD` | `5` | Items to pre-fetch ahead of current scroll position |
-| `FEED_INITIAL_COUNT` | `10` | Items per API page and initial load batch |
-| `IMAGE_AUTOSCROLL_DELAY_S` | `2` | Dwell time per image in auto-scroll (seconds); also the minimum dwell for GIFs and videos |
-| `ZOOM_TRANSITION_MS` | `200` | How long the zoom-to-100% gesture animates (milliseconds); `0` snaps instantly. Panning is never animated, and `prefers-reduced-motion` overrides this to `0` |
-| `UI_DEBUG` | `0` | Set to `1` to show a diagnostic overlay in the top-right corner: the current item's feed, title, media type, publish date, cache hit/miss with load time, and the download queue depth |
 | `PORT` | `8080` | Port the server listens on inside the container (host port is set by the `-p` flag in Docker / Compose) |
-| `LOG_LEVEL` | `info` | Uvicorn log level: `debug` \| `info` \| `warning` \| `error` |
+| `LOG_LEVEL` | `info` | Log level: `debug` \| `info` \| `warning` \| `error` |
 | `REDDIT_FEEDS_API_URL` | `http://127.0.0.1:9090` | URL of the Reddit Feeds status API (for the status modal) |
 
 ## Deployment: Docker Only
@@ -320,3 +371,24 @@ docker compose up -d
 ```
 
 Schema migrations run automatically on startup — no manual steps required.
+
+## Documentation
+
+| Document | For |
+|---|---|
+| [ARCHITECTURE.md](ARCHITECTURE.md) | Working on this codebase: module layout, data flows, and the reasoning behind each load-bearing decision |
+| [spec.md](spec.md) | Reimplementing the reader elsewhere: a language- and library-agnostic description of the data model, algorithms and invariants, with porting notes and an acceptance checklist |
+
+## Development
+
+```bash
+uv sync --extra dev                              # install, including dev extras
+uv run uvicorn src.main:app --reload --port 8080 # run locally
+uv run ruff check --fix . && uv run ruff format . # lint + format
+uv run pytest                                    # tests + coverage (90% floor)
+```
+
+Running locally still requires `AUTH_USERNAME`, `AUTH_PASSWORD` and
+`AUTH_SECRET_KEY` in the environment, and every request needs an
+`X-Forwarded-Proto: https` header — the app assumes a TLS-terminating reverse
+proxy in front of it and rejects anything else with a 403.

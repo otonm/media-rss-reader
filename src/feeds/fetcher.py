@@ -43,7 +43,7 @@ def _parse_pub_date(entry: dict) -> str | None:
         return None
     try:
         return datetime(*parsed[:6]).isoformat(sep=" ")
-    except TypeError, ValueError:
+    except (TypeError, ValueError):
         return None
 
 

@@ -24,7 +24,15 @@ dev = [
 ]
 
 [tool.ruff]
-target-version = "py314"
+# py313, not py314, despite requires-python >= 3.14: ruff 0.15.12's formatter
+# rewrites `except (A, B):` into the Python 2 `except A, B:` under py314, which
+# is a SyntaxError. CI runs `ruff format --check`, so the corruption is not just
+# possible but enforced — it is how src/feeds/fetcher.py came to be unimportable
+# on main. Nothing here uses py314-only syntax, so the only cost is that ruff
+# will not suggest py314-only idioms. Restore py314 once the bug is fixed
+# upstream (verify with: ruff format --diff --isolated --target-version py314
+# on a file containing a multi-exception except clause).
+target-version = "py313"
 line-length = 120
 # Vendored third-party reference extensions — not ours to lint or format.
 extend-exclude = ["deduplicators"]

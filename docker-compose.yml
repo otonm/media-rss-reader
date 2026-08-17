@@ -24,9 +24,11 @@ services:
       # - CACHE_MAX_AGE_HOURS=48
       # UI behaviour
       # - PREFETCH_AHEAD=5
-      # - IMAGE_DISPLAY_DELAY_MS=5000
-      # - SLIDESHOW_TRANSITION_MS=400
-      # - AUTO_SCROLL_SPEED=1.5
+      # - FEED_INITIAL_COUNT=10
+      # - IMAGE_AUTOSCROLL_DELAY_S=2
+      # - MEDIA_LOAD_TIMEOUT_S=10
+      # - ZOOM_TRANSITION_MS=200
+      # - UI_DEBUG=0
       # Server
       # - PORT=8080
       # - LOG_LEVEL=info
