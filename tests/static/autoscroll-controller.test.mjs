@@ -76,6 +76,13 @@ function installItemStore(ctx, items, gifBuffer = TINY_GIF_NO_GCE) {
     snapToNext: () => {},
     advanceOrNext: (wrap) => { ctx.window.MRR.feedView.snapToNext(); },
     activeMediaEl: (wrap) => wrap.children[0] || null,
+    // setAutoscroll(true) resolves the current wrap through feedView now;
+    // stub it with the same store-index lookup these fixtures already set
+    // up wraps to satisfy.
+    currentWrap: () => {
+      const item = ctx.window.MRR.itemStore.getItemAt(ctx.window.MRR.itemStore.getCurrentIndex());
+      return item ? ctx.document.querySelector(`#feed .media-item[data-id="${item.id}"]`) : null;
+    },
   };
   ctx.fetch = (url) => {
     if (url.startsWith("/api/media/proxy?")) {

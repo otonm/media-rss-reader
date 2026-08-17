@@ -118,14 +118,15 @@ test("onItemLoaded for a lookahead item does NOT remove the currently-playing vi
     setCurrentIndex: () => {},
   };
   ctx.window.MRR.config = { autoscroll: true, mutedDefault: true, imageAutoscrollDelayMs: 2000 };
-  // Load autoscroll-controller first so MRR.autoscrollController exists.
-  loadScript(resolve(STATIC, "media-el.js"), ctx);
-  loadScript(resolve(STATIC, "autoscroll-controller.js"), ctx);
-  ctx.window.MRR.autoscrollController.setAutoscroll(true);
   // scrollController stub.
   ctx.window.MRR.scrollController = { observe() {} };
-  // Now load feed-view.
+  // Load in production order (index.html): feed-view before autoscroll-controller.
+  // setAutoscroll(true) below calls MRR.feedView.currentWrap(), so feedView must
+  // already exist.
+  loadScript(resolve(STATIC, "media-el.js"), ctx);
   loadScript(resolve(STATIC, "feed-view.js"), ctx);
+  loadScript(resolve(STATIC, "autoscroll-controller.js"), ctx);
+  ctx.window.MRR.autoscrollController.setAutoscroll(true);
 
   const feed = ctx.document.createElement("div");
   feed.id = "feed";
@@ -754,6 +755,35 @@ test("snapToPrev walks back one element rather than one store index", () => {
   view.snapToPrev();
 
   assert.equal(feed.children[1].scrolledIntoView, 1);
+});
+
+test("currentWrap prefers the observed element after a splice", () => {
+  // Same shape as "snapToNext follows the DOM" above, but exercised through
+  // the real onItemFailed path (not a direct splice) and asserting on
+  // currentWrap() rather than snapToNext's destination. spec.md §10.2: the
+  // element the position observer reports is authoritative for navigation,
+  // not any index derived from the item list.
+  const items = ["id1", "id2", "id3"].map((id) => makeItem(id, "image"));
+  const { ctx, feed } = feedHarness(items);
+  const view = ctx.window.MRR.feedView;
+  items.forEach((it) => view.appendItem(it));
+
+  // id2 becomes real media so wrapById can find it, and the observer
+  // reports it as the current item (store index 1, before the splice).
+  view.onItemLoaded("id2", ctx.document.createElement("img"));
+  view.setCurrentEl(view.wrapById("id2"));
+  ctx.window.MRR.itemStore.getCurrentIndex = () => 1;
+
+  // Fail id1: splices it out of the store while id2's and id3's DOM nodes
+  // are untouched. Store index 1 named id2 before the splice; after it,
+  // index 1 names id3 — the two index spaces have diverged.
+  withSilencedWarn(() => view.onItemFailed("id1", "boom"));
+
+  assert.equal(
+    view.currentWrap().dataset.id,
+    "id2",
+    "the observed element wins; a store-index lookup would now return id3",
+  );
 });
 
 // ---------------------------------------------------------------------------

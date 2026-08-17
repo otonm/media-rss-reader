@@ -18,6 +18,7 @@
 //   snapToNext(), snapToPrev()
 //   setCurrentMedia(el)
 //   activeMediaEl(wrap)   // media of the active gallery slide (or single media)
+//   wrapById(id)          // the rendered .media-item for an id, or null
 //   currentWrap()         // the .media-item the feed is snapped to, or null
 //   advanceOrNext(wrap)   // next gallery slide, or snapToNext on the last one
 //   galleryNext(), galleryPrev()  // ←/→ slide stepping on the current item
@@ -34,18 +35,19 @@
     autoscrollBound: false,
   };
 
-  // Is this id already on screen? The DOM is the source of truth for what is
-  // rendered — deliberately not a Set kept alongside it, since a second copy
-  // of that answer is exactly what drifts and puts an item on screen twice.
-  //
-  // Linear scan of #feed's children, so a full render is O(n²); n is the
-  // loaded page count (tens), not the feed. Index it if that changes.
+  // The rendered .media-item for an id, or null — a placeholder does not
+  // count. This is what "current" means for navigation (spec.md §10.2).
+  function wrapById(id) {
+    return state.feed ? state.feed.querySelector(`.media-item[data-id="${id}"]`) : null;
+  }
+
+  // Is this id already on screen — as a placeholder OR a loaded media-item?
+  // The DOM is the source of truth for what is rendered — deliberately not a
+  // Set kept alongside it, since a second copy of that answer is exactly
+  // what drifts and puts an item on screen twice. Not wrapById: a duplicate
+  // placeholder (not yet a .media-item) must be caught too.
   function isRendered(id) {
-    const kids = state.feed.children;
-    for (let i = 0; i < kids.length; i++) {
-      if (kids[i].dataset.id === id) return true;
-    }
-    return false;
+    return state.feed.querySelector(`.placeholder[data-id="${id}"], .media-item[data-id="${id}"]`) !== null;
   }
 
   // The only way a node enters #feed, with dedup. A duplicate node is not
@@ -285,7 +287,7 @@
     if (!state.feed) return null;
     if (state.currentEl && state.currentEl.className.includes("media-item")) return state.currentEl;
     const item = MRR.itemStore.getItemAt(MRR.itemStore.getCurrentIndex());
-    return item ? state.feed.querySelector(`.media-item[data-id="${item.id}"]`) : null;
+    return item ? wrapById(item.id) : null;
   }
 
   // Keyboard →: next gallery slide, or next feed item on the last slide.
@@ -370,7 +372,7 @@
   // Live checkmark: called by the scroll-controller after a successful
   // POST /api/items/{id}/seen. Idempotent.
   function markSeen(id) {
-    const wrap = state.feed?.querySelector(`.media-item[data-id="${id}"]`);
+    const wrap = wrapById(id);
     if (!wrap) return;
     tagAsSeen(wrap);
   }
@@ -427,6 +429,7 @@
     createPlaceholder,
     appendItem,
     setCurrentEl,
+    wrapById,
     renderInitial,
     onItemLoaded,
     onItemFailed,

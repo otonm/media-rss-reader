@@ -33,16 +33,11 @@
     state.autoscroll = on;
     document.querySelectorAll("#feed video").forEach((v) => { v.loop = !on; });
     if (on) {
-      const current = currentVisibleWrap();
+      const current = MRR.feedView.currentWrap();
       if (current) bindIfVisible(current);
     } else {
       unbind();
     }
-  }
-
-  function currentVisibleWrap() {
-    const item = MRR.itemStore.getItemAt(MRR.itemStore.getCurrentIndex());
-    return item ? document.querySelector(`#feed .media-item[data-id="${item.id}"]`) : null;
   }
 
   function bindIfVisible(wrap) {
