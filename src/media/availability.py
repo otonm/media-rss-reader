@@ -106,6 +106,22 @@ async def _all_dead(db: aiosqlite.Connection, urls: list[str]) -> bool:
     return dead.issuperset(urls)
 
 
+async def drop_item(db: aiosqlite.Connection, row: aiosqlite.Row) -> None:
+    """Delete an item row and tombstone its (feed_id, guid) against re-insert.
+
+    The single path by which an item leaves the library.
+
+    Does not log: the two call sites log at different levels from their own
+    module loggers, and their tests assert on both facts. Does not commit:
+    the caller owns the transaction (see mark_url_dead_and_maybe_drop).
+    """
+    await db.execute("DELETE FROM items WHERE id = ?", (row["id"],))
+    await db.execute(
+        "INSERT OR IGNORE INTO resolved_guids (feed_id, guid, resolved_at) VALUES (?, ?, datetime('now'))",
+        (row["feed_id"], row["guid"]),
+    )
+
+
 async def mark_url_dead_and_maybe_drop(url: str, item_id: str | None, db: aiosqlite.Connection) -> list[str]:
     """Record `url` as dead. For every item that contains it, if every URL
     of that item is now dead, DELETE the row and tombstone it. Returns the
@@ -124,11 +140,7 @@ async def mark_url_dead_and_maybe_drop(url: str, item_id: str | None, db: aiosql
         urls = _item_urls(row)
         if not await _all_dead(db, urls):
             continue
-        await db.execute("DELETE FROM items WHERE id = ?", (row["id"],))
-        await db.execute(
-            "INSERT OR IGNORE INTO resolved_guids (feed_id, guid, resolved_at) VALUES (?, ?, datetime('now'))",
-            (row["feed_id"], row["guid"]),
-        )
+        await drop_item(db, row)
         dropped.append(row["id"])
         logger.debug(
             f"dropped item {loggable(row['id'])} (feed={loggable(row['feed_id'])} "

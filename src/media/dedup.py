@@ -25,6 +25,7 @@ import aiosqlite
 
 from src.config import settings
 from src.logging_utils import loggable
+from src.media.availability import drop_item
 from src.media.cache import cache_read
 
 logger = logging.getLogger(__name__)
@@ -101,19 +102,6 @@ async def _similar_urls(db: aiosqlite.Connection, url: str, phash: str) -> list[
     return matches
 
 
-async def _drop_item(db: aiosqlite.Connection, row: aiosqlite.Row, reason: str) -> None:
-    """Delete an item row and tombstone its (feed_id, guid) against re-insert."""
-    await db.execute("DELETE FROM items WHERE id = ?", (row["id"],))
-    await db.execute(
-        "INSERT OR IGNORE INTO resolved_guids (feed_id, guid, resolved_at) VALUES (?, ?, datetime('now'))",
-        (row["feed_id"], row["guid"]),
-    )
-    logger.info(
-        f"Dropped duplicate item {loggable(row['id'])} "
-        f"(feed={loggable(row['feed_id'])} guid={loggable(row['guid'])}): {reason}"
-    )
-
-
 async def _newer_item_for_url(db: aiosqlite.Connection, url: str, other_urls: list[str]) -> aiosqlite.Row | None:
     """Return the item at `url` if it is newer than every item at `other_urls`.
 
@@ -177,5 +165,9 @@ async def record_media_hash(url: str, digest: str, db: aiosqlite.Connection) -> 
     if row is None:
         return None
 
-    await _drop_item(db, row, reason)
+    await drop_item(db, row)
+    logger.info(
+        f"Dropped duplicate item {loggable(row['id'])} "
+        f"(feed={loggable(row['feed_id'])} guid={loggable(row['guid'])}): {reason}"
+    )
     return row["id"]

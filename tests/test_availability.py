@@ -5,7 +5,7 @@ import logging
 import aiosqlite
 import pytest
 
-from src.media.availability import mark_url_dead_and_maybe_drop
+from src.media.availability import drop_item, mark_url_dead_and_maybe_drop
 
 
 async def _insert_feed(db: aiosqlite.Connection, feed_id: str = "f1") -> None:
@@ -236,3 +236,21 @@ async def test_dropped_item_is_not_reinserted_by_next_poll(db: aiosqlite.Connect
     assert dropped == ["i1"]
 
     assert "g1" in await _skip_guids(db, "f1"), "the dropped guid must be in the skip set"
+
+
+async def test_drop_item_deletes_and_tombstones(db) -> None:
+    await db.execute("INSERT INTO feeds (id, url) VALUES ('f1', 'https://e.com/f')")
+    await db.execute(
+        "INSERT INTO items (id, feed_id, guid, media_url, media_type)"
+        " VALUES ('i1', 'f1', 'g1', 'https://e.com/a.jpg', 'image')"
+    )
+    await db.commit()
+    async with db.execute("SELECT id, feed_id, guid FROM items WHERE id = 'i1'") as cur:
+        row = await cur.fetchone()
+
+    await drop_item(db, row)
+
+    async with db.execute("SELECT COUNT(*) FROM items WHERE id = 'i1'") as cur:
+        assert (await cur.fetchone())[0] == 0
+    async with db.execute("SELECT COUNT(*) FROM resolved_guids WHERE feed_id='f1' AND guid='g1'") as cur:
+        assert (await cur.fetchone())[0] == 1
