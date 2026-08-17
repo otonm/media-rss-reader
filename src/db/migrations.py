@@ -57,7 +57,7 @@ async def _merge_unavailable_guids(db: aiosqlite.Connection) -> None:
     """v20's data step — see the v20 comment in MIGRATIONS.
 
     Guarded on the source table's existence: a replay of the whole pending
-    batch from an early checkpoint (test_feeds_columns_fresh_vs_v1_rollback
+    batch from an early checkpoint (test_replay_from_v19_hits_merge_unavailable_guids_guard
     exercises exactly this) can reach this step after v21 already dropped
     unavailable_guids in an earlier pass. Without the guard that is a hard
     OperationalError instead of the no-op idempotency requires.
@@ -210,6 +210,17 @@ MIGRATIONS: list[MigrationStep] = [
     # old DB gets its full backfill first. The three earlier steps stay exactly
     # where they are; user_version is an index into this list, so removing them
     # would silently skip every migration after.
+    # This makes v19 the first entry in the list whose read (seen_guids) a later
+    # entry (this one) destroys, and unlike _merge_unavailable_guids,
+    # _backfill_seen_media has no existence guard on it. Real databases stay
+    # safe because user_version is monotonic and committed after every step, so
+    # the pending range on any real startup always starts exactly at the step
+    # that never finished — it can never re-enter v19 after v25 has already run.
+    # But the list's replay-from-any-checkpoint property (MIGRATIONS[N:] is safe
+    # to run for any N) is no longer true for N < 19 on an already-migrated
+    # database, which only an artificial rewind (e.g. in a test) can construct.
+    # Whoever appends v26: if it depends on something an even-later step could
+    # destroy, it needs the same existence guard _merge_unavailable_guids uses.
     "DROP TABLE IF EXISTS seen_guids",
 ]
 

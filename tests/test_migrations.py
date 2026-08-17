@@ -40,8 +40,9 @@ async def test_migration_applies() -> None:
 async def test_feeds_columns_fresh_vs_v1_rollback() -> None:
     """schema.py is frozen at the v1 shape — site_link belongs to v8, not
     CREATE TABLE. A database whose v8 version bump was lost (DDL auto-commits,
-    a crash in between) replays every ALTER as a duplicate column, which
-    run_migrations must swallow. Both entry paths must leave feeds identical."""
+    a crash in between) replays v8 as a duplicate column, which run_migrations
+    must swallow, then applies v9 onward for the first time. Both entry paths
+    must leave feeds identical."""
 
     async def feeds_columns(conn: aiosqlite.Connection) -> set[str]:
         async with conn.execute("PRAGMA table_info(feeds)") as cur:
@@ -206,12 +207,36 @@ async def test_v20_merges_unavailable_guids(tmp_path: Path) -> None:
     await db.close()
 
 
+async def test_replay_from_v19_hits_merge_unavailable_guids_guard(tmp_path: Path) -> None:
+    """A fully-migrated database, rewound to right before v20's replay range:
+    v20 (_merge_unavailable_guids) finds unavailable_guids already dropped by
+    v21 in the pass that already ran, and its existence guard must no-op
+    rather than raise. v21-v25 replay harmlessly behind it (DROP ... IF
+    EXISTS, CREATE ... IF NOT EXISTS, INSERT OR IGNORE). This is the shape
+    that drove the guard's existence in the first place — without a test in
+    this shape, the guard has no coverage."""
+    db = await open_db(str(tmp_path / "v19.db"))
+    await create_schema(db)
+    await run_migrations(db)
+
+    await db.execute(f"PRAGMA user_version = {mig_mod.MIGRATIONS.index(mig_mod._merge_unavailable_guids)}")
+    await db.commit()
+
+    await run_migrations(db)
+
+    async with db.execute("PRAGMA user_version") as cur:
+        assert (await cur.fetchone())[0] == len(mig_mod.MIGRATIONS)
+    await db.close()
+
+
 async def test_seen_guids_backfilled_then_dropped(tmp_path: Path) -> None:
     """A pre-v19 database must have its seen history moved before the table goes."""
     db = await open_db(str(tmp_path / "s.db"))
     await create_schema(db)
-    # Stop at v18: seen_guids exists and holds a mark, seen_media does not yet.
-    for i, step in enumerate(MIGRATIONS[:18], start=1):
+    # Stop before v19: seen_guids exists and holds a mark, seen_media exists
+    # (v14 created it) but is empty — the backfill hasn't run yet.
+    target = mig_mod.MIGRATIONS.index(mig_mod._backfill_seen_media)
+    for i, step in enumerate(MIGRATIONS[:target], start=1):
         if callable(step):
             await step(db)
         else:
