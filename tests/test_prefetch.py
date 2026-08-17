@@ -261,12 +261,8 @@ async def test_prefetch_ahead_drops_the_hint_when_the_backlog_is_full(
 
     monkeypatch.setattr("src.media.prefetch._warm", _fake_warm)
 
-    # Fill the hint backlog to MAX_BACKLOG with dummy tasks, as prefetch_ahead
-    # itself would across many scroll-driven hints.
-    async def _never() -> None:
-        await asyncio.Event().wait()
-
-    filler = [asyncio.create_task(_never()) for _ in range(prefetch_mod.MAX_BACKLOG)]
+    # Fill the hint backlog to MAX_BACKLOG directly, as prefetch_ahead itself
+    # would across many scroll-driven hints.
     prefetch_mod._hint_backlog = prefetch_mod.MAX_BACKLOG
 
     # Verify the hint backlog is full
@@ -279,21 +275,13 @@ async def test_prefetch_ahead_drops_the_hint_when_the_backlog_is_full(
     # When backlog is full, it returns 0 (not None, which would mean item not found)
     assert queued == 0
 
-    # Clean up filler tasks. The old set-based mechanism zeroed itself out via
-    # each cancelled task's discard callback firing on a later loop tick; a
-    # bare int has no such callback, so the direct increment above needs a
-    # matching direct reset here to avoid leaking into the next test.
-    for t in filler:
-        t.cancel()
-    prefetch_mod._hint_backlog = 0
-
 
 async def test_prefetch_ahead_queues_despite_a_full_startup_warm_backlog(
     db: aiosqlite.Connection, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """warm_startup_cache queues one tracked task per row of its startup query
-    (CACHE_MAX_ITEMS, 500 by default) — ten times MAX_BACKLOG — into the same
-    _bg_tasks set _track uses for GC-safety. Before separating the hint path's
+    (feed_initial_count + prefetch_ahead) into the same _bg_tasks set _track
+    uses for GC-safety. Before separating the hint path's
     own counter, checking len(_bg_tasks) meant every hint was dropped for the
     whole cold-cache window after every restart, until the startup warm had
     drained below the cap."""

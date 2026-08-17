@@ -238,7 +238,7 @@ async def test_dropped_item_is_not_reinserted_by_next_poll(db: aiosqlite.Connect
     assert "g1" in await _skip_guids(db, "f1"), "the dropped guid must be in the skip set"
 
 
-async def test_drop_item_deletes_and_tombstones(db) -> None:
+async def test_drop_item_deletes_and_tombstones(db: aiosqlite.Connection) -> None:
     await db.execute("INSERT INTO feeds (id, url) VALUES ('f1', 'https://e.com/f')")
     await db.execute(
         "INSERT INTO items (id, feed_id, guid, media_url, media_type)"

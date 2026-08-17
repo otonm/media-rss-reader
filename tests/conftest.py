@@ -187,8 +187,10 @@ def _clear_prefetch_tasks() -> Iterator[None]:
     from src.media import prefetch as prefetch_mod
 
     prefetch_mod._bg_tasks.clear()
+    prefetch_mod._hint_backlog = 0
     yield
     prefetch_mod._bg_tasks.clear()
+    prefetch_mod._hint_backlog = 0
 
 
 @pytest.fixture(autouse=True)

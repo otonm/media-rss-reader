@@ -43,9 +43,10 @@ _sem = asyncio.Semaphore(10)
 # all of them on shutdown.
 #
 # _hint_backlog counts only the request-driven path, so MAX_BACKLOG measures the
-# hint backlog alone. It cannot be len(_bg_tasks): a post-boot startup warm puts
-# up to CACHE_MAX_ITEMS tasks in that set — ten times MAX_BACKLOG — and would
-# drop every hint until it drained. See tests/test_prefetch.py.
+# hint backlog alone. It cannot be len(_bg_tasks): the startup warm fills that
+# same set from its own unrelated budget (feed_initial_count + prefetch_ahead),
+# and sharing the counter would let a draining startup warm spend the hint
+# path's cap. See tests/test_prefetch.py::test_prefetch_ahead_queues_despite_a_full_startup_warm_backlog.
 _hint_backlog = 0
 
 MAX_BACKLOG = 50
