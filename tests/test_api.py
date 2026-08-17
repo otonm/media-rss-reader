@@ -112,6 +112,17 @@ async def test_items_keyset_cursor(client: AsyncClient, db: aiosqlite.Connection
     assert [i["id"] for i in resp2.json()] == ["item3"]
 
 
+async def test_ranked_page_and_list_items_agree(db: aiosqlite.Connection, client: AsyncClient) -> None:
+    """The shared assembly must return exactly what the endpoint serves."""
+    from src.db.queries import ranked_page
+
+    resp = await client.get("/api/items?unseen=true&size=5")
+    served = [i["id"] for i in resp.json()]
+
+    rows = await ranked_page(db, columns="id, media_url", unseen=True, size=5)
+    assert [r["id"] for r in rows] == served
+
+
 async def test_items_cursor_paginates_feed_with_undated_items(client: AsyncClient, db: aiosqlite.Connection) -> None:
     """The blocker: ROW_NUMBER sorts NULL pub_date first and ranks those rows
     1..k, but a row-value comparison with a NULL member evaluates to NULL in

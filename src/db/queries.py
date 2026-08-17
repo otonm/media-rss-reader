@@ -13,6 +13,8 @@ This module lives in src/db/ rather than src/api/ because src/media/prefetch.py
 imports it, and src/media must not depend on src/api.
 """
 
+import aiosqlite
+
 RANKED_ITEMS_CTE = """
     WITH ranked AS (
         SELECT id, feed_id, title, media_url, media_type, media_json,
@@ -35,3 +37,54 @@ UNSEEN_FIRST_ORDER_BY = "ORDER BY (seen_at IS NOT NULL) ASC, rn ASC, feed_id ASC
 ANCHOR_LOOKUP = f"{RANKED_ITEMS_CTE} SELECT rn, feed_id, id FROM ranked WHERE id = ?"  # noqa: S608 — only source-controlled SQL constants are interpolated
 
 KEYSET_AFTER = "(rn, feed_id, id) > (?, ?, ?)"
+
+
+async def resolve_anchor(db: aiosqlite.Connection, item_id: str) -> aiosqlite.Row | None:
+    """Resolve a cursor anchor id to its current (rn, feed_id, id) in the ranking."""
+    async with db.execute(ANCHOR_LOOKUP, (item_id,)) as cur:
+        return await cur.fetchone()
+
+
+async def ranked_page(
+    db: aiosqlite.Connection,
+    *,
+    columns: str,
+    unseen: bool,
+    size: int,
+    after: aiosqlite.Row | None = None,
+    after_rn: int | None = None,
+    order: str = INTERLEAVE_ORDER_BY,
+) -> list[aiosqlite.Row]:
+    """One page of the interleave. The single assembly point for the ranking.
+
+    `after` is an already-resolved anchor row (see resolve_anchor), so the
+    caller keeps ownership of what a missing anchor means — a 410 for the API,
+    a None return for the prefetcher.
+
+    The page is bounded at min(after_rn, after["rn"]). Taking the LOWER bound is
+    load-bearing: pruning deletes lowest-rn-first, so every surviving row in
+    that feed shifts down, and a stale after_rn would silently skip exactly the
+    pruned count. See spec.md §9.2.
+    """
+    conditions: list[str] = []
+    params: list[str | int] = []
+    if unseen:
+        conditions.append("seen_at IS NULL")
+    if after is not None:
+        bound_rn = after["rn"] if after_rn is None else min(after_rn, after["rn"])
+        conditions.append(KEYSET_AFTER)
+        params.extend([bound_rn, after["feed_id"], after["id"]])
+    where_clause = ("WHERE " + " AND ".join(conditions)) if conditions else ""
+    params.append(size)
+
+    # Only source-controlled fragments are interpolated; request values stay bound.
+    query = f"""
+        {RANKED_ITEMS_CTE}
+        SELECT {columns}, rn
+        FROM ranked
+        {where_clause}
+        {order}
+        LIMIT ?
+    """  # noqa: S608
+    async with db.execute(query, params) as cur:
+        return list(await cur.fetchall())

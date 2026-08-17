@@ -10,7 +10,7 @@ import aiosqlite
 from fastapi import APIRouter, HTTPException, Query
 
 from src.db.connection import DbDep, write_transaction
-from src.db.queries import ANCHOR_LOOKUP, INTERLEAVE_ORDER_BY, KEYSET_AFTER, RANKED_ITEMS_CTE
+from src.db.queries import ranked_page, resolve_anchor
 from src.logging_utils import loggable
 from src.media.cache import cache_name, cache_names_present
 from src.media.normalize import item_slides, media_key
@@ -106,46 +106,25 @@ async def list_items(
     the one served here. That is a hint, not a contract.
     """
     logger.debug(f"list_items unseen={unseen} after_id={loggable(after_id)} after_rn={after_rn} size={size}")
-    conditions: list[str] = []
-    params: list[str | int] = []
-    if unseen:
-        conditions.append("seen_at IS NULL")
+    anchor = None
     if after_id is not None:
         anchor_elapsed = timer()
-        async with db.execute(ANCHOR_LOOKUP, (after_id,)) as cur:
-            anchor = await cur.fetchone()
+        anchor = await resolve_anchor(db, after_id)
         anchor_ms = anchor_elapsed()
         if anchor is None:
             logger.info(f"list_items: 410, cursor anchor {loggable(after_id)} no longer exists (db={anchor_ms:.1f}ms)")
             raise HTTPException(status_code=410, detail="cursor expired")
-        bound_rn = anchor["rn"] if after_rn is None else min(after_rn, anchor["rn"])
-        if bound_rn != anchor["rn"]:
-            logger.info(
-                f"list_items: anchor {loggable(after_id)} rank moved {after_rn}->{anchor['rn']}, "
-                f"paging from {bound_rn} so no undelivered row ahead of the cursor is skipped"
-            )
-        logger.debug(
-            f"list_items: anchor {loggable(after_id)} resolved to rn={anchor['rn']} "
-            f"feed_id={anchor['feed_id']} bound={bound_rn} (db={anchor_ms:.1f}ms)"
-        )
-        conditions.append(KEYSET_AFTER)
-        params.extend([bound_rn, anchor["feed_id"], anchor["id"]])
-    where_clause = ("WHERE " + " AND ".join(conditions)) if conditions else ""
-    params.append(size)
+        logger.debug(f"list_items: anchor {loggable(after_id)} resolved to rn={anchor['rn']} (db={anchor_ms:.1f}ms)")
 
-    # Only source-controlled fragments are interpolated; request values stay bound.
-    query = f"""
-        {RANKED_ITEMS_CTE}
-        SELECT id, feed_id, title, media_url, media_type, media_json,
-               pub_date, fetched_at, seen_at, rn
-        FROM ranked
-        {where_clause}
-        {INTERLEAVE_ORDER_BY}
-        LIMIT ?
-    """  # noqa: S608
     db_elapsed = timer()
-    async with db.execute(query, params) as cur:
-        rows = await cur.fetchall()
+    rows = await ranked_page(
+        db,
+        columns="id, feed_id, title, media_url, media_type, media_json, pub_date, fetched_at, seen_at",
+        unseen=unseen,
+        size=size,
+        after=anchor,
+        after_rn=after_rn,
+    )
     db_ms = db_elapsed()
     cache_elapsed = timer()
     wanted = {cache_name(row["media_url"]) for row in rows}

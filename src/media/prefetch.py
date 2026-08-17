@@ -19,13 +19,7 @@ import aiosqlite
 import httpx
 
 from src.config import settings
-from src.db.queries import (
-    ANCHOR_LOOKUP,
-    INTERLEAVE_ORDER_BY,
-    KEYSET_AFTER,
-    RANKED_ITEMS_CTE,
-    UNSEEN_FIRST_ORDER_BY,
-)
+from src.db.queries import UNSEEN_FIRST_ORDER_BY, ranked_page, resolve_anchor
 from src.logging_utils import loggable
 from src.media.cache import cache_read
 from src.media.fetch import fetch_to_cache
@@ -115,14 +109,13 @@ async def warm_startup_cache(db: aiosqlite.Connection, client: httpx.AsyncClient
     entry points.
     """
     try:
-        # Interpolated SQL fragments are source-controlled; the limit is bound.
-        async with db.execute(
-            f"""{RANKED_ITEMS_CTE}
-                SELECT id, media_url FROM ranked
-                {UNSEEN_FIRST_ORDER_BY} LIMIT ?""",  # noqa: S608
-            (settings.feed_initial_count + settings.prefetch_ahead,),
-        ) as cur:
-            rows = await cur.fetchall()
+        rows = await ranked_page(
+            db,
+            columns="id, media_url",
+            unseen=False,
+            size=settings.feed_initial_count + settings.prefetch_ahead,
+            order=UNSEEN_FIRST_ORDER_BY,
+        )
         logger.debug(f"warm_startup_cache: {len(rows)} item(s) to pre-warm")
     except Exception as exc:
         logger.warning("warm_startup_cache: DB query failed, skipping cache warm: %s", exc)
@@ -160,24 +153,20 @@ async def prefetch_ahead(
     they log — it has to be passed explicitly, exactly as open_upstream and
     tee_to_cache already accept it.
     """
-    # Interpolated SQL fragments are source-controlled; request values remain bound.
-    async with db.execute(ANCHOR_LOOKUP, (item_id,)) as cur:
-        cursor = await cur.fetchone()
+    cursor = await resolve_anchor(db, item_id)
     if cursor is None:
         logger.debug(f"prefetch_ahead: item {loggable(item_id)} not found, warming nothing")
         return None
     if _hint_backlog >= MAX_BACKLOG:
         logger.info(f"prefetch_ahead for {loggable(item_id)}: hint backlog at {_hint_backlog}, dropping the hint")
         return 0
-    seen_filter = "seen_at IS NULL AND " if unseen else ""
-    async with db.execute(
-        f"""{RANKED_ITEMS_CTE}
-            SELECT id, media_url FROM ranked
-            WHERE {seen_filter}{KEYSET_AFTER}
-            {INTERLEAVE_ORDER_BY} LIMIT ?""",  # noqa: S608
-        (cursor["rn"], cursor["feed_id"], cursor["id"], settings.prefetch_ahead),
-    ) as cur:
-        rows = await cur.fetchall()
+    rows = await ranked_page(
+        db,
+        columns="id, media_url",
+        unseen=unseen,
+        size=settings.prefetch_ahead,
+        after=cursor,
+    )
     logger.debug(f"prefetch_ahead for {loggable(item_id)}: {len(rows)} item(s) ahead (unseen={unseen})")
     for row in rows:
         t = asyncio.create_task(_warm(row["id"], row["media_url"], client, request_id=request_id))
