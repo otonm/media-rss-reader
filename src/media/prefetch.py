@@ -40,11 +40,13 @@ _sem = asyncio.Semaphore(10)
 
 # _bg_tasks holds a strong reference to every warm task from both producers so
 # the event loop's weak ref doesn't GC them, and cancel_prefetch_tasks can stop
-# all of them on shutdown. _hint_tasks re-tracks only the request-driven path
-# so MAX_BACKLOG measures the hint backlog alone: the startup warm has an
-# unrelated budget, and sharing the counter would let a draining startup warm
-# spend the hint path's cap on the reader's behalf.
-_hint_tasks: set[asyncio.Task] = set()
+# all of them on shutdown.
+#
+# _hint_backlog counts only the request-driven path, so MAX_BACKLOG measures the
+# hint backlog alone. It cannot be len(_bg_tasks): a post-boot startup warm puts
+# up to CACHE_MAX_ITEMS tasks in that set — ten times MAX_BACKLOG — and would
+# drop every hint until it drained. See tests/test_prefetch.py.
+_hint_backlog = 0
 
 MAX_BACKLOG = 50
 
@@ -57,9 +59,15 @@ def _track(task: asyncio.Task) -> None:
 
 def _track_hint(task: asyncio.Task) -> None:
     """Like _track, but also counted against MAX_BACKLOG (hint path only)."""
+    global _hint_backlog
     _track(task)
-    _hint_tasks.add(task)
-    task.add_done_callback(_hint_tasks.discard)
+    _hint_backlog += 1
+    task.add_done_callback(_release_hint)
+
+
+def _release_hint(_task: asyncio.Task) -> None:
+    global _hint_backlog
+    _hint_backlog -= 1
 
 
 async def cancel_prefetch_tasks() -> None:
@@ -157,8 +165,8 @@ async def prefetch_ahead(
     if cursor is None:
         logger.debug(f"prefetch_ahead: item {loggable(item_id)} not found, warming nothing")
         return None
-    if len(_hint_tasks) >= MAX_BACKLOG:
-        logger.info(f"prefetch_ahead for {loggable(item_id)}: hint backlog at {len(_hint_tasks)}, dropping the hint")
+    if _hint_backlog >= MAX_BACKLOG:
+        logger.info(f"prefetch_ahead for {loggable(item_id)}: hint backlog at {_hint_backlog}, dropping the hint")
         return 0
     seen_filter = "seen_at IS NULL AND " if unseen else ""
     async with db.execute(

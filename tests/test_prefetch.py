@@ -140,6 +140,24 @@ async def test_background_tasks_are_tracked(tmp_path: Path, monkeypatch: pytest.
     assert t not in pf._bg_tasks
 
 
+async def test_hint_backlog_decrements_on_cancel() -> None:
+    """cancel_prefetch_tasks (called from shutdown) cancels every _bg_tasks
+    entry, including hint-tracked ones. The counter must come back down on
+    that path too, not just on normal completion — a done-callback fires for
+    cancellation exactly like it does for success or an exception."""
+
+    async def _never() -> None:
+        await asyncio.Event().wait()
+
+    t = asyncio.create_task(_never())
+    prefetch_mod._track_hint(t)
+    assert prefetch_mod._hint_backlog == 1
+
+    await prefetch_mod.cancel_prefetch_tasks()
+
+    assert prefetch_mod._hint_backlog == 0
+
+
 async def test_prefetch_ahead_warms_items_ahead_not_behind(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     """F2: under ASC interleave, 'ahead' = greater (rn, feed_id, id), not
     smaller pub_date. The old query warmed items behind the cursor."""
@@ -249,11 +267,10 @@ async def test_prefetch_ahead_drops_the_hint_when_the_backlog_is_full(
         await asyncio.Event().wait()
 
     filler = [asyncio.create_task(_never()) for _ in range(prefetch_mod.MAX_BACKLOG)]
-    for t in filler:
-        prefetch_mod._track_hint(t)
+    prefetch_mod._hint_backlog = prefetch_mod.MAX_BACKLOG
 
     # Verify the hint backlog is full
-    assert len(prefetch_mod._hint_tasks) == prefetch_mod.MAX_BACKLOG
+    assert prefetch_mod._hint_backlog == prefetch_mod.MAX_BACKLOG
 
     # Now prefetch_ahead should return 0 immediately without attempting to queue anything
     async with httpx.AsyncClient() as client:
@@ -262,9 +279,13 @@ async def test_prefetch_ahead_drops_the_hint_when_the_backlog_is_full(
     # When backlog is full, it returns 0 (not None, which would mean item not found)
     assert queued == 0
 
-    # Clean up filler tasks
+    # Clean up filler tasks. The old set-based mechanism zeroed itself out via
+    # each cancelled task's discard callback firing on a later loop tick; a
+    # bare int has no such callback, so the direct increment above needs a
+    # matching direct reset here to avoid leaking into the next test.
     for t in filler:
         t.cancel()
+    prefetch_mod._hint_backlog = 0
 
 
 async def test_prefetch_ahead_queues_despite_a_full_startup_warm_backlog(
@@ -300,7 +321,7 @@ async def test_prefetch_ahead_queues_despite_a_full_startup_warm_backlog(
         prefetch_mod._track(t)
 
     assert len(prefetch_mod._bg_tasks) >= prefetch_mod.MAX_BACKLOG * 10
-    assert len(prefetch_mod._hint_tasks) == 0
+    assert prefetch_mod._hint_backlog == 0
 
     async with httpx.AsyncClient() as client:
         queued = await prefetch_mod.prefetch_ahead("item0", db, client, unseen=False)
