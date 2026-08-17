@@ -80,9 +80,6 @@
   // browser uses to infer user interaction in some implementations and would
   // suppress future autoplay.
   function wireVideo(el) {
-    el.setAttribute("playsinline", "");
-    el.setAttribute("webkit-playsinline", "");
-    el.setAttribute("controls", "");
     el.muted = MRR.controls?.isMuted() ?? true;
     el.loop = !MRR.autoscrollController.isEnabled?.();
     // Track explicit user pauses only. The browser fires spurious
@@ -144,13 +141,10 @@
       if (i === 0) {
         el = firstEl;
       } else {
-        el = m.type === "video" ? document.createElement("video") : new Image();
         // Offscreen slides defer to the browser's own lazy loading. A 20-slide
         // gallery opening 20 connections at once exhausts the ~6-per-host
         // budget and starves the cache queue and /api/items behind it.
-        if (m.type === "video") el.preload = "none";
-        else el.loading = "lazy";
-        el.src = `/api/media/proxy?url=${encodeURIComponent(m.url)}&item_id=${encodeURIComponent(itemId)}`;
+        el = MRR.mediaEl.create(m, itemId, { defer: true });
       }
       if (m.type === "video") wireVideo(el);
       el.addEventListener("error", () => removeSlide(wrap, gallery, dots, slide), { once: true });

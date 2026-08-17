@@ -113,7 +113,7 @@
   }
 
   function getGifDuration(url) {
-    if (!url.startsWith("/api/media/proxy?")) return Promise.resolve(MRR.config.imageAutoscrollDelayMs);
+    if (!url.startsWith(MRR.mediaEl.PROXY_PREFIX)) return Promise.resolve(MRR.config.imageAutoscrollDelayMs);
     return fetch(url)
       .then((r) => r.arrayBuffer())
       .then((buf) => {

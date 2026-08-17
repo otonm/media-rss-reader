@@ -49,6 +49,7 @@ function makeContext(items) {
   };
   // config stub
   ctx.window.MRR.config = { feedInitialCount: 10 };
+  loadScript(resolve(STATIC, "media-el.js"), ctx);
   loadScript(resolve(STATIC, "cache-queue.js"), ctx);
   return ctx;
 }

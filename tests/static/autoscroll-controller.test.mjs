@@ -96,6 +96,7 @@ test("bindIfVisible for a gif wrap leaves the <img> in place (browser keeps anim
   const ctx = createDomContext();
   const { wrap, img } = makeGifWrap(ctx);
   installItemStore(ctx, [{ id: "gif0", media_type: "gif", media_url: "https://example/foo.gif" }]);
+  loadScript(resolve(STATIC, "media-el.js"), ctx);
   loadScript(resolve(STATIC, "autoscroll-controller.js"), ctx);
   ctx.window.MRR.autoscrollController.setAutoscroll(true);
   ctx.window.MRR.autoscrollController.bindIfVisible(wrap);
@@ -113,6 +114,7 @@ test("bindIfVisible for a gif wrap schedules snapToNext at the minDwell floor wh
   let snapCalls = 0;
   installItemStore(ctx, [{ id: "gif0", media_type: "gif", media_url: "https://example/foo.gif" }], TINY_GIF_50MS);
   ctx.window.MRR.feedView.snapToNext = () => { snapCalls += 1; };
+  loadScript(resolve(STATIC, "media-el.js"), ctx);
   loadScript(resolve(STATIC, "autoscroll-controller.js"), ctx);
   ctx.window.MRR.autoscrollController.setAutoscroll(true);
   ctx.window.MRR.autoscrollController.bindIfVisible(wrap);
@@ -139,6 +141,7 @@ test("bindIfVisible for a gif wrap schedules snapToNext at the parsed duration w
   let snapCalls = 0;
   installItemStore(ctx, [{ id: "gif0", media_type: "gif", media_url: "https://example/foo.gif" }]);
   ctx.window.MRR.feedView.snapToNext = () => { snapCalls += 1; };
+  loadScript(resolve(STATIC, "media-el.js"), ctx);
   loadScript(resolve(STATIC, "autoscroll-controller.js"), ctx);
   ctx.window.MRR.autoscrollController.setAutoscroll(true);
   ctx.window.MRR.autoscrollController.bindIfVisible(wrap);
@@ -152,6 +155,7 @@ test("setAutoscroll(false) does not touch the GIF <img>", () => {
   const ctx = createDomContext();
   const { wrap, img } = makeGifWrap(ctx);
   installItemStore(ctx, [{ id: "gif0", media_type: "gif", media_url: "https://example/foo.gif" }]);
+  loadScript(resolve(STATIC, "media-el.js"), ctx);
   loadScript(resolve(STATIC, "autoscroll-controller.js"), ctx);
   ctx.window.MRR.autoscrollController.setAutoscroll(true);
   ctx.window.MRR.autoscrollController.bindIfVisible(wrap);
@@ -185,6 +189,7 @@ test("bindIfVisible for an image wrap schedules snapToNext at exactly imageAutos
 
   let snapCalls = 0;
   ctx.window.MRR.feedView.snapToNext = () => { snapCalls += 1; };
+  loadScript(resolve(STATIC, "media-el.js"), ctx);
   loadScript(resolve(STATIC, "autoscroll-controller.js"), ctx);
   ctx.window.MRR.autoscrollController.setAutoscroll(true);
   ctx.window.MRR.autoscrollController.bindIfVisible(wrap);
@@ -219,6 +224,7 @@ test("bindIfVisible for a video: 'ended' before the minDwell defers snapToNext",
 
   let snapCalls = 0;
   ctx.window.MRR.feedView.snapToNext = () => { snapCalls += 1; };
+  loadScript(resolve(STATIC, "media-el.js"), ctx);
   loadScript(resolve(STATIC, "autoscroll-controller.js"), ctx);
   ctx.window.MRR.autoscrollController.setAutoscroll(true);
   ctx.window.MRR.autoscrollController.bindIfVisible(wrap);
@@ -250,6 +256,7 @@ test("bindIfVisible for a video: 'ended' after the minDwell fires snapToNext imm
 
   let snapCalls = 0;
   ctx.window.MRR.feedView.snapToNext = () => { snapCalls += 1; };
+  loadScript(resolve(STATIC, "media-el.js"), ctx);
   loadScript(resolve(STATIC, "autoscroll-controller.js"), ctx);
   ctx.window.MRR.autoscrollController.setAutoscroll(true);
   ctx.window.MRR.autoscrollController.bindIfVisible(wrap);
@@ -272,6 +279,7 @@ test("bindIfVisible for a non-gif wrap is not affected by the swap (image/video 
     { id: "img0", media_type: "image", media_url: "https://example/foo.jpg" },
     { id: "vid0", media_type: "video", media_url: "https://example/foo.mp4" },
   ]);
+  loadScript(resolve(STATIC, "media-el.js"), ctx);
   loadScript(resolve(STATIC, "autoscroll-controller.js"), ctx);
   ctx.window.MRR.autoscrollController.setAutoscroll(true);
 
@@ -316,6 +324,7 @@ test("a video mounted after the toggle still gets the right loop flag", () => {
   };
   ctx.window.MRR.config = { imageAutoscrollDelayMs: MIN_DWELL_MS };
   ctx.window.MRR.scrollController = { observe() {} };
+  loadScript(resolve(STATIC, "media-el.js"), ctx);
   loadScript(resolve(STATIC, "autoscroll-controller.js"), ctx);
   loadScript(resolve(STATIC, "feed-view.js"), ctx);
 

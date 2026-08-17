@@ -61,6 +61,7 @@ function setupHarness() {
   // Load the feed-view module FIRST so MRR.feedView is populated, then
   // build the real feed container and call renderInitial() to set
   // state.feed.
+  loadScript(resolve(STATIC, "media-el.js"), ctx);
   loadScript(resolve(STATIC, "feed-view.js"), ctx);
 
   const feed = ctx.document.createElement("div");
@@ -118,11 +119,13 @@ test("onItemLoaded for a lookahead item does NOT remove the currently-playing vi
   };
   ctx.window.MRR.config = { autoscroll: true, mutedDefault: true, imageAutoscrollDelayMs: 2000 };
   // Load autoscroll-controller first so MRR.autoscrollController exists.
+  loadScript(resolve(STATIC, "media-el.js"), ctx);
   loadScript(resolve(STATIC, "autoscroll-controller.js"), ctx);
   ctx.window.MRR.autoscrollController.setAutoscroll(true);
   // scrollController stub.
   ctx.window.MRR.scrollController = { observe() {} };
   // Now load feed-view.
+  loadScript(resolve(STATIC, "media-el.js"), ctx);
   loadScript(resolve(STATIC, "feed-view.js"), ctx);
 
   const feed = ctx.document.createElement("div");
@@ -218,7 +221,7 @@ test("markSeen(id) is a no-op for an id not in the DOM", () => {
 
 test("video wraps have the `controls` attribute set", () => {
   const { ctx, feed, items } = setupHarness();
-  const video = ctx.document.createElement("video");
+  const video = ctx.window.MRR.mediaEl.create({ url: items[0].media_url, type: "video" }, "id0", {});
   ctx.window.MRR.feedView.onItemLoaded("id0", video);
   const wrap = feed.children.find((c) => c.dataset.id === "id0");
   const v = wrap.querySelector("video");
@@ -393,6 +396,7 @@ test("setCurrentMedia pauses every video in the feed, not just the previous curr
     setAutoscroll() {},
   };
   ctx.window.MRR.scrollController = { observe() {} };
+  loadScript(resolve(STATIC, "media-el.js"), ctx);
   loadScript(resolve(STATIC, "feed-view.js"), ctx);
 
   const feed = ctx.document.createElement("div");
@@ -450,6 +454,7 @@ test("setCurrentMedia on a non-current video pauses the old currentVisibleEl AND
     setAutoscroll() {},
   };
   ctx.window.MRR.scrollController = { observe() {} };
+  loadScript(resolve(STATIC, "media-el.js"), ctx);
   loadScript(resolve(STATIC, "feed-view.js"), ctx);
 
   const feed = ctx.document.createElement("div");
@@ -501,6 +506,7 @@ test("setCurrentMedia marks every paused video as JS-paused so the pause handler
   ctx.window.MRR.config = { autoscroll: false, mutedDefault: true };
   ctx.window.MRR.autoscrollController = { bindIfVisible() {}, reset() {}, setAutoscroll() {} };
   ctx.window.MRR.scrollController = { observe() {} };
+  loadScript(resolve(STATIC, "media-el.js"), ctx);
   loadScript(resolve(STATIC, "feed-view.js"), ctx);
 
   const feed = ctx.document.createElement("div");
@@ -551,6 +557,7 @@ test("onItemLoaded for a multi-slide gallery does NOT throw", () => {
   ctx.window.MRR.config = { autoscroll: false, mutedDefault: true };
   ctx.window.MRR.autoscrollController = { bindIfVisible() {}, reset() {}, setAutoscroll() {} };
   ctx.window.MRR.scrollController = { observe() {} };
+  loadScript(resolve(STATIC, "media-el.js"), ctx);
   loadScript(resolve(STATIC, "feed-view.js"), ctx);
   const feed = ctx.document.createElement("div");
   feed.id = "feed";
@@ -599,6 +606,7 @@ function failedHarness() {
   ctx.window.MRR.config = { autoscroll: false, mutedDefault: true };
   ctx.window.MRR.autoscrollController = { bindIfVisible() {}, reset() {}, setAutoscroll() {} };
   ctx.window.MRR.scrollController = { observe() {} };
+  loadScript(resolve(STATIC, "media-el.js"), ctx);
   loadScript(resolve(STATIC, "feed-view.js"), ctx);
   const feed = ctx.document.createElement("div");
   feed.id = "feed";
@@ -674,6 +682,7 @@ function feedHarness(items) {
   ctx.window.MRR.config = { autoscroll: false, mutedDefault: true };
   ctx.window.MRR.autoscrollController = { bindIfVisible() {}, reset() {}, setAutoscroll() {} };
   ctx.window.MRR.scrollController = { observe() {} };
+  loadScript(resolve(STATIC, "media-el.js"), ctx);
   loadScript(resolve(STATIC, "feed-view.js"), ctx);
   const feed = ctx.document.createElement("div");
   feed.id = "feed";
@@ -792,6 +801,7 @@ function galleryHarness() {
   ctx.window.MRR.scrollController = { observe() {} };
   const zoom = { resets: 0 };
   ctx.window.MRR.zoomController = { reset() { zoom.resets += 1; }, isZoomed: () => false };
+  loadScript(resolve(STATIC, "media-el.js"), ctx);
   loadScript(resolve(STATIC, "feed-view.js"), ctx);
   const feed = ctx.document.createElement("div");
   feed.id = "feed";

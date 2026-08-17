@@ -112,11 +112,9 @@
 
   function downloadOne(item) {
     return new Promise((resolve, reject) => {
-      const el = item.media_type === "video" ? document.createElement("video") : new Image();
+      const el = MRR.mediaEl.create({ url: item.media_url, type: item.media_type }, item.id, {});
       if (item.media_type === "video") {
         el.autoplay = true;
-        el.setAttribute("playsinline", "");
-        el.setAttribute("webkit-playsinline", "");
         el.muted = true;
         el.preload = "auto";
       }
@@ -136,7 +134,6 @@
         () => settle(reject, new Error("media load failed")),
         { once: true }
       );
-      el.src = `/api/media/proxy?url=${encodeURIComponent(item.media_url)}&item_id=${encodeURIComponent(item.id)}`;
     });
   }
 
