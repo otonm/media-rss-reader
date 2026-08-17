@@ -22,6 +22,7 @@ from collections.abc import AsyncIterator
 from contextlib import aclosing
 from urllib.parse import urljoin, urlsplit
 
+import aiosqlite
 import httpx
 
 from src.config import settings
@@ -155,10 +156,12 @@ async def _mark_dead(url: str, item_id: str | None) -> None:
     Uses its own DB connection: callers may run this after the request-scoped
     connection is closed.
     """
-    await run_with_own_db(
-        f"mark_url_dead_and_maybe_drop for {loggable(url)}",
-        lambda db: mark_url_dead_and_maybe_drop(url, item_id, db),
-    )
+
+    async def _write(db: aiosqlite.Connection) -> None:
+        await mark_url_dead_and_maybe_drop(url, item_id, db)
+        await db.commit()
+
+    await run_with_own_db(f"mark_url_dead_and_maybe_drop for {loggable(url)}", _write)
 
 
 async def open_upstream(
@@ -354,10 +357,11 @@ async def tee_to_cache(
                     f"nothing cached, the prefetcher will warm it later (request_id={request_id})"
                 )
 
-    await run_with_own_db(
-        f"record_media_hash for {safe_url}",
-        lambda db: record_media_hash(url, digest.hexdigest(), db),
-    )
+    async def _write(db: aiosqlite.Connection) -> None:
+        await record_media_hash(url, digest.hexdigest(), db)
+        await db.commit()
+
+    await run_with_own_db(f"record_media_hash for {safe_url}", _write)
 
 
 async def fetch_to_cache(url: str, item_id: str, client: httpx.AsyncClient, request_id: str | None = None) -> None:

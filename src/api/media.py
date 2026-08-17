@@ -206,9 +206,8 @@ async def report_media_failed(
     # write_transaction because get_db shares one connection across requests and
     # sqlite3's implicit transaction is per connection: even a single-statement
     # write needs the lock, or it commits whatever another coroutine has in
-    # flight. mark_url_dead_and_maybe_drop also commits internally, which under
-    # the lock merely splits this into two transactions instead of interleaving
-    # it with another request's.
+    # flight. mark_url_dead_and_maybe_drop doesn't commit; this call owns the
+    # transaction boundary.
     async with write_transaction(db):
         dropped = await mark_url_dead_and_maybe_drop(url, item_id, db)
 

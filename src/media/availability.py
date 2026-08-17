@@ -109,13 +109,14 @@ async def _all_dead(db: aiosqlite.Connection, urls: list[str]) -> bool:
 async def mark_url_dead_and_maybe_drop(url: str, item_id: str | None, db: aiosqlite.Connection) -> list[str]:
     """Record `url` as dead. For every item that contains it, if every URL
     of that item is now dead, DELETE the row and tombstone it. Returns the
-    IDs of items dropped by this call."""
+    IDs of items dropped by this call.
+
+    Does not commit — the caller owns the transaction boundary."""
     logger.debug(f"mark_url_dead_and_maybe_drop: recording dead url={loggable(url)} item_id={loggable(item_id)}")
     await db.execute("INSERT OR IGNORE INTO dead_urls (url) VALUES (?)", (url,))
 
     candidates = await _candidate_items(db, url, item_id)
     if not candidates:
-        await db.commit()
         return []
 
     dropped: list[str] = []
@@ -135,5 +136,4 @@ async def mark_url_dead_and_maybe_drop(url: str, item_id: str | None, db: aiosql
         )
 
     logger.debug(f"mark_url_dead_and_maybe_drop dropped {len(dropped)} item(s)")
-    await db.commit()
     return dropped

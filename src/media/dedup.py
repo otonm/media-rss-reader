@@ -149,6 +149,8 @@ async def record_media_hash(url: str, digest: str, db: aiosqlite.Connection) -> 
     on a perceptual hash, which also catches re-encodes and resizes.
 
     Returns the dropped item id, or None when nothing was dropped.
+
+    Does not commit — the caller owns the transaction boundary.
     """
     phash = await _compute_phash(url)
     await db.execute(
@@ -168,15 +170,12 @@ async def record_media_hash(url: str, digest: str, db: aiosqlite.Connection) -> 
         reason = f"visually identical to {loggable(twins[0])}" if twins else ""
 
     if not twins:
-        await db.commit()
         return None
 
     logger.debug(f"record_media_hash: {loggable(url)} duplicates {len(twins)} other url(s)")
     row = await _newer_item_for_url(db, url, twins)
     if row is None:
-        await db.commit()
         return None
 
     await _drop_item(db, row, reason)
-    await db.commit()
     return row["id"]

@@ -1,3 +1,4 @@
+import contextlib
 import json
 import logging
 
@@ -128,6 +129,24 @@ async def test_repeated_calls_are_idempotent(db: aiosqlite.Connection) -> None:
     async with db.execute("SELECT url FROM dead_urls") as cur:
         rows = await cur.fetchall()
     assert [r[0] for r in rows] == ["http://x.com/a.jpg"]
+
+
+async def test_mark_dead_rolls_back_on_failure(db: aiosqlite.Connection) -> None:
+    """A failure part-way through must leave dead_urls unchanged.
+
+    The callee no longer commits, so write_transaction's rollback is the only
+    thing standing between a mid-flight failure and a half-applied delete.
+    """
+    from src.db.connection import write_transaction
+
+    url = "https://example.com/a.jpg"
+    with contextlib.suppress(RuntimeError):
+        async with write_transaction(db):
+            await mark_url_dead_and_maybe_drop(url, None, db)
+            raise RuntimeError("boom")
+
+    async with db.execute("SELECT COUNT(*) FROM dead_urls WHERE url = ?", (url,)) as cur:
+        assert (await cur.fetchone())[0] == 0
 
 
 async def test_unknown_item_id_marks_dead_only(db: aiosqlite.Connection) -> None:
