@@ -22,7 +22,6 @@
       mediaLoadTimeoutMs: num(c.mediaLoadTimeoutS, 10) * 1000,
       zoomTransitionMs: num(c.zoomTransitionMs, 200),
       uiDebug: num(c.uiDebug, 0) === 1,
-      autoscroll: false,
     };
   }
 

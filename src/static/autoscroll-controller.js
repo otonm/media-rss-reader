@@ -27,6 +27,8 @@
     onAutoscrollChanged: null,
   };
 
+  function isEnabled() { return state.autoscroll; }
+
   function setAutoscroll(on) {
     state.autoscroll = on;
     document.querySelectorAll("#feed video").forEach((v) => { v.loop = !on; });
@@ -130,5 +132,5 @@
 
   // suspend() is unbind(): the zoom controller stops the advance while an
   // image is zoomed, and calls reset(wrap) to re-arm it on zoom-out.
-  MRR.autoscrollController = { setAutoscroll, bindIfVisible, reset, suspend: unbind };
+  MRR.autoscrollController = { setAutoscroll, isEnabled, bindIfVisible, reset, suspend: unbind };
 })();

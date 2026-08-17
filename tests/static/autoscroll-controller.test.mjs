@@ -294,3 +294,47 @@ test("bindIfVisible for a non-gif wrap is not affected by the swap (image/video 
   ctx.window.MRR.autoscrollController.bindIfVisible(vidWrap);
   assert.equal(vidWrap.children[0].tagName, "VIDEO", "video wrap keeps its <video>");
 });
+
+// ---------------------------------------------------------------------------
+// A video mounted after the last toggle must still get the right loop flag.
+// setAutoscroll's own sweep only touches videos already in the DOM at
+// toggle time; a video that loads afterwards gets its `loop` from
+// feed-view's wireVideo, which must read the live autoscrollController
+// state (isEnabled()) rather than a config snapshot taken at toggle time.
+// ---------------------------------------------------------------------------
+
+test("a video mounted after the toggle still gets the right loop flag", () => {
+  const ctx = createDomContext();
+  const items = [{ id: "i0", media_type: "image", media_url: "https://example/i0.jpg" }];
+  ctx.window.MRR.itemStore = {
+    items,
+    getItems: () => items,
+    getCurrentIndex: () => 0,
+    getItemAt: (i) => items[i],
+    findIndexById: (id) => items.findIndex((it) => it.id === id),
+    setCurrentIndex: () => {},
+  };
+  ctx.window.MRR.config = { imageAutoscrollDelayMs: MIN_DWELL_MS };
+  ctx.window.MRR.scrollController = { observe() {} };
+  loadScript(resolve(STATIC, "autoscroll-controller.js"), ctx);
+  loadScript(resolve(STATIC, "feed-view.js"), ctx);
+
+  const feed = ctx.document.createElement("div");
+  feed.id = "feed";
+  ctx.document.register(feed);
+  ctx.window.MRR.feedView.renderInitial(items);
+
+  // Toggle on; the sweep in setAutoscroll runs over zero videos (none mounted yet).
+  ctx.window.MRR.autoscrollController.setAutoscroll(true);
+
+  // Now mount a video AFTER the toggle.
+  const item1 = { id: "i1", media_type: "video", media_url: "https://example/i1.mp4" };
+  items.push(item1);
+  ctx.window.MRR.feedView.appendItem(item1);
+  const el = ctx.document.createElement("video");
+  ctx.window.MRR.feedView.onItemLoaded("i1", el);
+
+  const wrap = feed.children.find((c) => c.dataset.id === "i1");
+  const v = wrap.querySelector("video");
+  assert.equal(v.loop, false, "autoscroll on means videos do not loop");
+});

@@ -242,9 +242,8 @@
 
   function setAutoscroll(on) {
     MRR.autoscrollController.setAutoscroll(on);
-    MRR.config.autoscroll = on;
     const btn = document.getElementById("btn-autoscroll");
-    btn.setAttribute("aria-pressed", String(on));
+    btn.setAttribute("aria-pressed", String(MRR.autoscrollController.isEnabled()));
     collapseControls();
   }
 
@@ -263,8 +262,7 @@
       });
     }
     document.getElementById("btn-autoscroll").addEventListener("click", () => {
-      const next = document.getElementById("btn-autoscroll").getAttribute("aria-pressed") !== "true";
-      setAutoscroll(next);
+      setAutoscroll(!MRR.autoscrollController.isEnabled());
     });
     document.getElementById("btn-mute").addEventListener("click", () => {
       setMuted(!state.muted);

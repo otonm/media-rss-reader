@@ -84,7 +84,7 @@
     el.setAttribute("webkit-playsinline", "");
     el.setAttribute("controls", "");
     el.muted = MRR.controls?.isMuted() ?? true;
-    el.loop = !MRR.config.autoscroll;
+    el.loop = !MRR.autoscrollController.isEnabled?.();
     // Track explicit user pauses only. The browser fires spurious
     // 'volumechange' and 'seeking' events for its own reasons (autoplay
     // policy adjustments, end-of-video seek-backs, visibility changes);
