@@ -125,7 +125,6 @@ test("onItemLoaded for a lookahead item does NOT remove the currently-playing vi
   // scrollController stub.
   ctx.window.MRR.scrollController = { observe() {} };
   // Now load feed-view.
-  loadScript(resolve(STATIC, "media-el.js"), ctx);
   loadScript(resolve(STATIC, "feed-view.js"), ctx);
 
   const feed = ctx.document.createElement("div");
@@ -218,15 +217,6 @@ test("markSeen(id) is a no-op for an id not in the DOM", () => {
 // ---------------------------------------------------------------------------
 // Video controls + userInteracted tests.
 // ---------------------------------------------------------------------------
-
-test("video wraps have the `controls` attribute set", () => {
-  const { ctx, feed, items } = setupHarness();
-  const video = ctx.window.MRR.mediaEl.create({ url: items[0].media_url, type: "video" }, "id0", {});
-  ctx.window.MRR.feedView.onItemLoaded("id0", video);
-  const wrap = feed.children.find((c) => c.dataset.id === "id0");
-  const v = wrap.querySelector("video");
-  assert.equal(v.getAttribute("controls"), "", "video must have the `controls` attribute set");
-});
 
 test("image wraps do NOT have any video-specific attributes leak onto the <img>", () => {
   const { ctx, feed } = setupHarness();

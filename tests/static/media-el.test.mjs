@@ -29,6 +29,7 @@ test("create returns a video carrying playsinline", () => {
   const el = ctx.window.MRR.mediaEl.create({ url: "https://e.com/v.mp4", type: "video" }, "i1", {});
   assert.equal(el.tagName, "VIDEO");
   assert.ok(el.getAttribute("playsinline") !== null);
+  assert.ok(el.getAttribute("controls") !== null);
 });
 
 test("create defers offscreen slides", () => {
