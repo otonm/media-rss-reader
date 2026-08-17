@@ -1,5 +1,6 @@
 """FastAPI application entry point."""
 
+import json
 import logging
 import time
 from collections.abc import AsyncGenerator
@@ -42,26 +43,24 @@ _index_path = _static_dir / "index.html"
 
 
 def _build_html() -> str:
-    style = (
-        f"<style>:root{{"
-        f"--feed-initial-count:{settings.feed_initial_count};"
-        f"--image-autoscroll-delay-s:{settings.image_autoscroll_delay_s};"
-        f"--media-load-timeout-s:{settings.media_load_timeout_s};"
-        f"--zoom-transition-ms:{settings.zoom_transition_ms};"
-        f"--ui-debug:{settings.ui_debug};"
-        f"}}</style>"
-    )
+    config = {
+        "feedInitialCount": settings.feed_initial_count,
+        "imageAutoscrollDelayS": settings.image_autoscroll_delay_s,
+        "mediaLoadTimeoutS": settings.media_load_timeout_s,
+        "zoomTransitionMs": settings.zoom_transition_ms,
+        "uiDebug": settings.ui_debug,
+    }
+    # `/` is escaped so a value containing "</script>" cannot close the tag
+    # early. json.dumps escapes quotes and backslashes but not slashes.
+    payload = json.dumps(config).replace("/", "\\/")
+    block = f"<script>window.MRR_CONFIG = {payload};</script>"
     # Per-startup token: a constant package version lets browser/service-worker
     # caches serve stale assets across deploys.
     v = str(int(time.time()))
-    html = _index_path.read_text().replace("<!-- CONFIG_VARS -->", style).replace("{{VERSION}}", v)
-    logger.debug(f"_build_html: injected {style} (asset version {v})")
+    html = _index_path.read_text().replace("<!-- CONFIG_VARS -->", block).replace("{{VERSION}}", v)
+    logger.debug(f"_build_html: injected {block} (asset version {v})")
     if settings.ui_debug:
         logger.info("UI_DEBUG=1 — the browser overlay is enabled")
-    # The injected block must land after the stylesheet link or style.css's
-    # :root defaults win the cascade and every env-supplied value is ignored.
-    if "style.css" in html and html.index("style.css") > html.index("--ui-debug"):
-        logger.error("index.html injects CSS variables BEFORE style.css — env config will be ignored")
     return html
 
 

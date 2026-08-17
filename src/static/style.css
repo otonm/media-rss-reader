@@ -17,10 +17,6 @@
   --spinner-border: 3px;
   --control-btn-size: 44px;
   --counter-size: 13px;
-  --feed-initial-count: 10;
-  --image-autoscroll-delay-s: 2;
-  --zoom-transition-ms: 200;
-  --ui-debug: 0;
 }
 
 html[data-theme="dark"] {

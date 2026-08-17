@@ -14,10 +14,6 @@
   <link rel="apple-touch-icon" href="/static/icon-192.png">
   <link rel="stylesheet" href="/static/style.css?v={{VERSION}}">
   <!-- CONFIG_VARS -->
-  <!-- ^ must stay AFTER style.css. Both set the same custom properties on
-       :root with identical specificity, so the later declaration wins. With
-       this block first, style.css's defaults silently overrode every value
-       injected from the environment. -->
 </head>
 <body>
   <div id="feed" aria-label="Media feed"></div>

@@ -1,7 +1,7 @@
 // ---------------------------------------------------------------------------
 // app.js — startup, configuration, keymap, module wiring
 //
-// Reads config from CSS custom properties injected by the backend in
+// Reads config from window.MRR_CONFIG, injected by the backend in
 // src/main.py:_build_html. Initializes all modules in dependency order
 // and kicks off the initial feed load.
 //
@@ -14,18 +14,14 @@
   const MRR = (window.MRR = window.MRR || {});
 
   function readConfig() {
-    const root = document.documentElement;
-    const cs = getComputedStyle(root);
-    const num = (name, fallback) => {
-      const v = parseInt(cs.getPropertyValue(name).trim(), 10);
-      return Number.isFinite(v) ? v : fallback;
-    };
+    const c = window.MRR_CONFIG || {};
+    const num = (v, fallback) => (Number.isFinite(v) ? v : fallback);
     MRR.config = {
-      feedInitialCount: num("--feed-initial-count", 10),
-      imageAutoscrollDelayMs: num("--image-autoscroll-delay-s", 2) * 1000,
-      mediaLoadTimeoutMs: num("--media-load-timeout-s", 10) * 1000,
-      zoomTransitionMs: num("--zoom-transition-ms", 200),
-      uiDebug: num("--ui-debug", 0) === 1,
+      feedInitialCount: num(c.feedInitialCount, 10),
+      imageAutoscrollDelayMs: num(c.imageAutoscrollDelayS, 2) * 1000,
+      mediaLoadTimeoutMs: num(c.mediaLoadTimeoutS, 10) * 1000,
+      zoomTransitionMs: num(c.zoomTransitionMs, 200),
+      uiDebug: num(c.uiDebug, 0) === 1,
       autoscroll: false,
       mutedDefault: true,
     };
