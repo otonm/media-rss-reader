@@ -139,7 +139,6 @@
 
   const state = {
     muted: true,
-    showSeen: false,
   };
 
   // -------------------------------------------------------------------------
@@ -236,10 +235,9 @@
   }
 
   function setShowSeen(on) {
-    state.showSeen = !!on;
-    const btn = document.getElementById("btn-show-seen");
-    btn.setAttribute("aria-pressed", String(on));
     MRR.app.setShowSeen(on);
+    const btn = document.getElementById("btn-show-seen");
+    btn.setAttribute("aria-pressed", String(MRR.itemStore.getShowSeen()));
     collapseControls();
   }
 
@@ -258,8 +256,7 @@
       setMuted(!state.muted);
     });
     document.getElementById("btn-show-seen").addEventListener("click", () => {
-      const next = document.getElementById("btn-show-seen").getAttribute("aria-pressed") !== "true";
-      setShowSeen(next);
+      setShowSeen(!MRR.itemStore.getShowSeen());
     });
     document.getElementById("btn-status").addEventListener("click", () => {
       if (statusModal.classList.contains("open")) {
@@ -279,13 +276,9 @@
     });
     setMuted(true);
     setAutoscroll(false);
-    // The show-seen button starts in 'off' state. The actual filter
-    // is read from localStorage in app.init() before the first fetch;
-    // sync the button's aria-pressed to that value here so the UI
-    // matches the on-disk preference after a reload.
-    let stored = false;
-    try { stored = localStorage.getItem("showSeen") === "1"; } catch (e) { /* ignore */ }
-    setShowSeen(stored);
+    // app.init() already reads localStorage and calls MRR.itemStore.setShowSeen()
+    // before controls.init() runs; just mirror that state onto the button.
+    document.getElementById("btn-show-seen").setAttribute("aria-pressed", String(MRR.itemStore.getShowSeen()));
     initDebugOverlay();
   }
 
