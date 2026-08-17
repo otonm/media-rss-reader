@@ -13,6 +13,7 @@ import respx
 from httpx import AsyncClient
 
 from src.media.normalize import media_key
+from tests.conftest import index_media_urls
 
 
 def _pinned(url: str) -> str:
@@ -472,7 +473,7 @@ async def _register_proxy_url(db: aiosqlite.Connection, url: str) -> None:
         "INSERT INTO items(id, feed_id, guid, media_url, media_type) VALUES ('iproxy', 'fproxy', 'g', ?, 'image')",
         (url,),
     )
-    await db.commit()
+    await index_media_urls(db)
 
 
 async def test_proxy_cache_hit(
@@ -683,7 +684,7 @@ async def test_proxy_404_marks_item_unavailable(
            VALUES (?, ?, ?, ?, ?, 'image')""",
         (item_id, feed_id, "g1", "T", url),
     )
-    await db.commit()
+    await index_media_urls(db)
 
     with respx.mock:
         respx.get(_pinned(url)).mock(return_value=httpx.Response(404))
@@ -1187,7 +1188,7 @@ async def test_proxy_cache_hit_evicted_before_send_is_not_a_500(
         "INSERT INTO items(id, feed_id, guid, media_url, media_type) VALUES ('i1','f1','g1',?,'image')",
         (url,),
     )
-    await db.commit()
+    await index_media_urls(db)
 
     path = cache_mod._cache_path(url)
     path.write_bytes(b"cached")
@@ -1355,7 +1356,7 @@ async def test_proxy_502_carries_the_upstream_duration(
     await db.execute(
         "INSERT INTO items(id, feed_id, guid, media_url, media_type) VALUES ('i1','f1','g1',?,'image')", (url,)
     )
-    await db.commit()
+    await index_media_urls(db)
     mock_http.get(_pinned(url)).mock(return_value=httpx.Response(404))
 
     resp = await client.get("/api/media/proxy", params={"url": url})
@@ -1455,7 +1456,7 @@ async def test_item_id_is_escaped_through_open_upstream_and_mark_dead(
     await db.execute(
         "INSERT INTO items(id, feed_id, guid, media_url, media_type) VALUES ('i1','f1','g1',?,'image')", (url,)
     )
-    await db.commit()
+    await index_media_urls(db)
     mock_http.get(_pinned(url)).mock(return_value=httpx.Response(404))
 
     caplog.set_level(logging.DEBUG, logger="src")
@@ -1536,7 +1537,7 @@ async def test_proxy_serves_a_gallery_slide_with_a_non_ascii_url(
            VALUES ('i1', 'f1', 'g1', 'http://example.com/one.jpg', 'image', ?)""",
         (json.dumps([{"url": "http://example.com/one.jpg", "type": "image"}, {"url": slide, "type": "image"}]),),
     )
-    await db.commit()
+    await index_media_urls(db)
     mock_http.get(_pinned(slide)).mock(
         return_value=httpx.Response(200, content=b"jpg", headers={"content-type": "image/jpeg"})
     )
@@ -1700,7 +1701,7 @@ async def test_is_known_media_url_primary_and_gallery(db: aiosqlite.Connection) 
         " VALUES ('i1', 'f1', 'g1', 'http://primary.jpg', 'image',"
         ' \'[{"url":"http://slide-a.jpg","type":"image"},{"url":"http://slide-b.jpg","type":"image"}]\')'
     )
-    await db.commit()
+    await index_media_urls(db)
     assert await is_known_media_url("http://primary.jpg", db) is True
     assert await is_known_media_url("http://slide-b.jpg", db) is True
     assert await is_known_media_url("http://not-in-items.jpg", db) is False
@@ -1750,7 +1751,7 @@ async def test_proxy_exception_uses_logger_exception(
     url = "http://example.com/transport.jpg"
     await db.execute("INSERT INTO feeds(id,url,title) VALUES ('f','http://x','X')")
     await db.execute("INSERT INTO items(id,feed_id,guid,media_url,media_type) VALUES ('i','f','g',?, 'image')", (url,))
-    await db.commit()
+    await index_media_urls(db)
     with respx.mock:
         respx.get(fetch_mod._pinned_url(url, "93.184.216.34")).mock(side_effect=httpx.ConnectError("boom"))
         caplog.set_level(logging.WARNING, logger="src.api.media")
@@ -1792,7 +1793,7 @@ async def test_proxy_upstream_error_detail(
     url = "http://example.com/missing.jpg"
     await db.execute("INSERT INTO feeds(id,url,title) VALUES ('f','http://x','X')")
     await db.execute("INSERT INTO items(id,feed_id,guid,media_url,media_type) VALUES ('i','f','g',?, 'image')", (url,))
-    await db.commit()
+    await index_media_urls(db)
     with respx.mock:
         respx.get(fetch_mod._pinned_url(url, "93.184.216.34")).mock(return_value=httpx.Response(404))
         resp = await client.get(f"/api/media/proxy?url={url}")
@@ -1813,7 +1814,7 @@ async def test_proxy_transport_error_detail(
     url = "http://example.com/unreachable.jpg"
     await db.execute("INSERT INTO feeds(id,url,title) VALUES ('f','http://x','X')")
     await db.execute("INSERT INTO items(id,feed_id,guid,media_url,media_type) VALUES ('i','f','g',?, 'image')", (url,))
-    await db.commit()
+    await index_media_urls(db)
     with respx.mock:
         respx.get(fetch_mod._pinned_url(url, "93.184.216.34")).mock(side_effect=httpx.ConnectError("boom"))
         resp = await client.get(f"/api/media/proxy?url={url}")
@@ -2401,7 +2402,7 @@ async def _seed_item(db: aiosqlite.Connection, media_json: str | None = None) ->
         " VALUES ('i1', 'f1', 'g1', 't', 'https://i.redd.it/a.jpg', 'image', ?)",
         (media_json,),
     )
-    await db.commit()
+    await index_media_urls(db)
 
 
 async def test_report_media_failed_drops_the_item_and_tombstones_it(

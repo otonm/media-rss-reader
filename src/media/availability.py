@@ -11,99 +11,53 @@ read by _refresh_feed to skip re-insert on the next feed poll.
 
 from __future__ import annotations
 
-import json
 import logging
 
 import aiosqlite
 
 from src.logging_utils import loggable
-from src.media.normalize import item_slides
 
 logger = logging.getLogger(__name__)
 
 
-async def _candidate_items(db: aiosqlite.Connection, url: str, item_id: str | None) -> list[aiosqlite.Row]:
-    """Return item rows that may contain `url`, deduplicated by item id.
+async def _candidate_items(db: aiosqlite.Connection, url: str, _item_id: str | None) -> list[aiosqlite.Row]:
+    """Every item row that actually contains `url`.
 
-    Searches two ways and merges the results:
-    1. By item_id (given by the caller who observed the failure), but only
-       if that item actually contains `url`.
-    2. By media_url (to find all items sharing the same primary URL).
-
-    Non-primary gallery slide URLs are only reachable through the item_id
-    path — they are not a row's media_url — so callers must pass item_id
-    when the observed failure was on a slide.
+    One join through media_urls. `_item_id` is now unused: it existed only
+    because a non-primary gallery slide URL was unreachable by query, and every
+    slide is indexed now. It stays in the signature so callers need not change.
     """
-    seen: dict[str, aiosqlite.Row] = {}
-
-    if item_id is not None:
-        async with db.execute(
-            "SELECT id, feed_id, guid, media_url, media_type, media_json FROM items WHERE id = ?",
-            (item_id,),
-        ) as cur:
-            for row in await cur.fetchall():
-                # The caller supplies item_id and url independently — the proxy
-                # takes both from the query string — so an item that does not
-                # actually contain this URL must not be a deletion candidate.
-                if url in _item_urls(row):
-                    seen[row["id"]] = row
-
     async with db.execute(
-        "SELECT id, feed_id, guid, media_url, media_type, media_json FROM items WHERE media_url = ?",
+        "SELECT i.id, i.feed_id, i.guid, i.media_url FROM items i "
+        "JOIN media_urls m ON m.item_id = i.id WHERE m.url = ?",
         (url,),
     ) as cur:
-        for row in await cur.fetchall():
-            seen[row["id"]] = row
-
-    return list(seen.values())
-
-
-def _item_urls(row: aiosqlite.Row) -> list[str]:
-    """Return the full media URL list for an item row (primary + gallery)."""
-    return [slide["url"] for slide in item_slides(row)]
-
-
-def _escape_like(value: str) -> str:
-    return value.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
+        return list(await cur.fetchall())
 
 
 async def is_known_media_url(url: str, db: aiosqlite.Connection) -> bool:
-    """True if `url` is the primary media_url of some item, or any slide of a gallery.
+    """True if `url` is any media URL — primary or gallery slide — of some item.
 
-    Two-tier: the indexed primary lookup covers single-media items and a
-    gallery's primary URL; the media_json scan covers gallery slide URLs that
-    live only in the JSON array. Exact membership is verified in Python after
-    the LIKE prefilter, so the prefilter can only ever be too generous.
-
-    The pattern is built with json.dumps so it carries the same escaping the
-    column holds: media_json is written with ensure_ascii=True, so a URL
-    containing a non-ASCII character is stored as a \\uXXXX escape, and a
-    pattern built from the raw value could never match it.
+    One indexed lookup. See spec.md §8.3 and §12.4: this is the gate that stops
+    the media proxy being an open relay and stops a client deleting rows for a
+    URL the library has never stored.
     """
-    async with db.execute("SELECT 1 FROM items WHERE media_url = ? LIMIT 1", (url,)) as cur:
-        if await cur.fetchone() is not None:
-            return True
-    # json.dumps(url)[1:-1] is the escaped body without the surrounding quotes.
-    pattern = f'%"{_escape_like(json.dumps(url)[1:-1])}"%'
+    async with db.execute("SELECT 1 FROM media_urls WHERE url = ? LIMIT 1", (url,)) as cur:
+        return await cur.fetchone() is not None
+
+
+async def _all_dead(db: aiosqlite.Connection, item_id: str) -> bool:
+    """True if every media URL of `item_id` is recorded in dead_urls."""
     async with db.execute(
-        "SELECT id, media_url, media_type, media_json FROM items WHERE media_json LIKE ? ESCAPE '\\'",
-        (pattern,),
+        "SELECT COUNT(*) FROM media_urls m "
+        "LEFT JOIN dead_urls d ON d.url = m.url "
+        "WHERE m.item_id = ? AND d.url IS NULL",
+        (item_id,),
     ) as cur:
-        for row in await cur.fetchall():
-            if url in _item_urls(row):
-                return True
-    return False
-
-
-async def _all_dead(db: aiosqlite.Connection, urls: list[str]) -> bool:
-    """True if every URL in `urls` is recorded in dead_urls."""
-    if not urls:
-        return False
-    placeholders = ",".join("?" * len(urls))
-    # Only placeholder count is interpolated; URL values remain bound.
-    async with db.execute(f"SELECT url FROM dead_urls WHERE url IN ({placeholders})", urls) as cur:  # noqa: S608
-        dead = {row["url"] for row in await cur.fetchall()}
-    return dead.issuperset(urls)
+        alive = (await cur.fetchone())[0]
+    async with db.execute("SELECT COUNT(*) FROM media_urls WHERE item_id = ?", (item_id,)) as cur:
+        total = (await cur.fetchone())[0]
+    return total > 0 and alive == 0
 
 
 async def drop_item(db: aiosqlite.Connection, row: aiosqlite.Row) -> None:
@@ -137,14 +91,13 @@ async def mark_url_dead_and_maybe_drop(url: str, item_id: str | None, db: aiosql
 
     dropped: list[str] = []
     for row in candidates:
-        urls = _item_urls(row)
-        if not await _all_dead(db, urls):
+        if not await _all_dead(db, row["id"]):
             continue
         await drop_item(db, row)
         dropped.append(row["id"])
         logger.debug(
             f"dropped item {loggable(row['id'])} (feed={loggable(row['feed_id'])} "
-            f"guid={loggable(row['guid'])}): all {len(urls)} media URL(s) dead"
+            f"guid={loggable(row['guid'])}): every media URL is dead"
         )
 
     logger.debug(f"mark_url_dead_and_maybe_drop dropped {len(dropped)} item(s)")

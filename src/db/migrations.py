@@ -71,6 +71,17 @@ async def _merge_unavailable_guids(db: aiosqlite.Connection) -> None:
     )
 
 
+# v24's statement, named so tests that insert items with raw SQL can mirror them
+# into media_urls with the exact statement the schema uses.
+BACKFILL_MEDIA_URLS = (
+    "INSERT OR IGNORE INTO media_urls (url, item_id) "
+    "SELECT COALESCE(json_extract(s.value, '$.url'), i.media_url), i.id "
+    "FROM items i LEFT JOIN json_each(i.media_json) s "
+    "WHERE json_valid(COALESCE(i.media_json, 'null')) "
+    "UNION "
+    "SELECT i.media_url, i.id FROM items i WHERE i.media_url IS NOT NULL"
+)
+
 MIGRATIONS: list[MigrationStep] = [
     # v1: index on fetched_at to support age-based pruning queries
     "CREATE INDEX IF NOT EXISTS idx_items_fetched_at ON items(fetched_at)",
@@ -174,6 +185,24 @@ MIGRATIONS: list[MigrationStep] = [
     # v21: drop the now-empty table. Separate step because db.execute takes one
     # statement, and because a crash between the two replays v20 harmlessly.
     "DROP TABLE IF EXISTS unavailable_guids",
+    # v22: media_urls — every media URL of every item, one row each, indexed.
+    # Replaces the two-tier known-URL gate whose second tier was an unindexed
+    # `media_json LIKE '%...%'` scan of the whole items table.
+    (
+        "CREATE TABLE IF NOT EXISTS media_urls ("
+        "url TEXT NOT NULL, "
+        "item_id TEXT NOT NULL REFERENCES items(id) ON DELETE CASCADE, "
+        "PRIMARY KEY (url, item_id))"
+    ),
+    # v23: the cascade deletes by item_id, and _candidate_items joins on it.
+    "CREATE INDEX IF NOT EXISTS idx_media_urls_item_id ON media_urls(item_id)",
+    # v24: backfill from media_json. json_each is built into SQLite, so this
+    # stays a SQL step. COALESCE covers rows written before media_json existed:
+    # their only URL is media_url. INSERT OR IGNORE makes the replay idempotent.
+    # Verified against three edge cases on SQLite 3.50: a gallery with a
+    # non-ASCII slide URL, a row with media_json NULL, and a row with
+    # unparseable media_json. All three yield exactly their real URLs.
+    BACKFILL_MEDIA_URLS,
 ]
 
 

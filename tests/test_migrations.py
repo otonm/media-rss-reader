@@ -1,3 +1,4 @@
+import json
 from pathlib import Path
 
 import aiosqlite
@@ -172,4 +173,37 @@ async def test_v20_merges_unavailable_guids(tmp_path: Path) -> None:
 
     async with db.execute("SELECT name FROM sqlite_master WHERE name='unavailable_guids'") as cur:
         assert await cur.fetchone() is None, "the old table must be gone"
+    await db.close()
+
+
+async def test_v22_backfills_every_slide_url(tmp_path: Path) -> None:
+    """The backfill must reproduce every URL item_slides yields, including non-ASCII."""
+    db = await open_db(str(tmp_path / "b.db"))
+    await create_schema(db)
+    for i, step in enumerate(MIGRATIONS[:21], start=1):
+        if callable(step):
+            await step(db)
+        else:
+            await db.execute(step)
+        await db.execute(f"PRAGMA user_version = {i}")
+    slide = "https://example.com/été/photo.jpg"
+    media = json.dumps(
+        [
+            {"url": "https://example.com/a.jpg", "type": "image"},
+            {"url": slide, "type": "image"},
+        ]
+    )
+    await db.execute("INSERT INTO feeds (id, url) VALUES ('f1', 'https://e.com/f')")
+    await db.execute(
+        "INSERT INTO items (id, feed_id, guid, media_url, media_type, media_json)"
+        " VALUES ('i1', 'f1', 'g1', 'https://example.com/a.jpg', 'image', ?)",
+        (media,),
+    )
+    await db.commit()
+
+    await run_migrations(db)
+
+    async with db.execute("SELECT url FROM media_urls WHERE item_id = 'i1' ORDER BY url") as cur:
+        urls = {row["url"] for row in await cur.fetchall()}
+    assert urls == {"https://example.com/a.jpg", slide}
     await db.close()

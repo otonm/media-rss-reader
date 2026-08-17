@@ -6,6 +6,7 @@ import aiosqlite
 import pytest
 
 from src.media.availability import drop_item, mark_url_dead_and_maybe_drop
+from tests.conftest import index_media_urls
 
 
 async def _insert_feed(db: aiosqlite.Connection, feed_id: str = "f1") -> None:
@@ -36,7 +37,7 @@ async def _insert_item(
                VALUES (?, ?, ?, ?, ?, 'image', ?)""",
             (item_id, feed_id, guid, "t", media_url, media_json),
         )
-    await db.commit()
+    await index_media_urls(db)
 
 
 async def test_single_media_url_404_drops_item(db: aiosqlite.Connection) -> None:
@@ -193,7 +194,7 @@ async def test_is_known_media_url_matches_a_non_ascii_gallery_slide(db: aiosqlit
            VALUES ('i1', 'f1', 'g1', 'http://example.com/first.jpg', 'image', ?)""",
         (json.dumps([{"url": "http://example.com/first.jpg", "type": "image"}, {"url": slide, "type": "image"}]),),
     )
-    await db.commit()
+    await index_media_urls(db)
 
     assert await is_known_media_url(slide, db) is True
 
@@ -229,7 +230,7 @@ async def test_dropped_item_is_not_reinserted_by_next_poll(db: aiosqlite.Connect
         "INSERT INTO items (id, feed_id, guid, media_url, media_type)"
         " VALUES ('i1', 'f1', 'g1', 'https://e.com/a.jpg', 'image')"
     )
-    await db.commit()
+    await index_media_urls(db)
 
     async with write_transaction(db):
         dropped = await mark_url_dead_and_maybe_drop("https://e.com/a.jpg", "i1", db)

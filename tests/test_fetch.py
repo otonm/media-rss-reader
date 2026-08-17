@@ -12,6 +12,7 @@ from src.media import cache as cache_mod
 from src.media import fetch as fetch_mod
 from src.media.cache import cache_read, cache_read_meta, download_claim
 from src.media.fetch import NonMediaUpstreamError, UpstreamError, fetch_to_cache, open_upstream, tee_to_cache
+from tests.conftest import index_media_urls
 
 URL = "http://example.com/photo.jpg"
 PAYLOAD = b"x" * 200_000  # several 64 KiB chunks, so a stream can be abandoned mid-way
@@ -26,7 +27,9 @@ def _pinned(url: str) -> str:
     return fetch_mod._pinned_url(url, "93.184.216.34")
 
 
-async def test_tee_streams_bytes_and_fills_cache(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+async def test_tee_streams_bytes_and_fills_cache(
+    db: aiosqlite.Connection, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
     monkeypatch.setattr(cache_mod.settings, "cache_dir", str(tmp_path))
 
     with respx.mock:
@@ -43,6 +46,11 @@ async def test_tee_streams_bytes_and_fills_cache(tmp_path: Path, monkeypatch: py
     assert path.read_bytes() == PAYLOAD
     assert cache_read_meta(URL) == "image/jpeg"
     assert _tmp_files(tmp_path) == []
+    # Read from the fixture connection, not the private one record_media_hash
+    # ran on: an uncommitted write there is invisible from any other connection,
+    # so this is what guards the commit at the end of that write.
+    async with db.execute("SELECT COUNT(*) FROM media_hashes WHERE url = ?", (URL,)) as cur:
+        assert (await cur.fetchone())[0] == 1, "the digest must survive the private connection closing"
 
 
 async def test_abandoned_stream_leaves_no_cache_entry(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -367,7 +375,7 @@ async def test_open_upstream_429_does_not_mark_dead(
            VALUES ('i1', 'f1', 'g1', 'T', ?, 'image', '2026-01-01T00:00:00')""",
         (url,),
     )
-    await db.commit()
+    await index_media_urls(db)
 
     respx.get(_pinned(url)).mock(return_value=httpx.Response(429))
     async with httpx.AsyncClient() as client:
@@ -602,7 +610,7 @@ async def _seed_item(db: aiosqlite.Connection, url: str) -> None:
            VALUES ('i1', 'f1', 'g1', 'T', ?, 'image', '2026-01-01T00:00:00')""",
         (url,),
     )
-    await db.commit()
+    await index_media_urls(db)
 
 
 async def _is_dropped(db: aiosqlite.Connection, url: str) -> bool:

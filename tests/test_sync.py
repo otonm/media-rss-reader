@@ -84,6 +84,29 @@ async def test_refresh_all_feeds_stores_media_json(db: aiosqlite.Connection, tmp
     ]
 
 
+async def test_insert_indexes_every_slide_and_the_cascade_cleans_up(db: aiosqlite.Connection, tmp_path: Path) -> None:
+    """A non-primary gallery slide is only gate-visible via media_urls, and the
+    rows must go when the item does — nothing else deletes them."""
+    f = tmp_path / "feeds.opml"
+    f.write_text(_OPML)
+    with respx.mock:
+        respx.get("https://example.com/feed.xml").mock(return_value=httpx.Response(200, text=_GALLERY_RSS))
+        async with httpx.AsyncClient() as client:
+            await sync_feeds(db, str(tmp_path), str(f), client)
+            await refresh_all_feeds(db, client)
+
+    async with db.execute("SELECT url FROM media_urls ORDER BY url") as cur:
+        assert [r["url"] for r in await cur.fetchall()] == [
+            "https://example.com/a.jpg",
+            "https://example.com/b.gif",
+        ]
+
+    await db.execute("DELETE FROM items")
+    await db.commit()
+    async with db.execute("SELECT COUNT(*) FROM media_urls") as cur:
+        assert (await cur.fetchone())[0] == 0, "ON DELETE CASCADE must clear the index"
+
+
 def _sqlite_dt(dt: datetime.datetime) -> str:
     """Format datetime as SQLite-compatible string (space separator, no microseconds)."""
     return dt.strftime("%Y-%m-%d %H:%M:%S")

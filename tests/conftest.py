@@ -18,7 +18,7 @@ from src.api import items as items_router
 from src.api import media as media_router
 from src.api import reddit_feeds as reddit_feeds_router
 from src.db.connection import get_db, open_db
-from src.db.migrations import run_migrations
+from src.db.migrations import BACKFILL_MEDIA_URLS, run_migrations
 from src.db.schema import create_schema
 from src.http_client import get_http, get_status_http
 
@@ -44,6 +44,18 @@ async def db(
     await run_migrations(conn)
     yield conn
     await conn.close()
+
+
+async def index_media_urls(db: aiosqlite.Connection) -> None:
+    """Mirror every items row into media_urls, the way _insert_item does live.
+
+    Fixtures that write items with raw SQL bypass src.feeds.sync._insert_item,
+    so the known-URL gate would find nothing. Reuses v24's backfill statement
+    verbatim so a fixture can never disagree with the schema about what URLs an
+    item has.
+    """
+    await db.execute(BACKFILL_MEDIA_URLS)
+    await db.commit()
 
 
 @pytest.fixture

@@ -6,6 +6,7 @@ prune_items()       — enforce KEEP_ITEMS and ITEMS_MAX_AGE_HOURS limits
 """
 
 import asyncio
+import json
 import logging
 from pathlib import Path
 
@@ -72,6 +73,16 @@ async def _insert_item(db: aiosqlite.Connection, item: dict) -> int:
             (item["feed_id"], item["guid"]),
         )
         logger.debug(f"Item guid={item['guid']} rejected by the insert guard; tombstoned as resolved")
+        return 0
+
+    # Every media URL of the item, indexed, so the known-URL gate is a point
+    # lookup instead of a LIKE scan over media_json.
+    slides = json.loads(item["media_json"]) if item.get("media_json") else []
+    urls = {slide["url"] for slide in slides} | {item["media_url"]}
+    await db.executemany(
+        "INSERT OR IGNORE INTO media_urls (url, item_id) VALUES (?, ?)",
+        [(url, item["id"]) for url in urls],
+    )
     return cursor.rowcount
 
 

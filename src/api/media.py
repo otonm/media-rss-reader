@@ -116,11 +116,8 @@ async def proxy_media(
     trade-off for painting the first frame immediately on a miss.
     """
     logger.debug(f"proxy_media url={loggable(url)} item_id={loggable(item_id)}")
-    # The cache lookup goes first: it is one stat against a sha256-derived name,
-    # while the gate's second tier is `media_json LIKE '%...%'`, which no index
-    # can serve — a full scan of items, for every gallery slide, on the same
-    # aiosqlite worker thread /api/items queues on. A hit needs no gate: the key
-    # is sha256(url) so it cannot escape CACHE_DIR, and a URL can only be in the
+    # The cache lookup goes first: a hit needs no gate at all, since the key is
+    # sha256(url) so it cannot escape CACHE_DIR, and a URL can only be in the
     # cache because it passed the gate on an earlier request.
     hit = await asyncio.to_thread(cache_lookup, url)
     if hit is not None:
