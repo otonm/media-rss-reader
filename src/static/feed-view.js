@@ -83,7 +83,7 @@
     el.setAttribute("playsinline", "");
     el.setAttribute("webkit-playsinline", "");
     el.setAttribute("controls", "");
-    el.muted = MRR.config.mutedDefault;
+    el.muted = MRR.controls?.isMuted() ?? true;
     el.loop = !MRR.config.autoscroll;
     // Track explicit user pauses only. The browser fires spurious
     // 'volumechange' and 'seeking' events for its own reasons (autoplay
@@ -422,7 +422,7 @@
     }
     state.currentVisibleEl = el;
     if (el && el.tagName === "VIDEO") {
-      el.muted = MRR.config.mutedDefault;
+      MRR.controls?.applyMute(el);
       if (!el.userPaused) {
         el.play().catch((err) => console.warn("video play rejected", err));
       }

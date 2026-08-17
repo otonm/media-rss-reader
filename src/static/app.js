@@ -23,7 +23,6 @@
       zoomTransitionMs: num(c.zoomTransitionMs, 200),
       uiDebug: num(c.uiDebug, 0) === 1,
       autoscroll: false,
-      mutedDefault: true,
     };
   }
 

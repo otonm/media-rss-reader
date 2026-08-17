@@ -216,10 +216,24 @@
     document.getElementById("controls")?.classList.remove("expanded");
   }
 
+  function isMuted() { return state.muted; }
+
+  // Sweeps every <video> under root (defaults to the whole document). When
+  // root is itself a <video>, it is the sole target rather than swept
+  // descendants of it.
+  function applyMute(root) {
+    const muted = isMuted();
+    const scope = root || document;
+    if (scope.tagName === "VIDEO") {
+      scope.muted = muted;
+      return;
+    }
+    scope.querySelectorAll("video").forEach((v) => { v.muted = muted; });
+  }
+
   function setMuted(muted) {
     state.muted = muted;
-    MRR.config.mutedDefault = muted;
-    document.querySelectorAll("#feed video").forEach((v) => { v.muted = muted; });
+    applyMute();
     const btn = document.getElementById("btn-mute");
     btn.setAttribute("aria-pressed", String(muted));
     btn.textContent = muted ? "🔇" : "🔊";
@@ -282,5 +296,5 @@
     initDebugOverlay();
   }
 
-  MRR.controls = { init, initDebugOverlay, renderDebug, recordLoadMs };
+  MRR.controls = { init, initDebugOverlay, renderDebug, recordLoadMs, isMuted, applyMute };
 })();
