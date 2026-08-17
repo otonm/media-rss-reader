@@ -17,6 +17,7 @@ import httpx
 from src.config import settings
 from src.feeds.fetcher import _feed_id, entry_to_item, fetch_feed
 from src.feeds.opml import parse_opml
+from src.logging_utils import loggable
 from src.media.cache import evict
 
 logger = logging.getLogger(__name__)
@@ -75,6 +76,10 @@ async def _insert_item(db: aiosqlite.Connection, item: dict) -> int:
         logger.debug(f"Item guid={item['guid']} rejected by the insert guard; tombstoned as resolved")
         return 0
 
+    logger.debug(
+        f"Storing item {loggable(item['title'])} with media URL {loggable(item['media_url'])} and ID {item['id']}"
+    )
+
     # Every media URL of the item, indexed, so the known-URL gate is a point
     # lookup instead of a LIKE scan over media_json.
     slides = json.loads(item["media_json"]) if item.get("media_json") else []
@@ -84,6 +89,19 @@ async def _insert_item(db: aiosqlite.Connection, item: dict) -> int:
         [(url, item["id"]) for url in urls],
     )
     return cursor.rowcount
+
+
+async def _ingest_items(db: aiosqlite.Connection, items: list[dict]) -> int:
+    """Insert every item through the shared guard. Returns the number stored.
+
+    Both ingest paths — local files and remote fetches — go through here. When
+    the guard lived in only one of them, feeds loaded from the local directory
+    re-surfaced their seen posts on every sync (spec.md §5.6).
+    """
+    inserted = 0
+    for item in items:
+        inserted += await _insert_item(db, item)
+    return inserted
 
 
 async def local_xml_sync(db: aiosqlite.Connection, feeds_dir: str) -> None:
@@ -145,12 +163,8 @@ async def local_xml_sync(db: aiosqlite.Connection, feeds_dir: str) -> None:
 
         skip = await _skip_guids(db, feed_id)
 
-        inserted = 0
-        for entry in feed.entries:
-            item = entry_to_item(feed_id, entry, skip)
-            if item is None:
-                continue
-            inserted += await _insert_item(db, item)
+        items = [entry_to_item(feed_id, entry, skip) for entry in feed.entries]
+        inserted = await _ingest_items(db, [i for i in items if i is not None])
         logger.debug(f"Local XML sync {filename}: {inserted} new item(s)")
 
         await db.execute(
@@ -190,10 +204,7 @@ async def _refresh_feed(
         row["last_modified"] if row else None,
     )
 
-    inserted = 0
-    for item in items:
-        logger.debug(f"Storing item {item['title']} with media URL {item['media_url']} and ID {item['id']}")
-        inserted += await _insert_item(db, item)
+    inserted = await _ingest_items(db, items)
     if items:
         logger.debug(f"Feed {url}: {inserted} new, {len(items) - inserted} already in DB")
 

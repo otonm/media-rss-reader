@@ -107,6 +107,29 @@ async def test_insert_indexes_every_slide_and_the_cascade_cleans_up(db: aiosqlit
         assert (await cur.fetchone())[0] == 0, "ON DELETE CASCADE must clear the index"
 
 
+async def test_ingest_items_returns_inserted_count(db: aiosqlite.Connection) -> None:
+    """The shared insert loop counts only rows the guard actually stored."""
+    from src.feeds.sync import _ingest_items
+
+    await db.execute("INSERT INTO feeds (id, url) VALUES ('f1', 'https://e.com/f')")
+    await db.commit()
+    item = {
+        "id": "i1",
+        "feed_id": "f1",
+        "guid": "g1",
+        "title": "t",
+        "media_url": "https://e.com/a.jpg",
+        "media_key": "https://e.com/a.jpg",
+        "media_type": "image",
+        "media_json": '[{"url": "https://e.com/a.jpg", "type": "image"}]',
+        "pub_date": "2026-01-01 00:00:00",
+    }
+
+    assert await _ingest_items(db, [item]) == 1
+    # Second pass: the media_key guard rejects it, so nothing new is stored.
+    assert await _ingest_items(db, [item]) == 0
+
+
 def _sqlite_dt(dt: datetime.datetime) -> str:
     """Format datetime as SQLite-compatible string (space separator, no microseconds)."""
     return dt.strftime("%Y-%m-%d %H:%M:%S")
