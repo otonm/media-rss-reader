@@ -355,31 +355,7 @@ autoscroll must bind to the element the observer reports, not the store index.
 
 ---
 
-## 13. Frontend: zoom reset, 10 call sites → 2
-
-Verified 10: `app.js:114/120/125/130/169`, `feed-view.js:172/190/200/249/392`.
-Every one causes either an item change or a slide change — which already route
-through `setCurrentEl:392` and `onGalleryScroll:249`, described in comments as
-*the* choke points.
-
-**Files:** `src/static/{app,feed-view}.js`
-
-Trace each of the other eight to one of the two choke points, then delete it.
-Two need care and may legitimately survive:
-
-- `app.js:169` (wheel) — `spec.md` §10.8 lists wheel as its own reset trigger,
-  and a wheel event that does not change item is real. Likely stays.
-- `feed-view.js:172` (dot click) — the comment says "before the scroll", i.e. it
-  fires *ahead* of `onGalleryScroll`. If the ordering matters visually, keep it.
-
-Delete only what you can show is reached via a choke point. Six of eight is a
-good outcome here; do not force ten to two.
-
-**Verify:** `tests/static/zoom-controller.test.mjs` (288 lines).
-
----
-
-## 14. Prose → `spec.md` pointers
+## 13. Prose → `spec.md` pointers
 
 Several backend modules are ~50% rationale prose. `list_items` carries a
 **50-line docstring** (`items.py:57-107`); `fetch.py:42-77` and
@@ -401,6 +377,15 @@ Do this **last**. It touches many files and would conflict with every item above
 
 ## Declined
 
+- **Frontend: zoom reset, 10 call sites → 2.** The eight "extra" reset call sites
+  (app.js, feed-view.js dots/arrows) are synchronous and fire *before* their
+  scroll starts, resetting zoom eagerly so the picture is never seen sliding
+  while zoomed. The two "choke points" (setCurrentEl, onGalleryScroll) are
+  asynchronous and 60 ms late, and serve as fallback for paths with no input
+  event (swipes, autoscroll, onItemFailed). Deleting the eight would leave a
+  zoomed image visibly sliding for a frame or 60 ms before snapping back —
+  an observable regression, not a simplification. The two sets are a deliberate
+  ordering pair; the comments have been corrected to reflect this.
 - **Gallery dots via CSS `animation-timeline: scroll(x)`.** `paintDots`
   (`feed-view.js:213-218`) writes a `--t` property per dot on every scroll event,
   undebounced, and native scroll-driven animations express exactly this with no

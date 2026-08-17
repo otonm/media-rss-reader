@@ -246,10 +246,10 @@
       if (slides.length === 0) return;
       const idx = Math.max(0, Math.min(Math.round(gallery.scrollLeft / gallery.clientWidth), slides.length - 1));
       if (slides[idx].classList.contains("active")) return;
-      // A slide change is a navigation, same as a feed item change, so it
-      // drops the zoom. This is the gallery's setCurrentEl: every way a slide
-      // changes — the arrows, ←/→, a swipe, autoscroll — lands here, and a
-      // zoom left behind on the slide we just left comes back with it.
+      // A slide change drops any zoom. This is the fallback, not the only path:
+      // arrows and dots reset eagerly *before* their scroll, so the picture is
+      // never seen sliding while zoomed. Everything lands here eventually, 60 ms
+      // late, catching swipes and autoscroll advances.
       MRR.zoomController?.reset();
       for (let i = 0; i < slides.length; i++) {
         slides[i].classList.toggle("active", i === idx);
@@ -390,9 +390,11 @@
   // are separate index spaces (the store splices failed items), and sibling
   // walking from the observed element cannot be off by one.
   function setCurrentEl(el) {
-    // Landing on a different item drops any zoom — the single choke point for
-    // every path that moves the feed: keys, wheel, autoscroll advance, a touch
-    // scroll started beside the picture, or onItemFailed closing a gap.
+    // Landing on a different item drops any zoom. This is the fallback, not the
+    // only path: input-driven navigation (keys, arrows, dot clicks) resets
+    // eagerly *before* starting its scroll, so the picture is never seen
+    // sliding while zoomed. This catches everything with no input event —
+    // a swipe, an autoscroll advance, onItemFailed closing a gap.
     if (el !== state.currentEl) MRR.zoomController?.reset();
     state.currentEl = el;
   }
