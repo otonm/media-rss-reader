@@ -41,13 +41,21 @@
     return state.feed ? state.feed.querySelector(`.media-item[data-id="${id}"]`) : null;
   }
 
+  // Either the placeholder or the loaded media-item for an id — the two
+  // states a node in #feed can be in. Shared by isRendered and onItemFailed,
+  // which (unlike wrapById) both need to catch a duplicate/failed item
+  // regardless of which state it's in.
+  function placeholderOrMediaSelector(id) {
+    return `.placeholder[data-id="${id}"], .media-item[data-id="${id}"]`;
+  }
+
   // Is this id already on screen — as a placeholder OR a loaded media-item?
   // The DOM is the source of truth for what is rendered — deliberately not a
   // Set kept alongside it, since a second copy of that answer is exactly
   // what drifts and puts an item on screen twice. Not wrapById: a duplicate
   // placeholder (not yet a .media-item) must be caught too.
   function isRendered(id) {
-    return state.feed.querySelector(`.placeholder[data-id="${id}"], .media-item[data-id="${id}"]`) !== null;
+    return state.feed.querySelector(placeholderOrMediaSelector(id)) !== null;
   }
 
   // The only way a node enters #feed, with dedup. A duplicate node is not
@@ -353,7 +361,7 @@
   // return -1 and bails before the cache queue is rebuilt or autoscroll is
   // re-armed.
   function onItemFailed(id, reason) {
-    const el = state.feed && state.feed.querySelector(`.placeholder[data-id="${id}"], .media-item[data-id="${id}"]`);
+    const el = state.feed && state.feed.querySelector(placeholderOrMediaSelector(id));
     if (el) {
       // Close the feed up onto a neighbour before the node goes, rather than
       // letting the browser decide where the scroll lands once it vanishes.

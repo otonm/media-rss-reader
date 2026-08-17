@@ -78,7 +78,12 @@ function installItemStore(ctx, items, gifBuffer = TINY_GIF_NO_GCE) {
     activeMediaEl: (wrap) => wrap.children[0] || null,
     // setAutoscroll(true) resolves the current wrap through feedView now;
     // stub it with the same store-index lookup these fixtures already set
-    // up wraps to satisfy.
+    // up wraps to satisfy. This deliberately reproduces the OLD, deleted
+    // currentVisibleWrap behaviour (store-index only, no observed-element
+    // preference) — these dwell-timing tests don't exercise navigation
+    // divergence, so it's a faithful stand-in here, NOT a reference for
+    // correct behaviour. See "setAutoscroll(true) binds the
+    // observer-reported element..." below for the real thing.
     currentWrap: () => {
       const item = ctx.window.MRR.itemStore.getItemAt(ctx.window.MRR.itemStore.getCurrentIndex());
       return item ? ctx.document.querySelector(`#feed .media-item[data-id="${item.id}"]`) : null;
@@ -353,4 +358,63 @@ test("a video mounted after the toggle still gets the right loop flag", () => {
   const wrap = feed.children.find((c) => c.dataset.id === "i1");
   const v = wrap.querySelector("video");
   assert.equal(v.loop, false, "autoscroll on means videos do not loop");
+});
+
+// ---------------------------------------------------------------------------
+// setAutoscroll(true) must bind the element the position observer reported,
+// not a store-index lookup — spec.md §10.2. The two diverge once a neighbour
+// fails and splices the store: store index 1 named id2 before the splice,
+// but names id3 after it, while id2's DOM node (and state.currentEl) are
+// untouched. This loads the REAL feed-view.js (no currentWrap stub) so
+// setAutoscroll actually exercises feedView.currentWrap().
+// ---------------------------------------------------------------------------
+
+test("setAutoscroll(true) binds the observer-reported element, not a stale store-index lookup", () => {
+  const ctx = createDomContext();
+  const items = [
+    { id: "id1", media_type: "video", media_url: "https://example/1.mp4" },
+    { id: "id2", media_type: "video", media_url: "https://example/2.mp4" },
+    { id: "id3", media_type: "video", media_url: "https://example/3.mp4" },
+  ];
+  ctx.window.MRR.itemStore = {
+    items,
+    getItems: () => items,
+    getCurrentIndex: () => 1, // id2's pre-splice position
+    getItemAt: (i) => items[i],
+    findIndexById: (id) => items.findIndex((it) => it.id === id),
+    setCurrentIndex: () => {},
+  };
+  ctx.window.MRR.config = { autoscroll: false, mutedDefault: true, imageAutoscrollDelayMs: 50 };
+  ctx.window.MRR.scrollController = { observe() {} };
+  loadScript(resolve(STATIC, "media-el.js"), ctx);
+  loadScript(resolve(STATIC, "feed-view.js"), ctx);
+  loadScript(resolve(STATIC, "autoscroll-controller.js"), ctx);
+
+  const feed = ctx.document.createElement("div");
+  feed.id = "feed";
+  ctx.document.register(feed);
+  const view = ctx.window.MRR.feedView;
+  view.renderInitial(items);
+  items.forEach((it) => view.onItemLoaded(it.id, ctx.document.createElement("video")));
+
+  // The observer currently has id2 as the visible element.
+  view.setCurrentEl(view.wrapById("id2"));
+
+  // A neighbour (id1) fails to load: splices the store while id2's and
+  // id3's DOM nodes are untouched.
+  const originalWarn = console.warn;
+  console.warn = () => {};
+  try {
+    view.onItemFailed("id1", "boom");
+  } finally {
+    console.warn = originalWarn;
+  }
+
+  ctx.window.MRR.autoscrollController.setAutoscroll(true);
+
+  // bindIfVisible attaches the 'ended' listener only to the wrap it bound.
+  const v2 = view.wrapById("id2").querySelector("video");
+  const v3 = view.wrapById("id3").querySelector("video");
+  assert.equal(v2._listeners.get("ended")?.length, 1, "id2 (the observed element) must be bound");
+  assert.equal(v3._listeners.get("ended")?.length ?? 0, 0, "id3 (a stale store-index lookup) must NOT be bound");
 });
