@@ -55,10 +55,15 @@ async def test_feeds_columns_fresh_vs_v1_rollback() -> None:
 
     old = await open_db(":memory:")
     await create_schema(old)
-    await mig_mod.run_migrations(old)
-    await old.execute("PRAGMA user_version = 7")  # v8 is MIGRATIONS[7]; its bump was lost
+    # v8 is MIGRATIONS[7]. Apply v1..v7 normally, then apply v8's ALTER without
+    # its version bump: DDL auto-commits ahead of the bump, so a crash right
+    # there leaves user_version at 7 even though site_link already exists.
+    for i, step in enumerate(mig_mod.MIGRATIONS[:7], start=1):
+        await old.execute(step)
+        await old.execute(f"PRAGMA user_version = {i}")
+    await old.execute(mig_mod.MIGRATIONS[7])
     await old.commit()
-    await mig_mod.run_migrations(old)  # replays v8..v19, duplicates swallowed
+    await mig_mod.run_migrations(old)  # replays v8 (duplicate column swallowed), then v9..latest
     assert await feeds_columns(old) == migrated
 
     await fresh.close()
@@ -101,12 +106,24 @@ async def test_multiple_migrations_apply_in_order() -> None:
         await conn.close()
 
 
-async def test_backfill_seen_media_from_items(db: aiosqlite.Connection) -> None:
+async def test_backfill_seen_media_from_items(tmp_path: Path) -> None:
     """v19 records pre-existing seen rows with the URL normalised, then the
-    version gate makes a second run a no-op."""
-    # 18: pins v19 (_backfill_seen_media) as pending. len(MIGRATIONS) - 1 would
-    # retarget silently every time a later task appends another migration.
-    await db.execute("PRAGMA user_version = 18")
+    version gate makes a second run a no-op.
+
+    Builds its own pre-v19 database rather than using the `db` fixture: that
+    fixture runs every migration up to and including v25's DROP TABLE
+    seen_guids, and rewinding PRAGMA user_version afterwards cannot undo a
+    DROP that already happened on the same connection.
+    """
+    db = await open_db(str(tmp_path / "f.db"))
+    await create_schema(db)
+    target = mig_mod.MIGRATIONS.index(mig_mod._backfill_seen_media)
+    for i, step in enumerate(MIGRATIONS[:target], start=1):
+        if callable(step):
+            await step(db)
+        else:
+            await db.execute(step)
+        await db.execute(f"PRAGMA user_version = {i}")
     await db.execute("INSERT INTO feeds (id, url) VALUES ('f1', 'http://f1.com')")
     await db.execute(
         """INSERT INTO items (id, feed_id, guid, media_url, media_type, seen_at)
@@ -122,14 +139,26 @@ async def test_backfill_seen_media_from_items(db: aiosqlite.Connection) -> None:
     await mig_mod.run_migrations(db)
     async with db.execute("SELECT media_key FROM seen_media") as cur:
         assert [r["media_key"] for r in await cur.fetchall()] == ["http://cdn.example.com/a.jpg"]
+    await db.close()
 
 
-async def test_backfill_seen_media_recovers_and_drops_resurrected_rows(db: aiosqlite.Connection) -> None:
+async def test_backfill_seen_media_recovers_and_drops_resurrected_rows(tmp_path: Path) -> None:
     """The state the bug left behind: a seen_guids tombstone whose item came
-    back with seen_at NULL. The record is recovered and the row removed."""
-    # 18: pins v19 (_backfill_seen_media) as pending. len(MIGRATIONS) - 1 would
-    # retarget silently every time a later task appends another migration.
-    await db.execute("PRAGMA user_version = 18")
+    back with seen_at NULL. The record is recovered and the row removed.
+
+    Builds its own pre-v19 database — see test_backfill_seen_media_from_items
+    for why the shared `db` fixture no longer works for this setup now that
+    v25 drops seen_guids.
+    """
+    db = await open_db(str(tmp_path / "r.db"))
+    await create_schema(db)
+    target = mig_mod.MIGRATIONS.index(mig_mod._backfill_seen_media)
+    for i, step in enumerate(MIGRATIONS[:target], start=1):
+        if callable(step):
+            await step(db)
+        else:
+            await db.execute(step)
+        await db.execute(f"PRAGMA user_version = {i}")
     await db.execute("INSERT INTO feeds (id, url) VALUES ('f1', 'http://f1.com')")
     await db.execute(
         """INSERT INTO items (id, feed_id, guid, media_url, media_key, media_type, seen_at)
@@ -145,6 +174,7 @@ async def test_backfill_seen_media_recovers_and_drops_resurrected_rows(db: aiosq
         assert [r["media_key"] for r in await cur.fetchall()] == ["http://cdn.example.com/a.jpg"]
     async with db.execute("SELECT COUNT(*) FROM items") as cur:
         assert (await cur.fetchone())[0] == 0
+    await db.close()
 
 
 async def test_v20_merges_unavailable_guids(tmp_path: Path) -> None:
@@ -173,6 +203,34 @@ async def test_v20_merges_unavailable_guids(tmp_path: Path) -> None:
 
     async with db.execute("SELECT name FROM sqlite_master WHERE name='unavailable_guids'") as cur:
         assert await cur.fetchone() is None, "the old table must be gone"
+    await db.close()
+
+
+async def test_seen_guids_backfilled_then_dropped(tmp_path: Path) -> None:
+    """A pre-v19 database must have its seen history moved before the table goes."""
+    db = await open_db(str(tmp_path / "s.db"))
+    await create_schema(db)
+    # Stop at v18: seen_guids exists and holds a mark, seen_media does not yet.
+    for i, step in enumerate(MIGRATIONS[:18], start=1):
+        if callable(step):
+            await step(db)
+        else:
+            await db.execute(step)
+        await db.execute(f"PRAGMA user_version = {i}")
+    await db.execute("INSERT INTO feeds (id, url) VALUES ('f1', 'https://e.com/f')")
+    await db.execute(
+        "INSERT INTO items (id, feed_id, guid, media_url, media_type)"
+        " VALUES ('i1', 'f1', 'g1', 'https://example.com/a.jpg', 'image')"
+    )
+    await db.execute("INSERT INTO seen_guids (feed_id, guid, seen_at) VALUES ('f1', 'g1', '2026-01-01 00:00:00')")
+    await db.commit()
+
+    await run_migrations(db)
+
+    async with db.execute("SELECT COUNT(*) FROM seen_media") as cur:
+        assert (await cur.fetchone())[0] == 1, "the seen mark must survive the backfill"
+    async with db.execute("SELECT name FROM sqlite_master WHERE name='seen_guids'") as cur:
+        assert await cur.fetchone() is None, "the drained table must be gone"
     await db.close()
 
 

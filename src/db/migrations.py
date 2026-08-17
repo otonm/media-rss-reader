@@ -194,7 +194,7 @@ MIGRATIONS: list[MigrationStep] = [
         "item_id TEXT NOT NULL REFERENCES items(id) ON DELETE CASCADE, "
         "PRIMARY KEY (url, item_id))"
     ),
-    # v23: the cascade deletes by item_id, and _candidate_items joins on it.
+    # v23: the cascade deletes by item_id, and _all_dead scans media_urls by it too.
     "CREATE INDEX IF NOT EXISTS idx_media_urls_item_id ON media_urls(item_id)",
     # v24: backfill from media_json. json_each is built into SQLite, so this
     # stays a SQL step. COALESCE covers rows written before media_json existed:
@@ -203,6 +203,14 @@ MIGRATIONS: list[MigrationStep] = [
     # non-ASCII slide URL, a row with media_json NULL, and a row with
     # unparseable media_json. All three yield exactly their real URLs.
     BACKFILL_MEDIA_URLS,
+    # v25: seen_guids has been dead schema since v14 introduced seen_media.
+    # v2 creates it, v3 populates it, v19 drains it into seen_media — this drops
+    # it once that has happened. Ordering makes it correct at every starting
+    # version: a fresh DB runs create -> populate(0) -> drain(0) -> drop, and an
+    # old DB gets its full backfill first. The three earlier steps stay exactly
+    # where they are; user_version is an index into this list, so removing them
+    # would silently skip every migration after.
+    "DROP TABLE IF EXISTS seen_guids",
 ]
 
 
