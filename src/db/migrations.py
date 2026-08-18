@@ -5,8 +5,11 @@ connection. PRAGMA user_version stores the count of applied migrations. On
 every startup, any entries from MIGRATIONS[current_version:] are applied in
 sequence, with user_version incremented after each one.
 
-To add a migration: append one entry to MIGRATIONS. Never edit or reorder
-existing entries — doing so would corrupt the version counter.
+To add a migration: append one entry to MIGRATIONS. Never delete, reorder or
+insert entries — PRAGMA user_version indexes into this list, so any of those
+would corrupt the version counter. Editing an existing entry's text is safe:
+it only affects databases that have not yet applied that entry, since a
+database that already applied it needs nothing further from the new text.
 
 Each entry must also be idempotent. SQLite runs DDL outside any transaction,
 so a statement takes effect before the version bump that records it, and a
@@ -73,11 +76,19 @@ async def _merge_unavailable_guids(db: aiosqlite.Connection) -> None:
 
 # v24's statement, named so tests that insert items with raw SQL can mirror them
 # into media_urls with the exact statement the schema uses.
+#
+# json_each's own `type` column decides whether an element is an {url,...}
+# object worth extracting from — it must be s.type, not json_type(s.value):
+# json_type() reparses s.value the same way json_extract() does below, and
+# raises identically when that value is not itself valid JSON (a bare string
+# or number). CASE WHEN json_valid(i.media_json) guards the outer json_each
+# call against a NULL or malformed column; it does not help with the s.type
+# problem, because json_valid() returns 1 for shapes json_extract() still
+# chokes on (a top-level JSON object, or an array of bare strings).
 BACKFILL_MEDIA_URLS = (
     "INSERT OR IGNORE INTO media_urls (url, item_id) "
-    "SELECT COALESCE(json_extract(s.value, '$.url'), i.media_url), i.id "
-    "FROM items i LEFT JOIN json_each(i.media_json) s "
-    "WHERE json_valid(COALESCE(i.media_json, 'null')) "
+    "SELECT COALESCE(CASE WHEN s.type='object' THEN json_extract(s.value, '$.url') END, i.media_url), i.id "
+    "FROM items i LEFT JOIN json_each(CASE WHEN json_valid(i.media_json) THEN i.media_json ELSE '[]' END) s "
     "UNION "
     "SELECT i.media_url, i.id FROM items i WHERE i.media_url IS NOT NULL"
 )
@@ -199,9 +210,10 @@ MIGRATIONS: list[MigrationStep] = [
     # v24: backfill from media_json. json_each is built into SQLite, so this
     # stays a SQL step. COALESCE covers rows written before media_json existed:
     # their only URL is media_url. INSERT OR IGNORE makes the replay idempotent.
-    # Verified against three edge cases on SQLite 3.50: a gallery with a
-    # non-ASCII slide URL, a row with media_json NULL, and a row with
-    # unparseable media_json. All three yield exactly their real URLs.
+    # Verified on SQLite 3.50.4, result-identical to the original statement on
+    # normal galleries (including non-ASCII slide URLs) and non-raising on
+    # every other shape media_json could hold: a top-level JSON object, an
+    # array of bare strings, a bare integer, unparseable text, and NULL.
     BACKFILL_MEDIA_URLS,
     # v25: seen_guids has been dead schema since v14 introduced seen_media.
     # v2 creates it, v3 populates it, v19 drains it into seen_media — this drops

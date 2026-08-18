@@ -259,8 +259,12 @@ async def test_seen_guids_backfilled_then_dropped(tmp_path: Path) -> None:
     await db.close()
 
 
-async def test_v22_backfills_every_slide_url(tmp_path: Path) -> None:
-    """The backfill must reproduce every URL item_slides yields, including non-ASCII."""
+async def test_v24_backfills_every_slide_url(tmp_path: Path) -> None:
+    """The backfill must reproduce every URL item_slides yields, including
+    non-ASCII, and must not raise on the pathological media_json shapes
+    json_extract() cannot parse directly: an object at top level, an array of
+    bare strings, unparseable text, and NULL. Each row must still contribute
+    at least its media_url."""
     db = await open_db(str(tmp_path / "b.db"))
     await create_schema(db)
     for i, step in enumerate(MIGRATIONS[:21], start=1):
@@ -282,11 +286,28 @@ async def test_v22_backfills_every_slide_url(tmp_path: Path) -> None:
         " VALUES ('i1', 'f1', 'g1', 'https://example.com/a.jpg', 'image', ?)",
         (media,),
     )
+    pathological = [
+        ("obj", '{"url":"https://example.com/obj.jpg"}'),
+        ("arrstr", '["https://example.com/str.jpg"]'),
+        ("unparse", "not json"),
+        ("nullmedia", None),
+    ]
+    for item_id, media_json in pathological:
+        await db.execute(
+            "INSERT INTO items (id, feed_id, guid, media_url, media_type, media_json)"
+            " VALUES (?, 'f1', ?, ?, 'image', ?)",
+            (item_id, item_id, f"https://example.com/{item_id}.jpg", media_json),
+        )
     await db.commit()
 
-    await run_migrations(db)
+    await run_migrations(db)  # must not raise
 
     async with db.execute("SELECT url FROM media_urls WHERE item_id = 'i1' ORDER BY url") as cur:
         urls = {row["url"] for row in await cur.fetchall()}
     assert urls == {"https://example.com/a.jpg", slide}
+
+    for item_id, _ in pathological:
+        async with db.execute("SELECT url FROM media_urls WHERE item_id = ?", (item_id,)) as cur:
+            urls = {row["url"] for row in await cur.fetchall()}
+        assert f"https://example.com/{item_id}.jpg" in urls
     await db.close()
