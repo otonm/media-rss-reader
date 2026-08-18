@@ -121,6 +121,7 @@ src/
     ├── style.css                Layout + theming via CSS custom properties
     ├── app.js                   Startup, config, keymap, pointer swipe, module wiring
     ├── item-store.js            Item list, keyset cursor, seen + unusable reporting
+    ├── media-el.js              Shared <img>/<video> + proxy-URL factory
     ├── feed-view.js             DOM rendering: placeholders, media wraps, galleries
     ├── scroll-controller.js     Two IntersectionObservers; seen beacons; page top-up
     ├── autoscroll-controller.js Per-item dwell timer; image/GIF/video advance
@@ -514,42 +515,45 @@ connection is out of scope.
 Two producers, one shared `asyncio.Semaphore(10)` so a fast scroll cannot pile up
 unbounded outbound connections.
 
-**`warm_startup_cache()`** queries `FEED_INITIAL_COUNT + PREFETCH_AHEAD` items in
-`UNSEEN_FIRST_ORDER_BY` — the interleave `/api/items` serves, with unseen rows
+Both producers assemble their query through `src/db/queries.py`'s `resolve_anchor()`
+and `ranked_page()` — the same functions `/api/items` uses — so the warm window
+can never drift from what the API actually serves.
+
+**`warm_startup_cache()`** calls `ranked_page()` for `FEED_INITIAL_COUNT + PREFETCH_AHEAD`
+items in `UNSEEN_FIRST_ORDER_BY` — the interleave `/api/items` serves, with unseen rows
 ahead of seen ones, because the client defaults to `showSeen: false`. Warming in
 any other order fills the end of the library the reader reaches last and leaves
 page one a guaranteed miss. Warming an already-cached item costs nothing (`_warm`
 returns on a `cache_read` hit without opening a connection), so a restart with a
 warm cache issues no upstream requests.
 
-**`prefetch_ahead(item_id, …, unseen=…)`** resolves its own anchor with
-`ANCHOR_LOOKUP` and warms the next `PREFETCH_AHEAD` items strictly after it in the
+**`prefetch_ahead(item_id, …, unseen=…)`** resolves its anchor with `resolve_anchor()`
+and calls `ranked_page()` for the next `PREFETCH_AHEAD` items strictly after it in the
 `(rn, feed_id, id)` key. `unseen` has **no default** — the caller must state the
 filter it paged with, so the warm window matches what is about to be displayed.
 Returns `None` when the anchor names no row, which the hint endpoint turns into a
 404 without a second lookup.
 
 `_bg_tasks` holds a strong reference to every warm task (the event loop's is weak)
-so shutdown can cancel them; `_hint_tasks` re-tracks only the request-driven path,
-so `MAX_BACKLOG` (50) measures the hint backlog alone — a draining startup warm
-must not spend the reader's cap.
+so shutdown can cancel them; `_hint_backlog`, incremented by `_track_hint`, counts
+only the request-driven path, so `MAX_BACKLOG` (50) measures the hint backlog
+alone — a draining startup warm must not spend the reader's cap.
 
 ### Dead-URL tracking (`media/availability.py`)
 
 `mark_url_dead_and_maybe_drop(url, item_id, db)`:
 
 1. record `url` in `dead_urls`;
-2. collect candidate items — by `item_id` (**verified** to actually contain that
-   URL, since the proxy takes both from the query string independently) and by
-   `media_url`;
+2. collect candidate items: `_candidate_items` joins `items` to `media_urls` on
+   `url`, no `item_id` narrowing — every slide is indexed, so this one join
+   finds every item containing that URL, primary or gallery slide alike;
 3. for each item whose every slide URL is now dead: `DELETE` the row and write a
    `resolved_guids` tombstone;
 4. `_skip_guids` reads that tombstone on the next poll, so the guid never comes
    back.
 
-Non-primary gallery slide URLs are reachable **only** through the `item_id` path —
-they are not any row's `media_url` — so callers observing a slide failure must
-pass it.
+`item_id` no longer narrows the candidate lookup — every slide URL is reachable
+by the `media_urls` join regardless — it now only feeds the debug log line.
 
 `is_known_media_url()` is the gate the proxy and the failure report share: one
 indexed lookup against `media_urls`, which holds every media URL of every item —

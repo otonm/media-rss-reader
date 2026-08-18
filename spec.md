@@ -625,12 +625,7 @@ queueing them; the startup warm has its own budget and does not count against it
 mark_dead(url, item_id):
     INSERT OR IGNORE dead_urls(url)
 
-    candidates = {}
-    if item_id given:
-        row = items[item_id]
-        if url ∈ slides(row):        # the caller supplies url and item_id
-            candidates += row        # independently — verify before trusting
-    candidates += all items WHERE media_url = url
+    candidates = all items JOINed to media_urls WHERE media_urls.url = url
 
     for row in candidates:
         if every slide URL of row is in dead_urls:
@@ -639,8 +634,9 @@ mark_dead(url, item_id):
     return the dropped item ids
 ```
 
-Non-primary gallery slide URLs are reachable **only** via `item_id`, since they
-are not any row's `media_url`. Callers observing a slide failure must pass it.
+`media_urls` holds every media URL of every item — primary and gallery slides
+alike, one row each — so the join finds every candidate regardless of `item_id`;
+`item_id` only feeds the debug log line.
 
 ### 7.7 Content deduplication
 
@@ -1221,13 +1217,13 @@ intercept input.
 The client's runtime numbers (`FEED_INITIAL_COUNT`, `IMAGE_AUTOSCROLL_DELAY_S`,
 `MEDIA_LOAD_TIMEOUT_S`, `ZOOM_TRANSITION_MS`, `UI_DEBUG`) originate on the server.
 
-**[stack-specific]** The reference injects them into the app shell as CSS custom
-properties at startup and reads them synchronously before first render, avoiding
-a config round-trip. Two constraints if you copy this: the injected block must
-come *after* the stylesheet (equal specificity, later wins — with it first, the
-stylesheet's defaults silently override every configured value), and static asset
-URLs carry a per-startup version token so browser and service-worker caches
-cannot serve stale assets across deploys.
+**[stack-specific]** The reference injects them into the app shell as a `<script>`
+block at startup (`window.MRR_CONFIG = {...};`), read synchronously before first
+render, avoiding a config round-trip. The constraint if you copy this: the
+values are serialized with `/` escaped to `\/`, so a config value cannot contain
+a literal `</script>` and close the tag early. Static asset URLs also carry a
+per-startup version token so browser and service-worker caches cannot serve
+stale assets across deploys.
 
 A native port simply reads its settings directly.
 
