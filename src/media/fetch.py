@@ -170,10 +170,12 @@ async def open_upstream(
     """Open a streaming upstream response, or raise UpstreamError.
 
     The gate, redirect handling and response validation are specified in
-    spec.md §7.2. Returns (response, content_type) with the body left unread so
-    the caller can tee it; ownership passes to tee_to_cache, which always
-    closes it. A permanent-failure status or non-media response marks the URL
-    dead (dropping a fully-dead item) before raising.
+    spec.md §7.2. Returns (response, content_type); the caller must not
+    re-derive the type from response.headers itself, since this is where it
+    was validated. The body is left unread so the caller can tee it; ownership
+    passes to tee_to_cache, which always closes it. A permanent-failure status
+    or non-media response marks the URL dead (dropping a fully-dead item)
+    before raising.
     """
     # Escaped once here, same reasoning as _check_url's safe_url: this also
     # feeds UpstreamError/NonMediaUpstreamError messages and run_with_own_db's

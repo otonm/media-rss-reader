@@ -315,6 +315,7 @@ items.media_key       -- canonical identity of media_url; the cross-feed dedup k
 
 seen_media        (media_key PK, seen_at)              -- the durable seen record
 dead_urls         (url PK, marked_at)                  -- permanently gone media
+media_urls        (url, item_id FK→items CASCADE, PK(url, item_id)) -- known-URL gate index (§8.3)
 resolved_guids    (feed_id, guid PK, resolved_at)      -- examined, deliberately not stored
 media_hashes      (url PK, sha256, phash, hashed_at)   -- content identity
 auth_config       (key PK, value)                      -- stores the TOTP secret

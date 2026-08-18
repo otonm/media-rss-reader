@@ -60,6 +60,11 @@ async def list_items(
     spec.md §9.1–§9.5. The short version: rn comes from a window over the FULL
     item set with the seen filter applied outside it, and the cursor is
     (after_id, after_rn) bounded at min(after_rn, the anchor's resolved rank).
+
+    src/media/prefetch.py warms ahead through the same resolve_anchor and
+    ranked_page calls, so the ordering cannot drift; the window it warms can
+    still sit a few rows off the one served here, because it is resolved from
+    a different item at a different moment. That is a hint, not a contract.
     """
     logger.debug(f"list_items unseen={unseen} after_id={loggable(after_id)} after_rn={after_rn} size={size}")
     anchor = None

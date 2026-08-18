@@ -171,6 +171,11 @@ dead_urls
   url         TEXT PK
   marked_at   TIMESTAMP
 
+media_urls                        -- every media URL of every item, one row each
+  url         TEXT NOT NULL       -- the index behind the known-URL gate (§8.3)
+  item_id     TEXT NOT NULL -> items(id) ON DELETE CASCADE
+  PK (url, item_id)
+
 resolved_guids                    -- "already decided, do not re-examine"
   feed_id     TEXT -> feeds(id) ON DELETE CASCADE
   guid        TEXT

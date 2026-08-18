@@ -64,8 +64,10 @@ async def write_transaction(db: aiosqlite.Connection) -> AsyncIterator[None]:
     Every write needs this, not only a multi-statement one, because the shared
     connection's transaction is implicit and per-connection, not per coroutine.
     Catches BaseException (not just Exception) so a CancelledError still rolls
-    back instead of leaving the connection holding the lock. Full rationale in
-    spec.md §12.1.
+    back instead of leaving the connection holding the lock. The rollback's own
+    exception is suppressed — it is I/O on a possibly-broken connection, and
+    letting it propagate would replace the exception that describes what
+    actually went wrong. Full rationale in spec.md §12.1.
     """
     async with _write_lock:
         try:
