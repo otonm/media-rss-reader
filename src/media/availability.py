@@ -20,16 +20,10 @@ from src.logging_utils import loggable
 logger = logging.getLogger(__name__)
 
 
-async def _candidate_items(db: aiosqlite.Connection, url: str, _item_id: str | None) -> list[aiosqlite.Row]:
-    """Every item row that actually contains `url`.
-
-    One join through media_urls. `_item_id` is now unused: it existed only
-    because a non-primary gallery slide URL was unreachable by query, and every
-    slide is indexed now. It stays in the signature so callers need not change.
-    """
+async def _candidate_items(db: aiosqlite.Connection, url: str) -> list[aiosqlite.Row]:
+    """Every item row that actually contains `url`. One join through media_urls."""
     async with db.execute(
-        "SELECT i.id, i.feed_id, i.guid, i.media_url FROM items i "
-        "JOIN media_urls m ON m.item_id = i.id WHERE m.url = ?",
+        "SELECT i.id, i.feed_id, i.guid FROM items i JOIN media_urls m ON m.item_id = i.id WHERE m.url = ?",
         (url,),
     ) as cur:
         return list(await cur.fetchall())
@@ -85,7 +79,9 @@ async def mark_url_dead_and_maybe_drop(url: str, item_id: str | None, db: aiosql
     logger.debug(f"mark_url_dead_and_maybe_drop: recording dead url={loggable(url)} item_id={loggable(item_id)}")
     await db.execute("INSERT OR IGNORE INTO dead_urls (url) VALUES (?)", (url,))
 
-    candidates = await _candidate_items(db, url, item_id)
+    # item_id is no longer used to look candidates up — every slide URL is
+    # indexed in media_urls now — it only feeds the log line above.
+    candidates = await _candidate_items(db, url)
     if not candidates:
         return []
 
