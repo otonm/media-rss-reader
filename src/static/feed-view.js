@@ -90,8 +90,8 @@
   // browser uses to infer user interaction in some implementations and would
   // suppress future autoplay.
   function wireVideo(el) {
-    el.muted = MRR.controls?.isMuted() ?? true;
-    el.loop = !MRR.autoscrollController.isEnabled?.();
+    el.muted = MRR.controls?.isMuted?.() ?? true;
+    el.loop = !MRR.autoscrollController?.isEnabled?.();
     // Track explicit user pauses only. The browser fires spurious
     // 'volumechange' and 'seeking' events for its own reasons (autoplay
     // policy adjustments, end-of-video seek-backs, visibility changes);
