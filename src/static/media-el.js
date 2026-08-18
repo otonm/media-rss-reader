@@ -18,6 +18,12 @@
   // opts.defer: offscreen gallery slides hand loading to the browser. A
   // 20-slide gallery opening 20 connections at once exhausts the ~6-per-host
   // budget and starves the cache queue and /api/items behind it.
+  //
+  // opts.eager: the download queue prefetching a video. preload must be set
+  // before src — the UA picks a resource-selection mode when src lands, and
+  // setting preload afterward does not re-trigger it, so a browser whose
+  // default is "metadata" (Safari, Firefox) never downloads the body and the
+  // prefetch caches nothing.
   function create(media, itemId, opts) {
     const o = opts || {};
     const isVideo = media.type === "video";
@@ -26,7 +32,13 @@
       el.setAttribute("playsinline", "");
       el.setAttribute("webkit-playsinline", "");
       el.setAttribute("controls", "");
-      if (o.defer) el.preload = "none";
+      if (o.eager) {
+        el.autoplay = true;
+        el.muted = true;
+        el.preload = "auto";
+      } else if (o.defer) {
+        el.preload = "none";
+      }
     } else if (o.defer) {
       el.loading = "lazy";
     }

@@ -37,3 +37,11 @@ test("create defers offscreen slides", () => {
   const img = ctx.window.MRR.mediaEl.create({ url: "https://e.com/a.jpg", type: "image" }, "i1", { defer: true });
   assert.equal(img.loading, "lazy");
 });
+
+test("create sets preload=auto, muted and autoplay on an eager video", () => {
+  const ctx = setup();
+  const el = ctx.window.MRR.mediaEl.create({ url: "https://e.com/v.mp4", type: "video" }, "i1", { eager: true });
+  assert.equal(el.preload, "auto");
+  assert.equal(el.muted, true);
+  assert.equal(el.autoplay, true);
+});

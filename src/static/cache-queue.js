@@ -112,12 +112,11 @@
 
   function downloadOne(item) {
     return new Promise((resolve, reject) => {
-      const el = MRR.mediaEl.create({ url: item.media_url, type: item.media_type }, item.id, {});
-      if (item.media_type === "video") {
-        el.autoplay = true;
-        el.muted = true;
-        el.preload = "auto";
-      }
+      const el = MRR.mediaEl.create(
+        { url: item.media_url, type: item.media_type },
+        item.id,
+        item.media_type === "video" ? { eager: true } : {}
+      );
       const timeoutMs = loadTimeoutMs();
       const timer = setTimeout(() => {
         el.src = ""; // abort the in-flight request so the connection is freed
