@@ -27,17 +27,9 @@ logger = logging.getLogger(__name__)
 async def open_db(path: str | None = None) -> aiosqlite.Connection:
     """Open an aiosqlite connection configured the way every caller expects.
 
-    The parent directory is created first, so the container starts cleanly on
-    an empty data volume.
-
-    None of the four settings is a default:
-    - a 30 s busy timeout — how long a writer waits for the lock before raising
-      "database is locked". The 5 s default is too tight when many
-      run_with_own_db writers contend for it at once.
-    - Row as the row factory, so rows index by column name as callers expect.
-    - WAL, so readers keep working while the scheduler writes.
-    - foreign_keys=ON, which SQLite leaves off; without it the items → feeds
-      ON DELETE CASCADE declared in schema.py does nothing.
+    Creates the parent directory first, then sets a 30s busy timeout, Row as
+    the row factory, WAL, and foreign_keys=ON — none of which is a default.
+    Rationale for each in spec.md §12.1.
     """
     path_str = path or settings.db_path
     logger.debug(f"open_db opening {path_str}")
@@ -52,14 +44,9 @@ async def open_db(path: str | None = None) -> aiosqlite.Connection:
 async def get_db(request: Request) -> aiosqlite.Connection:
     """FastAPI dependency: the process-wide connection opened at startup.
 
-    aiosqlite serialises statements on the connection's own worker thread, so
-    every request queues behind every other; with WAL and queries this small
-    that is cheaper than starting a thread and running two PRAGMAs per request.
-
-    The cost is a shared implicit transaction — sqlite3 opens one per
-    connection, not per coroutine. Any write on this connection, single
-    statement or not, has to go through write_transaction. The scheduler is
-    kept on its own connection for the same reason.
+    Requests share one connection rather than one each, and pay for it with a
+    shared implicit transaction: every write on it must go through
+    write_transaction. Why, in spec.md §12.1.
     """
     return request.app.state.db
 
@@ -74,19 +61,11 @@ _write_lock = asyncio.Lock()
 async def write_transaction(db: aiosqlite.Connection) -> AsyncIterator[None]:
     """Serialise a write on the shared connection, then commit.
 
-    Every write needs this, not only a multi-statement one: two coroutines on
-    one connection share one transaction, so a bare execute + commit by one of
-    them commits whatever the other has in flight, and either one's rollback
-    discards the other's statements.
-
-    BaseException rather than Exception: a CancelledError arriving at any await
-    inside the block would otherwise unwind past the rollback and leave the
-    connection holding a RESERVED lock, with every run_with_own_db write then
-    waiting out the 30 s busy timeout and WAL unable to checkpoint.
-
-    The rollback is suppressed because it is I/O on a possibly-broken
-    connection; letting it propagate would replace the exception that describes
-    what actually went wrong.
+    Every write needs this, not only a multi-statement one, because the shared
+    connection's transaction is implicit and per-connection, not per coroutine.
+    Catches BaseException (not just Exception) so a CancelledError still rolls
+    back instead of leaving the connection holding the lock. Full rationale in
+    spec.md §12.1.
     """
     async with _write_lock:
         try:
@@ -114,6 +93,7 @@ async def run_with_own_db(
     streaming-response bodies, which run after the route function has returned.
     A private connection also keeps these writes out of the shared connection's
     implicit transaction — they commit without going through write_transaction.
+    `write` must commit — this function does not.
 
     Failures are logged and dropped: every caller is fire-and-forget bookkeeping
     (cache digests, dead-URL marks) that must not fail the media it belongs to.

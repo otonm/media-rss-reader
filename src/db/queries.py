@@ -65,6 +65,10 @@ async def ranked_page(
     load-bearing: pruning deletes lowest-rn-first, so every surviving row in
     that feed shifts down, and a stale after_rn would silently skip exactly the
     pruned count. See spec.md §9.2.
+
+    `columns` and `order` are interpolated into the SQL, not bound. They must be
+    source-controlled literals — never anything derived from a request. Every
+    request value (`size`, `after_rn`, the anchor fields) is bound.
     """
     conditions: list[str] = []
     params: list[str | int] = []

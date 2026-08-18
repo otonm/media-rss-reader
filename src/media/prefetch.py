@@ -1,15 +1,8 @@
 """Background media pre-fetching.
 
-Two entry points:
-
-warm_startup_cache() — called once at startup; warms the first page /api/items
-    would serve plus PREFETCH_AHEAD, capped at 10 concurrent requests. Just the
-    cold-start gap: from the first scroll snap onward prefetch_ahead takes over.
-
-prefetch_ahead() — called from the /api/prefetch/hint endpoint; warms the
-    next PREFETCH_AHEAD items after the given item in interleave order.
-    Intended to be fired as a background task ahead of the user's scroll
-    position.
+Two entry points, one shared concurrency cap: warm_startup_cache() covers the
+cold-start gap at process boot, prefetch_ahead() covers everything after the
+user starts scrolling. Ordering rationale for both in spec.md §7.5.
 """
 
 import asyncio
@@ -96,17 +89,10 @@ async def _warm(item_id: str, url: str, client: httpx.AsyncClient, request_id: s
 async def warm_startup_cache(db: aiosqlite.Connection, client: httpx.AsyncClient) -> None:
     """Pre-warm the cache with the items the reader will see first.
 
-    Uses the same order /api/items serves — feeds interleaved, oldest-first
-    within each, unseen filtered by default — so the first page the browser
-    asks for is exactly what was warmed. The bound covers the cold-start gap
-    (first page plus the prefetch_ahead window); past it the hint path drives
-    the cache on demand. Warming an item already on disk costs nothing: _warm
-    returns on a cache_read hit without opening a connection, so a restart
-    with a warm cache issues no upstream requests.
-
-    Runs as an asyncio background task (fire-and-forget from the lifespan
-    hook); the shared semaphore caps in-flight requests at 10 across both
-    entry points.
+    Warms FEED_INITIAL_COUNT + PREFETCH_AHEAD items in the exact order
+    /api/items serves them, so the first page requested is already cached.
+    Ordering rationale in spec.md §7.5. Fire-and-forget background task from
+    the lifespan hook.
     """
     try:
         rows = await ranked_page(
@@ -136,22 +122,11 @@ async def prefetch_ahead(
 ) -> int | None:
     """Fire background warm tasks for the next PREFETCH_AHEAD items after item_id.
 
-    'After' means strictly greater in the (rn, feed_id, id) interleave key
-    that /api/items uses — i.e. items the client will request next as it
-    scrolls forward.
-
-    `unseen` mirrors the filter the page itself used and has no default of
-    its own — the caller must state the filter it paged with, so the warm
-    window always matches what is about to be displayed.
-
-    Returns the number of warm tasks queued, or None when item_id names no
-    row — the hint endpoint turns that into a 404 without a second lookup of
-    its own.
-
-    request_id ties the warm tasks back to the hint that queued them. The
-    tasks outlive the request, so the contextvar is already reset by the time
-    they log — it has to be passed explicitly, exactly as open_upstream and
-    tee_to_cache already accept it.
+    'After' is the (rn, feed_id, id) interleave key /api/items uses. `unseen`
+    has no default of its own — the caller must state the filter it paged
+    with, so the warm window matches what is about to be displayed. Ordering
+    rationale in spec.md §7.5. Returns the number of tasks queued, or None
+    when item_id names no row.
     """
     cursor = await resolve_anchor(db, item_id)
     if cursor is None:

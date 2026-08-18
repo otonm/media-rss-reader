@@ -136,13 +136,11 @@ src/
 `main.py` uses FastAPI's `lifespan` context manager.
 
 1. **`_build_html()`** — reads `index.html`, replaces `<!-- CONFIG_VARS -->` with a
-   `<style>` block of CSS custom properties derived from settings
-   (`--feed-initial-count`, `--image-autoscroll-delay-s`, `--media-load-timeout-s`,
-   `--zoom-transition-ms`, `--ui-debug`), and replaces `{{VERSION}}` in asset URLs
-   with `int(time.time())`. The result is cached in `app.state.html` for the
-   process lifetime. It also asserts that the injected block lands *after* the
-   `style.css` link and logs an error if not — see
-   [CSS Variable Injection](#css-variable-injection).
+   `<script>window.MRR_CONFIG = {...}</script>` block carrying the browser-visible
+   settings (`feedInitialCount`, `imageAutoscrollDelayS`, `mediaLoadTimeoutS`,
+   `zoomTransitionMs`, `uiDebug`), and replaces `{{VERSION}}` in asset URLs with
+   `int(time.time())`. The result is cached in `app.state.html` for the process
+   lifetime — see [Client Config Injection](#client-config-injection).
 
 2. **`open_db()`** — the request-side connection. Creates parent directories,
    opens with a **30 s busy timeout** (the 5 s default is too tight when many
@@ -321,7 +319,6 @@ unavailable_guids (feed_id, guid PK, marked_at)        -- item's media is all de
 resolved_guids    (feed_id, guid PK, resolved_at)      -- examined, deliberately not stored
 media_hashes      (url PK, sha256, phash, hashed_at)   -- content identity
 auth_config       (key PK, value)                      -- stores the TOTP secret
-seen_guids        (feed_id, guid PK, seen_at)          -- LEGACY, read-only
 ```
 
 Rows without gallery data fall back to `media_url`/`media_type`; `item_slides()`
@@ -370,11 +367,13 @@ statement takes effect before the version bump that records it, and a crash in
 between replays it. That is what the `IF NOT EXISTS` clauses and
 `run_migrations`' duplicate-column handling are for.
 
-Current list (v1–v19): `fetched_at` index · `seen_guids` + backfill ·
+Current list (v1–v25): `fetched_at` index · `seen_guids` + backfill ·
 `auth_config` · `media_json` · `dead_urls` · `unavailable_guids` · `site_link` ·
 `media_url` index · `media_key` column · `media_key` index · `media_hashes` +
 `sha256` index · `seen_media` · `etag` · `last_modified` · `source_mtime` ·
-`resolved_guids` · `_backfill_seen_media`.
+`resolved_guids` · `_backfill_seen_media` · merge `unavailable_guids` into
+`resolved_guids` · drop `unavailable_guids` · `media_urls` table + index ·
+`media_urls` backfill · drop `seen_guids`.
 
 That last one is a callable, not SQL, because it needs `media_key()`. It is also
 the reason the list accepts callables at all: it originally ran unconditionally on
@@ -552,12 +551,10 @@ Non-primary gallery slide URLs are reachable **only** through the `item_id` path
 they are not any row's `media_url` — so callers observing a slide failure must
 pass it.
 
-`is_known_media_url()` is the gate the proxy and the failure report share: an
-indexed exact match on `media_url`, falling back to a `media_json LIKE` prefilter
-with exact membership re-verified in Python (so the prefilter can only ever be too
-generous). The pattern is built with `json.dumps` so it carries the same escaping
-the column holds — `media_json` is written with `ensure_ascii=True`, so a URL with
-a non-ASCII character is stored as `\uXXXX` and a raw pattern could never match it.
+`is_known_media_url()` is the gate the proxy and the failure report share: one
+indexed lookup against `media_urls`, which holds every media URL of every item —
+primary and gallery slides alike, one row each, kept in step with `items` by an
+`ON DELETE CASCADE` foreign key. See spec.md §8.3.
 
 ### Content dedup (`media/dedup.py`)
 
@@ -679,10 +676,8 @@ closes, which used to lose the marks made in the last moments of a session.
    the browser and into the cache in the same pass
 ```
 
-The cache lookup goes **first**, before the gate, deliberately: the gate's second
-tier is an unindexed `media_json LIKE`, i.e. a full scan of items for every gallery
-slide, on the same aiosqlite worker thread `/api/items` queues on. A hit needs no
-gate — the key is `sha256(url)` so it cannot escape `CACHE_DIR`, and a URL can only
+The cache lookup still goes **first**, but only because a hit needs no gate at
+all — the key is `sha256(url)` so it cannot escape `CACHE_DIR`, and a URL can only
 be in the cache because it passed the gate on an earlier request.
 
 Step 3 previously downloaded the whole file to disk and only then replied, which
@@ -974,26 +969,18 @@ Zoom is dropped by every navigation path through the single choke point
 stale after a rotate). Autoscroll is suspended on zoom-in and re-armed on zoom-out.
 `prefers-reduced-motion` forces the transition to 0.
 
-### CSS Variable Injection
+### Client Config Injection
 
 `main._build_html()` replaces `<!-- CONFIG_VARS -->` with:
 
 ```html
-<style>:root{
-  --feed-initial-count:10;
-  --image-autoscroll-delay-s:2;
-  --media-load-timeout-s:10;
-  --zoom-transition-ms:200;
-  --ui-debug:0;
-}</style>
+<script>window.MRR_CONFIG = {"feedInitialCount":10,"imageAutoscrollDelayS":2,"mediaLoadTimeoutS":10,"zoomTransitionMs":200,"uiDebug":0};</script>
 ```
 
-`app.js:readConfig()` reads these at module load via `getComputedStyle`, so values
-are available synchronously before any rendering and no config round-trip is
-needed. **The block must land after the `style.css` link** — both set the same
-properties on `:root` with identical specificity, so the later declaration wins;
-with it first, `style.css`'s defaults silently overrode every env-supplied value.
-`_build_html` checks this at startup and logs an error if the order is wrong.
+`/` is escaped in the JSON payload so a value containing `</script>` cannot close
+the tag early. `app.js:readConfig()` reads `window.MRR_CONFIG` directly at module
+load, so values are available synchronously before any rendering and no config
+round-trip is needed.
 
 `{{VERSION}}` in asset URLs is replaced with `int(time.time())` at startup, forcing
 browsers and the service-worker cache to re-fetch assets after a restart.
@@ -1092,8 +1079,8 @@ Four checks **fail fast at startup** rather than clamping:
 - `MEDIA_LOAD_TIMEOUT_S` ∈ [1, 300] — a timeout **deletes** the item it fires on,
   so 0 would empty the library on the first scroll.
 
-Frontend-visible values travel to the browser as CSS custom properties — see
-[CSS Variable Injection](#css-variable-injection).
+Frontend-visible values travel to the browser via the `window.MRR_CONFIG` script
+injection — see [Client Config Injection](#client-config-injection).
 
 ### `UI_DEBUG` overlay
 

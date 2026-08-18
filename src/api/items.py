@@ -56,54 +56,10 @@ async def list_items(
 ) -> list[dict[str, Any]]:
     """Return a keyset-paginated, interleaved list of media items.
 
-    Ranking: the window function assigns rn per feed over the FULL items set,
-    with the seen filter applied outside the CTE, so marking an item seen drops
-    it from the result without renumbering any other item. Taking rn from the
-    window rather than deriving it by counting is what keeps a NULL pub_date
-    harmless: ROW_NUMBER sorts NULLs first and ranks them 1..k, while a
-    row-value comparison with a NULL member evaluates to NULL in SQLite and so
-    drops exactly those rows. A count-based OFFSET is wrong here for a second
-    reason: what the client counted over stops being a prefix of the server's
-    ranking as soon as any item changes seen state.
-
-    Cursor: the id of the last item the client holds, plus the rank that was
-    issued with it (after_rn). rn is not itself a cursor — it is recomputed per
-    request, so it moves under an outstanding cursor in both directions: a
-    prune lowers it, a row inserted with an older pub_date raises it. So the
-    anchor's (rn, feed_id, id) is re-resolved from the same CTE that orders
-    this page and the page is bounded by min(after_rn, the resolved rank).
-    Taking the lower bound means a raised rank reopens the window instead of
-    skipping every undelivered row between the two ranks; the reopened rows
-    return as duplicates, which the client's known-set guard drops. Every feed
-    that gained a row below the bound contributes such duplicates, so their
-    number scales with insertions beneath the cursor across all feeds, not with
-    the anchor's feed alone.
-
-    Because a page can come back entirely as duplicates, the client must
-    re-anchor on the response's own last row whenever a page is non-empty
-    (src/static/item-store.js). Deriving the next cursor only from rows it
-    appended would leave after_id/after_rn unchanged, so the next request
-    repeats this one and pagination stalls until reload.
-
-    Two things this does not recover. The anchor's rank is read by one
-    statement and the page by another, so a feed refresh landing between them
-    can still shift it. And min() only reopens rows ahead of the cursor: a row
-    inserted behind it — typically an undated entry, which ROW_NUMBER ranks
-    first in its feed — is not delivered until the client reloads from the top.
-
-    after_rn is optional, so a client that does not send it still pages on the
-    resolved rank alone. When sent it is bounded to >= 1, because ROW_NUMBER
-    starts at 1 and a rank of 0 admits the whole table (see below).
-
-    An anchor that no longer exists — pruned, or its feed left the OPML and the
-    rows cascaded — answers 410. Resolving it to a rank of 0 instead would make
-    `(rn, feed_id, id) > (0, ...)` match everything: page one of the global
-    interleave, which the client's known-set filter discards, leaving a cursor
-    that never advances.
-
-    src/media/prefetch.py warms ahead using the same fragments (src/db/queries.py)
-    but resolves its own anchor, so the window it warms can sit a few rows off
-    the one served here. That is a hint, not a contract.
+    Ranking, cursor semantics and the two known limitations are specified in
+    spec.md §9.1–§9.5. The short version: rn comes from a window over the FULL
+    item set with the seen filter applied outside it, and the cursor is
+    (after_id, after_rn) bounded at min(after_rn, the anchor's resolved rank).
     """
     logger.debug(f"list_items unseen={unseen} after_id={loggable(after_id)} after_rn={after_rn} size={size}")
     anchor = None

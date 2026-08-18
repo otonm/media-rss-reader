@@ -171,12 +171,6 @@ dead_urls
   url         TEXT PK
   marked_at   TIMESTAMP
 
-unavailable_guids                 -- "its media is gone"
-  feed_id     TEXT -> feeds(id) ON DELETE CASCADE
-  guid        TEXT
-  marked_at   TIMESTAMP
-  PK (feed_id, guid)
-
 resolved_guids                    -- "already decided, do not re-examine"
   feed_id     TEXT -> feeds(id) ON DELETE CASCADE
   guid        TEXT
@@ -211,7 +205,7 @@ items(feed_id, pub_date, id)   -- matches the ranking window exactly (§9.1)
 media_hashes(sha256)
 ```
 
-### 4.3 The three tombstone tables, and why there are three
+### 4.3 The two tombstone tables, and why there are two
 
 They look redundant. They are not; each answers a different question during
 ingest, and collapsing them re-introduces a specific bug.
@@ -219,16 +213,16 @@ ingest, and collapsing them re-introduces a specific bug.
 | Table | Written when | Read by | Bug it prevents |
 |---|---|---|---|
 | `seen_media` | user scrolls past an item | the insert guard | A seen item is pruned, the feed still lists it, the next poll re-inserts it **unseen**. The user sees the same picture forever. |
-| `unavailable_guids` | every media URL of an item is dead | the pre-detection skip set | A 404'd post is deleted, then re-inserted by the next poll, fails to load again, forever. |
-| `resolved_guids` | an entry was examined and deliberately **not** stored; also every prune eviction | the pre-detection skip set | The insert guards key on `media_key`, which only exists *after* media detection. A rejected entry leaves no trace in `items`, so it is re-parsed and re-detected on every single poll. Also: pruning evicts oldest-first while the reader is served oldest-first, so a prune deletes exactly the rows currently on screen; without the tombstone they return to the front of the feed on the next cycle. |
+| `resolved_guids` | an entry was examined and deliberately **not** stored; every prune eviction; and every item dropped because all of its media went dead | the pre-detection skip set | The insert guard keys on `media_key`, which only exists *after* media detection, so a rejected entry leaves no trace in `items` and would be re-parsed and re-detected on every single poll without this. The same gap applies to a pruned or dead-media row: without the tombstone it returns on the next cycle. |
 
-`seen_media` has **no foreign key** on purpose. Its predecessor keyed on
+The distinction that survives is `seen_media`'s: it is keyed on `media_key`, not
+`(feed_id, guid)`, and has **no foreign key** on purpose. Its predecessor keyed on
 `(feed_id, guid)` with a cascade, so removing a feed from the OPML erased the
 seen history for every item that feed had ever carried. Keying on `media_key`
 also means a cross-posted picture stays seen no matter which feed carried it.
 
-`unavailable_guids` and `resolved_guids` *do* cascade: dropping a feed drops its
-items too, so a re-added feed should start clean.
+`resolved_guids` *does* cascade: dropping a feed drops its items too, so a
+re-added feed should start clean.
 
 ### 4.4 Migrations
 
@@ -783,15 +777,14 @@ GET /api/media/proxy?url=<encoded>&item_id=<optional>
    and the cache in one pass.
 ```
 
-**Known-URL gate.** Two tiers: an indexed exact match on `items.media_url`,
-falling back to a scan of `media_json` for gallery slide URLs, with exact
-membership re-verified in the application after the pattern prefilter (so the
-prefilter can only ever be too generous). Build the pattern with the same string
-escaping the column uses, or a URL with non-ASCII characters can never match.
+**Known-URL gate.** One indexed lookup: `url` against a table holding every media
+URL of every item — primary and gallery slides alike, one row each, kept in step
+with `items` by an `ON DELETE CASCADE` foreign key.
 
-The gate is placed **after** the cache lookup, deliberately: the fallback tier is
-an unindexed scan of the items table, and running it for every gallery slide of
-every cache hit would queue behind the pagination query on the same connection.
+The cache lookup still runs **before** the gate, but only because a hit needs no
+gate at all: the cache key is `sha256(url)`, which cannot escape the cache
+directory, and a URL can only be in the cache because it passed the gate on an
+earlier request.
 
 **Accepted limitation.** The miss path streams and therefore does **not** honour
 `Range`. Seeking an uncached video — or a browser's initial byte-range probe —
@@ -1318,6 +1311,11 @@ single-process deployment.
   items→feeds cascade is load-bearing.
 - Set a generous busy/lock timeout (30 s). The default of a few seconds is too
   tight when many short-lived writers contend.
+- **Requests share one process-wide connection**, not one per request. An
+  embedded engine typically serialises statements on the connection's own
+  worker thread anyway, so every request queues behind every other regardless;
+  at that point sharing one connection is cheaper than opening a thread and
+  running setup PRAGMAs per request.
 - **One shared connection means one shared implicit transaction.** If reads share
   a connection, *every* write on it — even a single statement — must run under an
   application-level write lock that commits on success and rolls back on any

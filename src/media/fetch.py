@@ -101,9 +101,9 @@ def _pinned_url(original: str, ip: str) -> str:
 async def _check_url(url: str) -> list[str]:
     """Return the validated public IP(s) for `url`, or raise UpstreamError.
 
-    The caller pins the httpx request to one of these IPs (with the original
-    Host header + SNI) so httpx cannot re-resolve the host and reach a
-    different address than the one validated here (DNS-rebinding TOCTOU).
+    Implements the SSRF gate's scheme/host/address checks; full rule set in
+    spec.md §7.2. The caller pins the httpx request to one of these IPs (with
+    the original Host header + SNI) to close the DNS-rebinding TOCTOU window.
     """
     # Escaped once here rather than at each call site below: this value also
     # ends up embedded raw in every UpstreamError message this function
@@ -169,20 +169,11 @@ async def open_upstream(
 ) -> tuple[httpx.Response, str]:
     """Open a streaming upstream response, or raise UpstreamError.
 
-    Returns (response, content_type): the caller must not re-derive the type
-    from response.headers itself, since this is where it was validated.
-
-    The body is left unread so the caller can tee it. Ownership of the response
-    passes to tee_to_cache, which always closes it.
-
-    Every fetch target — the original URL and each redirect hop — is checked
-    against _check_url first, which is why redirects are followed manually
-    here rather than by httpx.
-
-    On a PERMANENT_STATUSES answer, or a non-media content type, the URL is
-    marked dead (and a fully-dead item is dropped) before raising — that is what
-    stops a gone post coming back on the next sync. Any other non-success raises
-    without touching the database.
+    The gate, redirect handling and response validation are specified in
+    spec.md §7.2. Returns (response, content_type) with the body left unread so
+    the caller can tee it; ownership passes to tee_to_cache, which always
+    closes it. A permanent-failure status or non-media response marks the URL
+    dead (dropping a fully-dead item) before raising.
     """
     # Escaped once here, same reasoning as _check_url's safe_url: this also
     # feeds UpstreamError/NonMediaUpstreamError messages and run_with_own_db's
