@@ -13,7 +13,13 @@ This module lives in src/db/ rather than src/api/ because src/media/prefetch.py
 imports it, and src/media must not depend on src/api.
 """
 
+import logging
+
 import aiosqlite
+
+from src.logging_utils import loggable
+
+logger = logging.getLogger(__name__)
 
 RANKED_ITEMS_CTE = """
     WITH ranked AS (
@@ -76,6 +82,11 @@ async def ranked_page(
         conditions.append("seen_at IS NULL")
     if after is not None:
         bound_rn = after["rn"] if after_rn is None else min(after_rn, after["rn"])
+        if bound_rn != after["rn"]:
+            logger.info(
+                f"ranked_page: anchor {loggable(after['id'])} rank moved {after_rn}->{after['rn']}, "
+                f"paging from {bound_rn} so no undelivered row ahead of the cursor is skipped"
+            )
         conditions.append(KEYSET_AFTER)
         params.extend([bound_rn, after["feed_id"], after["id"]])
     where_clause = ("WHERE " + " AND ".join(conditions)) if conditions else ""
