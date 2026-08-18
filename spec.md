@@ -205,6 +205,10 @@ items(media_url)          -- probed inside write transactions; without it,
 items(media_key)          -- probed once per incoming entry
 items(feed_id, pub_date, id)   -- matches the ranking window exactly (§9.1)
 media_hashes(sha256)
+media_urls(item_id)       -- serves _all_dead's per-item scan and the CASCADE
+                          -- from items. The known-URL gate's `WHERE url = ?`
+                          -- is covered by the table's own (url, item_id)
+                          -- primary key, not by this index.
 ```
 
 ### 4.3 The two tombstone tables, and why there are two
