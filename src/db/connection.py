@@ -95,7 +95,6 @@ async def run_with_own_db(
     streaming-response bodies, which run after the route function has returned.
     A private connection also keeps these writes out of the shared connection's
     implicit transaction — they commit without going through write_transaction.
-    `write` must commit — this function does not.
 
     Failures are logged and dropped: every caller is fire-and-forget bookkeeping
     (cache digests, dead-URL marks) that must not fail the media it belongs to.
@@ -104,6 +103,7 @@ async def run_with_own_db(
         db = await open_db()
         try:
             await write(db)
+            await db.commit()
         finally:
             await db.close()
     except Exception as exc:  # pragma: no cover
