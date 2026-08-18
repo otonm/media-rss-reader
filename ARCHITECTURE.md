@@ -235,11 +235,11 @@ feedparser.parse(text)          [{url, title}, ...]
         _insert_item()  → items, or a resolved_guids tombstone
 ```
 
-**The skip set** (`_skip_guids`) is the union of three "already resolved" sources,
-loaded **once per feed**: guids already in `items`, guids in `unavailable_guids`
-(media is gone), and guids in `resolved_guids` (the insert guard rejected them).
-The check runs before detection because detection is the expensive part — HTML
-parsing per entry, per poll, per feed.
+**The skip set** (`_skip_guids`) is the union of two "already resolved" sources,
+loaded **once per feed**: guids already in `items`, and guids in `resolved_guids`
+(the insert guard rejected them, a prune evicted them, or their media went
+entirely dead). The check runs before detection because detection is the
+expensive part — HTML parsing per entry, per poll, per feed.
 
 **Tier 2 fires only when tier 1 produced at least one slide.** That is what stops
 a text feed full of inline thumbnails and tracking pixels being promoted to a
@@ -315,7 +315,6 @@ items.media_key       -- canonical identity of media_url; the cross-feed dedup k
 
 seen_media        (media_key PK, seen_at)              -- the durable seen record
 dead_urls         (url PK, marked_at)                  -- permanently gone media
-unavailable_guids (feed_id, guid PK, marked_at)        -- item's media is all dead
 resolved_guids    (feed_id, guid PK, resolved_at)      -- examined, deliberately not stored
 media_hashes      (url PK, sha256, phash, hashed_at)   -- content identity
 auth_config       (key PK, value)                      -- stores the TOTP secret
@@ -334,25 +333,25 @@ hits. `idx_items_media_url` exists because `_candidate_items` looks items up by
 `media_url` *inside a write transaction*; without it that is a full scan holding
 the writer lock.
 
-### The three tombstone tables
+### The two tombstone tables
 
-They look redundant. Each answers a different question, and collapsing any of
-them re-introduces a specific bug:
+They look redundant. Each answers a different question, and collapsing them
+re-introduces a specific bug:
 
 | Table | Written when | Read by | Bug prevented |
 |---|---|---|---|
 | `seen_media` | the user scrolls past an item | the insert guard | A seen item is pruned, the feed still lists it, the next poll re-inserts it **unseen** — forever. |
-| `unavailable_guids` | every URL of an item is dead | `_skip_guids` | A 404'd post is deleted and re-inserted on the next poll, fails again, forever. |
-| `resolved_guids` | the insert guard rejects an entry; **and** every prune eviction | `_skip_guids` | The guards key on `media_key`, which only exists after detection — so a rejected entry is re-detected on every poll. Plus the prune/serve-order collision described above. |
+| `resolved_guids` | the insert guard rejects an entry; every prune eviction; **and** every item dropped because all its media went dead | `_skip_guids` | The guard keys on `media_key`, which only exists after detection — so a rejected entry is re-detected on every poll. Plus the prune/serve-order collision described above, and a 404'd post re-inserting and failing again, forever. |
 
-`seen_media` is keyed on `media_key`, not `(feed_id, guid)`, so a cross-posted
-picture stays seen whichever feed carries it. It deliberately has **no foreign key
-to `feeds`**: its predecessor `seen_guids` cascaded away whenever `sync_feeds`
-dropped a feed row, erasing the seen history. `seen_guids` is now read exactly
-once, by the v19 migration, and nothing writes it.
+The distinction that survives is `seen_media`'s: it is keyed on `media_key`, not
+`(feed_id, guid)`, so a cross-posted picture stays seen whichever feed carries it,
+and it deliberately has **no foreign key to `feeds`**: its predecessor `seen_guids`
+cascaded away whenever `sync_feeds` dropped a feed row, erasing the seen history.
+`seen_guids` was read exactly once, by the v19 migration that drained it into
+`seen_media`, and dropped entirely at v25 — it no longer exists.
 
-`unavailable_guids` and `resolved_guids` *do* cascade — dropping a feed drops its
-items too, so a re-added feed should start clean.
+`resolved_guids` *does* cascade — dropping a feed drops its items too, so a
+re-added feed should start clean.
 
 ### Migrations
 
@@ -542,8 +541,8 @@ must not spend the reader's cap.
 2. collect candidate items — by `item_id` (**verified** to actually contain that
    URL, since the proxy takes both from the query string independently) and by
    `media_url`;
-3. for each item whose every slide URL is now dead: `DELETE` the row and write an
-   `unavailable_guids` tombstone;
+3. for each item whose every slide URL is now dead: `DELETE` the row and write a
+   `resolved_guids` tombstone;
 4. `_skip_guids` reads that tombstone on the next poll, so the guid never comes
    back.
 
@@ -568,8 +567,8 @@ bytes are already in hand, so it costs no extra traffic — does:
 2. upsert into `media_hashes`;
 3. find twins: exact `sha256` matches at other URLs first, then — only if none —
    perceptual matches within the threshold;
-4. if this URL's item is **newer** than every twin's, delete it and write an
-   `unavailable_guids` tombstone. If it is the oldest, it is canonical and the
+4. if this URL's item is **newer** than every twin's, delete it and write a
+   `resolved_guids` tombstone. If it is the oldest, it is canonical and the
    duplicates are somebody else's problem to drop.
 
 The tombstone is what makes the drop stick across the next poll. This deliberately

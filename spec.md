@@ -186,9 +186,6 @@ media_hashes                      -- content identity of downloaded bytes
 auth_config                       -- [stack-specific]
   key         TEXT PK             -- only 'totp_secret' is used
   value       TEXT NOT NULL
-
-seen_guids                        -- LEGACY, read-only, migration source only
-  feed_id, guid PK, seen_at
 ```
 
 ### 4.2 Indexes (all load-bearing)
@@ -319,7 +316,6 @@ ranking (§9.1).
 
 ```
 skip = { guid : guid in items(feed) }
-     ∪ { guid : guid in unavailable_guids(feed) }
      ∪ { guid : guid in resolved_guids(feed) }
     -- loaded ONCE per feed, not per entry
 
@@ -630,7 +626,7 @@ mark_dead(url, item_id):
     for row in candidates:
         if every slide URL of row is in dead_urls:
             DELETE the item row
-            INSERT OR IGNORE unavailable_guids(row.feed_id, row.guid)
+            INSERT OR IGNORE resolved_guids(row.feed_id, row.guid)
     return the dropped item ids
 ```
 
@@ -661,7 +657,7 @@ record(url, sha256_digest):
     if candidate is older (by fetched_at) than every item at the twin urls:
         return                    # this one is canonical; not our problem
     DELETE candidate
-    INSERT OR IGNORE unavailable_guids(candidate.feed_id, candidate.guid)
+    INSERT OR IGNORE resolved_guids(candidate.feed_id, candidate.guid)
 ```
 
 Dropping the **newer** duplicate and tombstoning it is what makes the drop stick
@@ -1392,7 +1388,7 @@ Following one picture from publication to disposal:
 2.  Job A (hourly) confirms F is still in the feed list.
 3.  Job B (15-minutely) fetches F with its stored ETag; the ETag changed, so
     the body is parsed.
-4.  The entry's GUID is not in items ∪ unavailable_guids ∪ resolved_guids for F,
+4.  The entry's GUID is not in items ∪ resolved_guids for F,
     so media detection runs: tier 1 finds the enclosure, tier 2 finds two more
     <img> tags in the description. Three slides.
 5.  media_key(slide 0) matches no existing item and no seen_media row, so the
